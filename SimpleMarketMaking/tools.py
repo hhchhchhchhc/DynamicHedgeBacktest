@@ -18,19 +18,18 @@ def drop_successive_duplicates(data_frame: pd.DataFrame) -> pd.DataFrame:
     short_data_frame['bid_price'] = short_data_frame['bid_price'].astype(int)
     short_data_frame['ask_price'] = short_data_frame['ask_price'].astype(int)
     short_data_frame = short_data_frame.append(data_frame.iloc[0])
+    progress = 10000
     for i in range(1, len(data_frame)):
-        if data_frame['bid_price'][i] != short_data_frame['bid_price'].values[-1] or data_frame['ask_price'][i] != \
-                short_data_frame['ask_price'].values[-1]:
+        if i > progress:
+            print(i / len(data_frame))
+            progress = progress + 10000
+        if data_frame.iloc[i]['bid_price'] != short_data_frame['bid_price'].values[-1] or \
+                data_frame.iloc[i]['ask_price'] != short_data_frame['ask_price'].values[-1]:
             short_data_frame = short_data_frame.append(data_frame.iloc[i])
     return short_data_frame
 
 
 def format_top_of_book_pandas_data_frame(data_frame: pd.DataFrame) -> pd.DataFrame:
-    # data_frame = data_frame[['timestamp_ms', 'bid_price', 'bid_qty', 'ask_price', 'ask_qty']]
-    # data_frame['bid_qty'] = data_frame['bid_qty'] / minimum_size_increment
-    # data_frame['bid_qty'] = data_frame['bid_qty'].astype(int)
-    # data_frame['ask_qty'] = data_frame['ask_qty'] / minimum_size_increment
-    # data_frame['ask_qty'] = data_frame['ask_qty'].astype(int)
     data_frame = data_frame[['timestamp_ms', 'bid_price', 'ask_price']]
     data_frame['bid_price'] = data_frame['bid_price'] / price_tick_size
     data_frame['bid_price'] = data_frame['bid_price'].astype(int)
@@ -46,5 +45,8 @@ def format_top_of_book_pandas_data_frame(data_frame: pd.DataFrame) -> pd.DataFra
 
 
 def extract_data_frame_interval(data_frame: pd.DataFrame, start: datetime.datetime, end: datetime.datetime):
-    data_frame = data_frame[(data_frame['datetime'] >= start) & (data_frame['datetime'] < end)]
+    timestamp_ms_start = start.timestamp() * 1000
+    timestamp_ms_end = end.timestamp() * 1000
+    data_frame = data_frame[(data_frame['timestamp_ms'] >= timestamp_ms_start) and
+                            (data_frame['timestamp_ms'] < timestamp_ms_end)]
     return data_frame
