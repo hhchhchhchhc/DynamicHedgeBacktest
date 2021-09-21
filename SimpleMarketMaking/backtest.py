@@ -3,6 +3,7 @@ import math
 from typing import Optional
 
 import pandas as pd
+import numpy as np
 
 
 class Backtest:
@@ -36,10 +37,14 @@ class Backtest:
         self.cashs = []
         self.pnls = []
 
-        self.trade_datetimes = []
         self.trade_sides = []
         self.trade_sizes = []
         self.trade_prices = []
+
+        self.hourly_indices = []
+        self.hourly_timestamps = []
+        self.hourly_pnls = []
+        self.hourly_volumes = []
 
     def run(self) -> None:
         n = len(self.data_frame)
@@ -48,7 +53,6 @@ class Backtest:
             if math.floor(100 * i / n) > progress_pct:
                 progress_pct = progress_pct + 10
                 print(str(progress_pct) + '% ', end='')
-            date_time = self.data_frame['datetime'].iloc[i]
             bid_price = self.data_frame['bidPrice'].iloc[i]
             ask_price = self.data_frame['askPrice'].iloc[i]
             if i < n - 1:
@@ -57,21 +61,22 @@ class Backtest:
                 if self.bid > 0 and ask_price <= self.bid:
                     self.position = self.position + self.target_pos
                     self.cash = self.cash - self.target_pos * self.bid
-                    self.trade_datetimes.append(date_time)
                     self.trade_sides.append(1)
                     self.trade_sizes.append(self.target_pos)
                     self.trade_prices.append(self.bid)
                     self.bid = 0
-                if 0 < self.ask <= bid_price:
+                elif 0 < self.ask <= bid_price:
                     self.position = self.position - self.target_pos
                     self.cash = self.cash + self.target_pos * self.ask
-                    self.trade_datetimes.append(date_time)
                     self.trade_sides.append(-1)
                     self.trade_sizes.append(self.target_pos)
                     self.trade_prices.append(self.ask)
                     self.ask = 0
+                else:
+                    self.trade_sides.append(0)
+                    self.trade_sizes.append(0)
+                    self.trade_prices.append(0)
                 self.positions.append(self.position)
-                self.cashs.append(self.cash)
                 self.mid_changed = abs(self.mid - self.last_mid) >= self.mid_change_threshold
                 self.last_mid = self.mid
                 self.skew = 0
@@ -96,31 +101,35 @@ class Backtest:
                 self.skews.append(0)
                 if self.position > 0:
                     self.cash = self.cash + self.position * bid_price
-                    self.cashs.append(self.cash)
-                    self.trade_datetimes.append(date_time)
                     self.trade_sides.append(-1)
                     self.trade_sizes.append(self.position)
                     self.trade_prices.append(bid_price)
-                if self.position < 0:
-                    self.pnl = self.pnl - self.position * ask_price
-                    self.cashs.append(self.cash)
-                    self.trade_datetimes.append(date_time)
+                elif self.position < 0:
+                    self.cash = self.cash - self.position * ask_price
                     self.trade_sides.append(1)
                     self.trade_sizes.append(-self.position)
                     self.trade_prices.append(ask_price)
+                else:
+                    self.trade_sides.append(0)
+                    self.trade_sizes.append(0)
+                    self.trade_prices.append(0)
                 self.position = 0
                 self.positions.append(self.position)
             self.bids.append(self.bid)
             self.asks.append(self.ask)
             self.pnl = self.cash + self.position * self.mid
             self.pnls.append(self.pnl)
-
-    def get_trades(self):
-        data_frame = pd.DataFrame({'datetime': self.trade_datetimes,
-                                   'side': self.trade_sides,
-                                   'size': self.trade_sizes,
-                                   'price': self.trade_prices})
-        return data_frame
+            self.cashs.append(self.cash)
+        self.data_frame['market_mid'] = self.market_mids
+        self.data_frame['bid'] = self.bids
+        self.data_frame['ask'] = self.asks
+        self.data_frame['position'] = self.positions
+        self.data_frame['cash'] = self.cashs
+        self.data_frame['skew'] = self.skews
+        self.data_frame['pnl'] = self.pnls
+        self.data_frame['trade_side'] = self.trade_sides
+        self.data_frame['trade_size'] = self.trade_sizes
+        self.data_frame['trade_price'] = self.trade_prices
 
     def get_total_volume_traded(self) -> int:
         volume = sum(self.trade_sizes)
@@ -129,10 +138,6 @@ class Backtest:
     def get_yield(self) -> float:
         y = 1e2 * self.pnl / self.get_total_volume_traded()
         return y
-
-    def get_number_of_trades(self) -> int:
-        number_of_trades = len(self.trade_datetimes)
-        return number_of_trades
 
     def load_market_data(self, directory: str, start_date: datetime.date, number_of_days: int) -> None:
         market_data = pd.DataFrame()
@@ -144,18 +149,72 @@ class Backtest:
             market_data = market_data.append(data_frame)
         self.data_frame = market_data
 
-    def add_results_to_data_frame(self):
-        self.data_frame['market_mids'] = self.market_mids
-        self.data_frame['bids'] = self.bids
-        self.data_frame['asks'] = self.asks
-        self.data_frame['positions'] = self.positions
-        self.data_frame['cashs'] = self.cashs
-        self.data_frame['skews'] = self.skews
-        self.data_frame['pnls'] = self.pnls
+    def get_average_hourly_return(self) -> float:
+        if len(self.hourly_returns) == 0:
+            self.generate_hourly_returns()
+        average_hourly_returns = float(np.average(self.hourly_returns))
+        return average_hourly_returns
+
+    def generate_hourly_indices(self) -> None:
+        i = 0
+        timestamp = self.data_frame['millisecondsSinceEpoch'].iloc[0]
+        timestamp = timestamp - (timestamp % 3600000) + 3600000
+        n = len(self.data_frame.index)
+        while i < n:
+            while i < n and self.data_frame['millisecondsSinceEpoch'].iloc[i] < timestamp:
+                i = i + 1
+            self.hourly_indices.append(i - 1)
+            self.hourly_timestamps.append(timestamp)
+            timestamp = timestamp + 3600000
+
+    def get_standard_deviation_of_hourly_returns(self) -> float:
+        if len(self.hourly_returns) == 0:
+            self.generate_hourly_returns()
+        standard_deviation_of_hourly_returns = float(np.std(self.hourly_returns))
+        return standard_deviation_of_hourly_returns
+
+    def get_annualised_average_hourly_return(self) -> float:
+        annualised_average_hourly_return = 24 * 365.24 * self.get_average_hourly_return()
+        return annualised_average_hourly_return
+
+    def get_annualised_standard_deviation_of_hourly_returns(self) -> float:
+        annualised_standard_deviation_of_hourly_returns = np.sqrt(
+            24 * 365.24) * self.get_standard_deviation_of_hourly_returns()
+        return annualised_standard_deviation_of_hourly_returns
+
+    def get_annualised_sharp_ratio(self) -> float:
+        sharp_ratio = self.get_annualised_average_hourly_return() / \
+                      self.get_annualised_standard_deviation_of_hourly_returns()
+        return sharp_ratio
+
+    def get_maximum_drawdown(self) -> float:
+        maximum_drawdown = 0
+        maximum_pnl = 0
+        minimum_pnl = 0
+        for pnl in self.pnls:
+            if pnl > maximum_pnl:
+                maximum_pnl = pnl
+                if maximum_pnl - minimum_pnl > maximum_drawdown:
+                    maximum_drawdown = (maximum_pnl - minimum_pnl)/maximum_pnl
+            if pnl < minimum_pnl:
+                minimum_pnl = pnl
+        return maximum_drawdown
+
+    def generate_hourly_returns(self) -> None:
+        if len(self.hourly_indices) == 0:
+            self.generate_hourly_indices()
+        n = len(self.hourly_indices)
+        for i in range(n - 1):
+            self.hourly_returns.append((self.pnls[self.hourly_indices[i + 1]] -
+                                        self.pnls[self.hourly_indices[i]]) /
+                                       float(np.abs(self.pnls[self.hourly_indices[i]])))
+
+    def get_number_of_trades(self) -> int:
+        number_of_trades = 0
+        for trade in self.trade_sides:
+            number_of_trades = number_of_trades + np.abs(trade)
+        return number_of_trades
 
     def generate_trades(self) -> pd.DataFrame:
-        trades = pd.DataFrame()
-        trades['trade_datetimes'] = self.trade_datetimes
-        trades['trade_sides'] = self.trade_sides
-        trades['trade_sizes'] = self.trade_sizes
+        trades = self.data_frame[self.data_frame['trade_side'] != 0]
         return trades
