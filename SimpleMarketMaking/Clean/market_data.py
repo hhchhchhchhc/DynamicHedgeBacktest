@@ -1,3 +1,5 @@
+import datetime
+
 import numpy as np
 import pandas as pd
 import SimpleMarketMaking.Clean.tools
@@ -8,49 +10,46 @@ import pyarrow.parquet as pq
 class MarketData:
     def __init__(self, symbol: str):
         self.symbol = symbol
-        self.top_of_book_raw = self._get_top_of_book_sample()
-        self.top_of_book_formatted = self._format_top_of_book()
-        self.trades_raw = self._get_trades_sample()
-        self.trades_formatted = self._format_trades()
+        self.top_of_book_raw = pd.DataFrame()
+        self.top_of_book_formatted = pd.DataFrame()
+        self.trades_raw = pd.DataFrame()
+        self.trades_formatted = pd.DataFrame()
 
-    def _get_top_of_book_sample(self) -> pd.DataFrame:
+    def load_top_of_book_data_from_parquet(self, date: datetime.date) -> None:
         symbol_id: int = SimpleMarketMaking.Clean.tools.get_id_from_symbol(self.symbol)
         symbol_id_string = str(symbol_id)
-        data = pq.read_table(SimpleMarketMaking.Clean.config.source_directory +
-                             '20210901_' + symbol_id_string + '_tob.parquet').to_pandas()
-        return data
+        date_string = date.strftime('%Y%m%d')
+        self.top_of_book_raw = pq.read_table(SimpleMarketMaking.Clean.config.source_directory + 'raw/parquet/' +
+                                             date_string + '_' + symbol_id_string + '_tob.parquet').to_pandas()
 
-    def _format_top_of_book(self) -> pd.DataFrame:
-        formatted_data = pd.DataFrame()
-        formatted_data['timestamp_millis'] = self.top_of_book_raw['exchange_timestamp_nanos'].div(1000000)
-        formatted_data['timestamp_millis'] = formatted_data['timestamp_millis'].astype('int64')
+    def load_trade_data_from_parquet(self, date: datetime.date) -> None:
+        symbol_id: int = SimpleMarketMaking.Clean.tools.get_id_from_symbol(self.symbol)
+        symbol_id_string = str(symbol_id)
+        date_string = date.strftime('%Y%m%d')
+        self.trades_raw = pq.read_table(SimpleMarketMaking.Clean.config.source_directory + 'raw/parquet/' + date_string
+                                        + '_' + symbol_id_string + '_trade.parquet').to_pandas()
+
+    def load_formatted_trade_data_from_csv(self) -> None:
+        self.trades_formatted = pd.read_csv(SimpleMarketMaking.Clean.config.source_directory +
+                                            'formatted/20210901_Binance_' + self.symbol + '_secondly_bars.csv')
+
+    def generate_formatted_top_of_book_data(self) -> None:
+        self.top_of_book_formatted = pd.DataFrame()
+        self.top_of_book_formatted['timestamp_millis'] = self.top_of_book_raw['exchange_timestamp_nanos'].div(1000000)
+        self.top_of_book_formatted['timestamp_millis'] = self.top_of_book_formatted['timestamp_millis'].astype('int64')
         config: pd.DataFrame = SimpleMarketMaking.Clean.config.config
         tick_size = float(config[config['symbol'] == self.symbol]['tick_size'])
-        formatted_data['bid_price'] = self.top_of_book_raw['bid_price'].div(tick_size)
-        formatted_data['bid_price'] = formatted_data['bid_price'].astype('int64')
-        formatted_data['ask_price'] = self.top_of_book_raw['ask_price'].div(tick_size)
-        formatted_data['ask_price'] = formatted_data['ask_price'].astype('int64')
+        self.top_of_book_formatted['bid_price'] = self.top_of_book_raw['bid_price'].div(tick_size)
+        self.top_of_book_formatted['bid_price'] = self.top_of_book_formatted['bid_price'].astype('int64')
+        self.top_of_book_formatted['ask_price'] = self.top_of_book_raw['ask_price'].div(tick_size)
+        self.top_of_book_formatted['ask_price'] = self.top_of_book_formatted['ask_price'].astype('int64')
         step_size = float(config[config['symbol'] == self.symbol]['step_size'])
-        formatted_data['bid_size'] = self.top_of_book_raw['bid_qty'].div(step_size)
-        formatted_data['bid_size'] = formatted_data['bid_size'].astype('int64')
-        formatted_data['ask_size'] = self.top_of_book_raw['ask_qty'].div(step_size)
-        formatted_data['ask_size'] = formatted_data['ask_size'].astype('int64')
-        return formatted_data
+        self.top_of_book_formatted['bid_size'] = self.top_of_book_raw['bid_qty'].div(step_size)
+        self.top_of_book_formatted['bid_size'] = self.top_of_book_formatted['bid_size'].astype('int64')
+        self.top_of_book_formatted['ask_size'] = self.top_of_book_raw['ask_qty'].div(step_size)
+        self.top_of_book_formatted['ask_size'] = self.top_of_book_formatted['ask_size'].astype('int64')
 
-    def time_sampled_top_of_book(self, millis: int):
-        indices = SimpleMarketMaking.Clean.tools.get_time_sampled_indices(
-            self.top_of_book_formatted['timestamp_millis'],
-            millis, False)
-        return self.top_of_book_formatted.iloc[indices]
-
-    def _get_trades_sample(self) -> pd.DataFrame:
-        symbol_id: int = SimpleMarketMaking.Clean.tools.get_id_from_symbol(self.symbol)
-        symbol_id_string = str(symbol_id)
-        data = pq.read_table(SimpleMarketMaking.Clean.config.source_directory +
-                             '20210901_' + symbol_id_string + '_trade.parquet').to_pandas()
-        return data
-
-    def _format_trades(self) -> pd.DataFrame:
+    def generate_formatted_trades_data(self) -> None:
         formatted_data = pd.DataFrame()
         formatted_data['timestamp_millis'] = self.trades_raw['exchange_timestamp_nanos'].div(1000000)
         formatted_data['timestamp_millis'] = formatted_data['timestamp_millis'].astype('int64')
@@ -63,7 +62,13 @@ class MarketData:
         formatted_data['size'] = formatted_data['size'].astype('int64')
         formatted_data['given'] = self.trades_raw['buyer_is_market_maker']
         formatted_data['given'] = formatted_data['given'].astype('bool')
-        return formatted_data
+        self.trades_formatted = formatted_data
+
+    def time_sampled_top_of_book(self, millis: int):
+        indices = SimpleMarketMaking.Clean.tools.get_time_sampled_indices(
+            self.top_of_book_formatted['timestamp_millis'],
+            millis, False)
+        return self.top_of_book_formatted.iloc[indices]
 
     def _get_bars(self, indices: pd.DataFrame):
         bars = pd.DataFrame()
@@ -77,6 +82,7 @@ class MarketData:
         highs = []
         lows = []
         volumes = []
+        volume_givens = []
         for i in range(n):
             first_index = indices['index'].loc[i] + 1
             last_index = indices['index'].loc[i + 1]
@@ -89,9 +95,11 @@ class MarketData:
                 highs.append(np.nan)
                 lows.append(np.nan)
                 volumes.append(0)
+                volume_givens.append(0)
             else:
-                prices = self.trades_formatted.loc[first_index:last_index, 'price']
-                sizes = self.trades_formatted.loc[first_index:last_index, 'size']
+                prices = self.trades_formatted.loc[first_index: last_index, 'price']
+                sizes = self.trades_formatted.loc[first_index: last_index, 'size']
+                givens = self.trades_formatted.loc[first_index: last_index, 'given']
                 vwap = int(prices.multiply(sizes).sum() / sizes.sum())
                 first_timestamp_millis.append(self.trades_formatted.loc[first_index, 'timestamp_millis'])
                 last_timestamp_millis.append(self.trades_formatted.loc[last_index, 'timestamp_millis'])
@@ -101,6 +109,7 @@ class MarketData:
                 highs.append(prices.max())
                 lows.append(prices.min())
                 volumes.append(sizes.sum())
+                volume_givens.append(sizes.multiply(givens).sum())
         bars['first_timestamp_millis'] = first_timestamp_millis
         bars['last_timestamp_millis'] = last_timestamp_millis
         bars['vwap'] = vwaps
@@ -109,6 +118,7 @@ class MarketData:
         bars['high'] = highs
         bars['low'] = lows
         bars['volume'] = volumes
+        bars['volume_given'] = volume_givens
         bars = bars.dropna()
         bars['vwap'] = bars['vwap'].astype('int64')
         bars['open'] = bars['open'].astype('int64')
@@ -153,7 +163,8 @@ class MarketData:
         return tick_imbalance_bars
 
     def get_trade_side_imbalance_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_trade_side_imbalance_sampled_indices(self.trades_formatted['given'])
+        indices = SimpleMarketMaking.Clean.tools.get_trade_side_imbalance_sampled_indices(
+            self.trades_formatted['given'])
         trade_side_imbalance_bars = self._get_bars(indices)
         trade_side_imbalance_bars = trade_side_imbalance_bars.rename(columns={'value': 'trade_side_imbalance'})
         return trade_side_imbalance_bars
@@ -227,5 +238,6 @@ class MarketData:
         indices = SimpleMarketMaking.Clean.tools.get_dollar_trade_side_runs_sampled_indices(
             self.trades_formatted)
         dollar_trade_side_imbalance_bars = self._get_bars(indices)
-        dollar_trade_side_imbalance_bars = dollar_trade_side_imbalance_bars.rename(columns={'value': 'dollar_trade_side_imbalance'})
+        dollar_trade_side_imbalance_bars = dollar_trade_side_imbalance_bars.rename(
+            columns={'value': 'dollar_trade_side_imbalance'})
         return dollar_trade_side_imbalance_bars

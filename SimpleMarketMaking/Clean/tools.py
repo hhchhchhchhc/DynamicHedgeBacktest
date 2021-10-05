@@ -11,6 +11,18 @@ def get_id_from_symbol(symbol: str) -> int:
     return symbol_id
 
 
+def get_tick_size_from_symbol(symbol):
+    config: DataFrame = SimpleMarketMaking.Clean.config.config
+    tick_size = float(config[config['symbol'] == symbol]['tick_size'])
+    return tick_size
+
+
+def get_step_size_from_symbol(symbol):
+    config: DataFrame = SimpleMarketMaking.Clean.config.config
+    step_size = float(config[config['symbol'] == symbol]['step_size'])
+    return step_size
+
+
 def _get_sampled_indices(series: pd.Series, bar_size: int, start_on_round_multiple: bool) -> pd.DataFrame:
     t = series.iloc[0] + 1
     if start_on_round_multiple:

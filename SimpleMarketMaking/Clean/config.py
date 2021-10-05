@@ -8,4 +8,4 @@ config = pd.DataFrame(data={'id': [70916, 4610, 70510, 4623, 63048, 4627, 72202,
                                           0.001, 0.0001, 0.0001],
                             'step_size': [1, 1, 0.01, 0.01, 0.001, 0.001, 1, 1, 0.001, 0.001, 1, 1, 0.1, 0.1]})
 
-source_directory: str = 'C:/Users/Tibor/Data/parquet/'
+source_directory: str = 'C:/Users/Tibor/Data/'
