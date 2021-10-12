@@ -2,22 +2,40 @@ import datetime
 import random
 import numpy as np
 import pandas as pd
-import SimpleMarketMaking.Clean.tools
+import tools
+
+
+def _get_tobs_from_csvs(start_date: datetime.date, number_of_days: int) -> pd.DataFrame:
+    tobs = pd.DataFrame()
+    for days in range(number_of_days):
+        date = start_date + datetime.timedelta(days=days)
+        date_string = date.strftime('%Y%m%d')
+        tob = pd.read_csv('C:/Users/Tibor/Data/formatted/tobs/' + date_string + '_Binance_BTCUSDT_tobs.csv')
+        tobs = tobs.append(tob)
+    return tobs
+
+
+def _get_trades_from_csvs(start_date: datetime.date, number_of_days: int) -> pd.DataFrame:
+    trades = pd.DataFrame()
+    for days in range(number_of_days):
+        date = start_date + datetime.timedelta(days=days)
+        date_string = date.strftime('%Y%m%d')
+        trade = pd.read_csv('C:/Users/Tibor/Data/formatted/trades/' + date_string + '_Binance_BTCUSDT_trades.csv')
+        trades = trades.append(trade)
+    return trades
 
 
 class Backtest:
-    def __init__(self, symbol: str, date: datetime.date, k: float, gamma: float, horizon: int) -> None:
+    def __init__(self, symbol: str, start_date: datetime.date, number_of_days: int,
+                 k: float = 0.02, gamma: float = 0.02, horizon: int = 60) -> None:
         self.symbol = symbol
-        date_string = date.strftime('%Y%m%d')
-        self.tobs = pd.read_csv('C:/Users/Tibor/Data/formatted/tob/' + date_string +
-                                '_Binance_BTCUSDT_tob.csv')
-        self.trades = pd.read_csv('C:/Users/Tibor/Data/formatted/trades/' + date_string +
-                                  '_Binance_BTCUSDT_trades.csv')
+        self.tobs = _get_tobs_from_csvs(start_date, number_of_days)
+        self.trades = _get_trades_from_csvs(start_date, number_of_days)
         self.k = k
         self.gamma = gamma
         self.horizon = horizon
-        self.tick_size = SimpleMarketMaking.Clean.tools.get_tick_size_from_symbol(self.symbol)
-        self.step_size = SimpleMarketMaking.Clean.tools.get_step_size_from_symbol(self.symbol)
+        self.tick_size = tools.get_tick_size_from_symbol(self.symbol)
+        self.step_size = tools.get_step_size_from_symbol(self.symbol)
         self.time_bar_start_timestamp = None
         self.price_buffer = []
         self.size_buffer = []
@@ -41,6 +59,12 @@ class Backtest:
         self.backtest_market_asks = []
         self.backtest_sigma_squareds = []
         self.vwap_buffer = []
+        self.backtest_cumulative_volumes = []
+        self.backtest_cumulative_volume_dollars = []
+        self.volume_traded_buffer = []
+        self.volume_traded_dollar_buffer = []
+        self.cumulative_volume = 0
+        self.cumulative_volume_dollar = 0
 
     def run(self) -> pd.DataFrame:
         trades_index = 0
@@ -50,7 +74,7 @@ class Backtest:
         progress_pct = 0
         while trades_index < trades_n and tobs_index < tobs_n:
             if np.floor(100 * trades_index / trades_n) > progress_pct:
-                progress_pct = progress_pct + 5
+                progress_pct = progress_pct + 1
                 print(str(progress_pct) + '% ', end='')
             trades_timestamp = self.trades['timestamp_millis'].iloc[trades_index]
             tobs_timestamp = self.tobs['timestamp_millis'].iloc[tobs_index]
@@ -71,17 +95,20 @@ class Backtest:
         backtest_results = pd.DataFrame()
         backtest_results['timestamp_millis'] = self.backtest_timestamps
         backtest_results['position'] = np.multiply(self.backtest_positions, self.step_size)
-        backtest_results['pnl'] = np.multiply(self.backtest_pnls, self.tick_size)
+        backtest_results['cumulative_volume'] = np.multiply(self.backtest_cumulative_volumes, self.step_size)
+        backtest_results['cumulative_volume_dollar'] = np.multiply(
+            self.backtest_cumulative_volume_dollars, self.tick_size * self.step_size)
+        backtest_results['pnl'] = np.multiply(self.backtest_pnls, self.tick_size * self.step_size)
         backtest_results['bid'] = list(map(lambda x: None if x is None else x * self.tick_size, self.backtest_bids))
         backtest_results['ask'] = list(map(lambda x: None if x is None else x * self.tick_size, self.backtest_asks))
         backtest_results['market_bid'] = np.multiply(self.backtest_market_bids, self.tick_size)
         backtest_results['market_ask'] = np.multiply(self.backtest_market_asks, self.tick_size)
-        backtest_results['spread'] = list(map(
-            lambda x: None if x is None else x * self.tick_size, self.backtest_spreads))
-        backtest_results['skew'] = list(map(
-            lambda x: None if x is None else x * self.tick_size, self.backtest_skews))
-        backtest_results['sigma_squared'] = list(map(
-            lambda x: None if x is None else x * self.tick_size * self.tick_size, self.backtest_sigma_squareds))
+        backtest_results['spread'] = list(
+            map(lambda x: None if x is None else x * self.tick_size, self.backtest_spreads))
+        backtest_results['skew'] = list(
+            map(lambda x: None if x is None else x * self.tick_size, self.backtest_skews))
+        backtest_results['sigma_squared'] = list(
+            map(lambda x: None if x is None else x * self.tick_size * self.tick_size, self.backtest_sigma_squareds))
         return backtest_results
 
     def _trade_event(self, trade: pd.Series) -> None:
@@ -111,7 +138,7 @@ class Backtest:
             vwap = np.average(self.price_buffer, weights=self.size_buffer)
             self.vwap_buffer.append(vwap)
             if len(self.vwap_buffer) > self.horizon:
-                self.vwap_buffer.pop()
+                self.vwap_buffer.pop(0)
             if len(self.vwap_buffer) >= self.horizon:
                 self.sigma_squared = np.diff(self.vwap_buffer).var()
             if self.sigma_squared is not None:
@@ -133,6 +160,8 @@ class Backtest:
                 self.tick_size * self.tick_size * self.sigma_squared) * self.horizon)) / self.step_size)
         self.cash = self.cash - (quote_size * self.bid)
         self.position = self.position + quote_size
+        self.volume_traded_buffer.append(quote_size)
+        self.volume_traded_dollar_buffer.append(quote_size * self.bid)
         self.bid = None
 
     def _passive_sell(self) -> None:
@@ -140,6 +169,8 @@ class Backtest:
                 self.tick_size * self.tick_size * self.sigma_squared) * self.horizon)) / self.step_size)
         self.cash = self.cash + (quote_size * self.ask)
         self.position = self.position - quote_size
+        self.volume_traded_buffer.append(quote_size)
+        self.volume_traded_dollar_buffer.append(quote_size * self.ask)
         self.ask = None
 
     def _aggressive_buy(self) -> None:
@@ -147,6 +178,8 @@ class Backtest:
                 self.tick_size * self.tick_size * self.sigma_squared) * self.horizon)) / self.step_size)
         self.cash = self.cash - (quote_size * self.market_ask)
         self.position = self.position + quote_size
+        self.volume_traded_buffer.append(quote_size)
+        self.volume_traded_dollar_buffer.append(quote_size * self.market_ask)
         self.bid = None
 
     def _aggressive_sell(self) -> None:
@@ -154,6 +187,8 @@ class Backtest:
                 self.tick_size * self.tick_size * self.sigma_squared) * self.horizon)) / self.step_size)
         self.cash = self.cash + (quote_size * self.market_bid)
         self.position = self.position - quote_size
+        self.volume_traded_buffer.append(quote_size)
+        self.volume_traded_dollar_buffer.append(quote_size * self.market_bid)
         self.ask = None
 
     def _record_backtest_results(self) -> None:
@@ -168,3 +203,9 @@ class Backtest:
         self.backtest_spreads.append(self.spread)
         self.backtest_skews.append(self.skew)
         self.backtest_sigma_squareds.append(self.sigma_squared)
+        self.cumulative_volume = self.cumulative_volume + sum(self.volume_traded_buffer)
+        self.backtest_cumulative_volumes.append(self.cumulative_volume)
+        self.volume_traded_buffer = []
+        self.cumulative_volume_dollar = self.cumulative_volume_dollar + sum(self.volume_traded_dollar_buffer)
+        self.backtest_cumulative_volume_dollars.append(self.cumulative_volume_dollar)
+        self.volume_traded_dollar_buffer = []

@@ -1,50 +1,69 @@
 import datetime
-from concurrent.futures import ProcessPoolExecutor
-import numpy as np
+import scipy as sp
+import matplotlib as mpl
+import SimpleMarketMaking.Clean.config
+import market_data
 import backtest
+# from concurrent.futures import ProcessPoolExecutor
+# import numpy as np
 
 start_time = datetime.datetime.now()
 
+for d in range(22):
+    date = datetime.date(2021, 9, 1) + datetime.timedelta(days=d)
+    date_string = date.strftime('%Y%m%d')
+    my_market_data = market_data.MarketData('XRPUSDT')
+    try:
+        my_market_data.load_formatted_trade_data_from_csv(date)
+        secondly_bars = my_market_data.get_time_bars(1000)
+        secondly_bars.to_csv('C:/Users/Tibor/Data/formatted/secondly/' + date_string + '_Binance_XRPUSDT_trades.csv')
+    except FileNotFoundError as error:
+        print(repr(error))
 
-def f(gamma: float) -> None:
-    print('running gamma = ' + str("{:,.2f}".format(gamma)))
-    date = datetime.date(2021, 9, 1)
-    my_backtest = backtest.Backtest(symbol='BTCUSDT', date=date, k=0.02, gamma=gamma, horizon=60)
-    results = my_backtest.run()
-    print(results)
-    results.to_csv('C:/Users/Tibor/Sandbox/results_' + str("{:,.2f}".format(gamma)) + '.csv')
+end_time = datetime.datetime.now()
+print('--- ran in ' + str(end_time - start_time))
 
-
-def main():
-    gammas = np.concatenate((np.arange(0.01, 0.1, 0.01), np.arange(0.1, 1, 0.1)))
-    with ProcessPoolExecutor(10) as pool:
-        for gamma in gammas:
-            pool.submit(f, gamma)
-
-    end_time = datetime.datetime.now()
-    print('--- ran in ' + str(end_time - start_time))
-
-
-if __name__ == '__main__':
-    main()
-
-# start_time = datetime.datetime.now()
-#
 # for d in range(22):
 #     date = datetime.date(2021, 9, 1) + datetime.timedelta(days=d)
-#     my_market_data = SimpleMarketMaking.Clean.market_data.MarketData('BTCUSDT')
-#     my_market_data.load_trade_data_from_parquet(date)
-#     my_market_data.load_top_of_book_data_from_parquet(date)
-#     my_market_data.generate_formatted_trades_data()
-#     my_market_data.generate_formatted_top_of_book_data()
-#     date_string = date.strftime('%Y%m%d')
-#     my_market_data.trades_formatted.to_csv('C:/Users/Tibor/Data/formatted/trades/' + date_string +
-#                                            '_Binance_BTCUSDT_trades.csv')
-#     my_market_data.top_of_book_formatted.to_csv('C:/Users/Tibor/Data/formatted/tob/' + date_string +
-#                                                 '_Binance_BTCUSDT_tob.csv')
+#     try:
+#         my_market_data = SimpleMarketMaking.Clean.market_data.MarketData('XRPUSDT')
+#         my_market_data.load_trade_data_from_parquet(date)
+#         my_market_data.load_top_of_book_data_from_parquet(date)
+#         my_market_data.generate_formatted_trades_data()
+#         my_market_data.generate_formatted_top_of_book_data()
+#         date_string = date.strftime('%Y%m%d')
+#         my_market_data.trades_formatted.to_csv('C:/Users/Tibor/Data/formatted/trades/' + date_string +
+#                                                '_Binance_XRPUSDT_trades.csv')
+#         my_market_data.top_of_book_formatted.to_csv('C:/Users/Tibor/Data/formatted/tobs/' + date_string +
+#                                                     '_Binance_XRPUSDT_tobs.csv')
+#     except FileNotFoundError as error:
+#         print(repr(error))
 #
-# end_time = datetime.datetime.now()
-# print('--- ran in ' + str(end_time - start_time))
+# def f(gamma: float) -> None:
+#     print('running gamma = ' + str("{:,.2f}".format(gamma)))
+#     start_date = datetime.date(2021, 9, 2)
+#     number_of_days = 10
+#     my_backtest = backtest.Backtest(symbol='BTCUSDT', start_date=start_date, number_of_days=number_of_days, k=0.02, gamma=gamma, horizon=60)
+#     results = my_backtest.run()
+#     print(results)
+#     results.to_csv('C:/Users/Tibor/Sandbox/results_' + str("{:,.2f}".format(gamma)) + '.csv')
+#
+#
+# def main():
+#     gammas = np.arange(0.01, 0.11, 0.01)
+#     f(gammas[0])
+#     # with ProcessPoolExecutor(5) as pool:
+#     #     for gamma in gammas:
+#     #         pool.submit(f, gamma)
+#
+#     end_time = datetime.datetime.now()
+#     print('--- ran in ' + str(end_time - start_time))
+#
+#
+# if __name__ == '__main__':
+#     main()
+
+
 
 # look_backs = range(1, 6)
 # horizons = range(1, 6)

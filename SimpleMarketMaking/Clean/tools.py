@@ -1,24 +1,23 @@
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
-
-import SimpleMarketMaking.Clean.config
+import config as con
 
 
 def get_id_from_symbol(symbol: str) -> int:
-    config: DataFrame = SimpleMarketMaking.Clean.config.config
+    config: DataFrame = con.config
     symbol_id = int(config[config['symbol'] == symbol]['id'])
     return symbol_id
 
 
 def get_tick_size_from_symbol(symbol):
-    config: DataFrame = SimpleMarketMaking.Clean.config.config
+    config: DataFrame = con.config
     tick_size = float(config[config['symbol'] == symbol]['tick_size'])
     return tick_size
 
 
 def get_step_size_from_symbol(symbol):
-    config: DataFrame = SimpleMarketMaking.Clean.config.config
+    config: DataFrame = con.config
     step_size = float(config[config['symbol'] == symbol]['step_size'])
     return step_size
 

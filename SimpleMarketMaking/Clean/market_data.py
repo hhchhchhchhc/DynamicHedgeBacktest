@@ -2,8 +2,8 @@ import datetime
 
 import numpy as np
 import pandas as pd
-import SimpleMarketMaking.Clean.tools
-import SimpleMarketMaking.Clean.config
+import tools
+import config as con
 import pyarrow.parquet as pq
 
 
@@ -16,28 +16,30 @@ class MarketData:
         self.trades_formatted = pd.DataFrame()
 
     def load_top_of_book_data_from_parquet(self, date: datetime.date) -> None:
-        symbol_id: int = SimpleMarketMaking.Clean.tools.get_id_from_symbol(self.symbol)
+        symbol_id: int = tools.get_id_from_symbol(self.symbol)
         symbol_id_string = str(symbol_id)
         date_string = date.strftime('%Y%m%d')
-        self.top_of_book_raw = pq.read_table(SimpleMarketMaking.Clean.config.source_directory + 'raw/parquet/' +
+        self.top_of_book_raw = pq.read_table(con.source_directory + 'raw/parquet/' +
                                              date_string + '_' + symbol_id_string + '_tob.parquet').to_pandas()
 
     def load_trade_data_from_parquet(self, date: datetime.date) -> None:
-        symbol_id: int = SimpleMarketMaking.Clean.tools.get_id_from_symbol(self.symbol)
+        symbol_id: int = tools.get_id_from_symbol(self.symbol)
         symbol_id_string = str(symbol_id)
         date_string = date.strftime('%Y%m%d')
-        self.trades_raw = pq.read_table(SimpleMarketMaking.Clean.config.source_directory + 'raw/parquet/' + date_string
-                                        + '_' + symbol_id_string + '_trade.parquet').to_pandas()
+        self.trades_raw = pq.read_table(
+                con.source_directory + 'raw/parquet/' + date_string
+                + '_' + symbol_id_string + '_trade.parquet').to_pandas()
 
-    def load_formatted_trade_data_from_csv(self) -> None:
-        self.trades_formatted = pd.read_csv(SimpleMarketMaking.Clean.config.source_directory +
-                                            'formatted/20210901_Binance_' + self.symbol + '_secondly_bars.csv')
+    def load_formatted_trade_data_from_csv(self, date: datetime.date) -> None:
+        date_string = date.strftime('%Y%m%d')
+        self.trades_formatted = pd.read_csv(con.source_directory + 'formatted/trades/' +
+                                            date_string + '_Binance_' + self.symbol + '_trades.csv')
 
     def generate_formatted_top_of_book_data(self) -> None:
         self.top_of_book_formatted = pd.DataFrame()
         self.top_of_book_formatted['timestamp_millis'] = self.top_of_book_raw['exchange_timestamp_nanos'].div(1000000)
         self.top_of_book_formatted['timestamp_millis'] = self.top_of_book_formatted['timestamp_millis'].astype('int64')
-        config: pd.DataFrame = SimpleMarketMaking.Clean.config.config
+        config: pd.DataFrame = con.config
         tick_size = float(config[config['symbol'] == self.symbol]['tick_size'])
         self.top_of_book_formatted['bid_price'] = self.top_of_book_raw['bid_price'].div(tick_size)
         self.top_of_book_formatted['bid_price'] = self.top_of_book_formatted['bid_price'].astype('int64')
@@ -53,7 +55,7 @@ class MarketData:
         formatted_data = pd.DataFrame()
         formatted_data['timestamp_millis'] = self.trades_raw['exchange_timestamp_nanos'].div(1000000)
         formatted_data['timestamp_millis'] = formatted_data['timestamp_millis'].astype('int64')
-        config: pd.DataFrame = SimpleMarketMaking.Clean.config.config
+        config: pd.DataFrame = con.config
         tick_size = float(config[config['symbol'] == self.symbol]['tick_size'])
         formatted_data['price'] = self.trades_raw['price'].div(tick_size)
         formatted_data['price'] = formatted_data['price'].astype('int64')
@@ -65,7 +67,7 @@ class MarketData:
         self.trades_formatted = formatted_data
 
     def time_sampled_top_of_book(self, millis: int):
-        indices = SimpleMarketMaking.Clean.tools.get_time_sampled_indices(
+        indices = tools.get_time_sampled_indices(
             self.top_of_book_formatted['timestamp_millis'],
             millis, False)
         return self.top_of_book_formatted.iloc[indices]
@@ -129,8 +131,7 @@ class MarketData:
         return bars
 
     def get_time_bars(self, bar_size_in_millis: int) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_time_sampled_indices(self.trades_formatted['timestamp_millis'],
-                                                                          bar_size_in_millis, True)
+        indices = tools.get_time_sampled_indices(self.trades_formatted['timestamp_millis'], bar_size_in_millis, True)
         time_bars = self._get_bars(indices)
         time_bars = time_bars.rename(columns={'value': 'timestamp_millis'})
         return time_bars
@@ -144,33 +145,33 @@ class MarketData:
         return tick_bars
 
     def get_volume_bars(self, volume: int) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_volume_sampled_indices(self.trades_formatted['size'], volume)
+        indices = tools.get_volume_sampled_indices(self.trades_formatted['size'], volume)
         volume_bars = self._get_bars(indices)
         volume_bars = volume_bars.rename(columns={'value': 'cumulative_size'})
         return volume_bars
 
     def get_dollar_bars(self, dollar: int) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_dollar_sampled_indices(self.trades_formatted['price'],
-                                                                            self.trades_formatted['size'], dollar)
+        indices = tools.get_dollar_sampled_indices(
+            self.trades_formatted['price'], self.trades_formatted['size'], dollar)
         dollar_bars = self._get_bars(indices)
         dollar_bars = dollar_bars.rename(columns={'value': 'cumulative_dollar'})
         return dollar_bars
 
     def get_tick_imbalance_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_tick_imbalance_sampled_indices(self.trades_formatted['price'])
+        indices = tools.get_tick_imbalance_sampled_indices(self.trades_formatted['price'])
         tick_imbalance_bars = self._get_bars(indices)
         tick_imbalance_bars = tick_imbalance_bars.rename(columns={'value': 'tick_imbalance'})
         return tick_imbalance_bars
 
     def get_trade_side_imbalance_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_trade_side_imbalance_sampled_indices(
+        indices = tools.get_trade_side_imbalance_sampled_indices(
             self.trades_formatted['given'])
         trade_side_imbalance_bars = self._get_bars(indices)
         trade_side_imbalance_bars = trade_side_imbalance_bars.rename(columns={'value': 'trade_side_imbalance'})
         return trade_side_imbalance_bars
 
     def get_volume_tick_imbalance_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_volume_tick_imbalance_sampled_indices(
+        indices = tools.get_volume_tick_imbalance_sampled_indices(
             self.trades_formatted['price'],
             self.trades_formatted['size'])
         volume_tick_imbalance_bars = self._get_bars(indices)
@@ -178,14 +179,14 @@ class MarketData:
         return volume_tick_imbalance_bars
 
     def get_volume_trade_side_imbalance_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_volume_trade_side_imbalance_sampled_indices(
+        indices = tools.get_volume_trade_side_imbalance_sampled_indices(
             self.trades_formatted)
         volume_tick_imbalance_bars = self._get_bars(indices)
         volume_tick_imbalance_bars = volume_tick_imbalance_bars.rename(columns={'value': 'volume_trade_side_imbalance'})
         return volume_tick_imbalance_bars
 
     def get_dollar_tick_imbalance_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_dollar_tick_imbalance_sampled_indices(
+        indices = tools.get_dollar_tick_imbalance_sampled_indices(
             self.trades_formatted['price'],
             self.trades_formatted['size'])
         dollar_tick_imbalance_bars = self._get_bars(indices)
@@ -193,26 +194,26 @@ class MarketData:
         return dollar_tick_imbalance_bars
 
     def get_dollar_trade_side_imbalance_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_dollar_trade_side_imbalance_sampled_indices(
+        indices = tools.get_dollar_trade_side_imbalance_sampled_indices(
             self.trades_formatted)
         dollar_tick_imbalance_bars = self._get_bars(indices)
         dollar_tick_imbalance_bars = dollar_tick_imbalance_bars.rename(columns={'value': 'dollar_trade_side_imbalance'})
         return dollar_tick_imbalance_bars
 
     def get_tick_runs_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_tick_runs_sampled_indices(self.trades_formatted['price'])
+        indices = tools.get_tick_runs_sampled_indices(self.trades_formatted['price'])
         tick_run_bars = self._get_bars(indices)
         tick_run_bars = tick_run_bars.rename(columns={'value': 'tick_runs'})
         return tick_run_bars
 
     def get_trade_side_runs_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_trade_side_runs_sampled_indices(self.trades_formatted['given'])
+        indices = tools.get_trade_side_runs_sampled_indices(self.trades_formatted['given'])
         trade_side_runs_bars = self._get_bars(indices)
         trade_side_runs_bars = trade_side_runs_bars.rename(columns={'value': 'trade_side_runs'})
         return trade_side_runs_bars
 
     def get_volume_tick_runs_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_volume_tick_runs_sampled_indices(
+        indices = tools.get_volume_tick_runs_sampled_indices(
             self.trades_formatted['price'],
             self.trades_formatted['size'])
         volume_tick_runs_bars = self._get_bars(indices)
@@ -220,14 +221,14 @@ class MarketData:
         return volume_tick_runs_bars
 
     def get_volume_trade_side_runs_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_volume_trade_side_runs_sampled_indices(
+        indices = tools.get_volume_trade_side_runs_sampled_indices(
             self.trades_formatted)
         volume_trade_side_runs_bars = self._get_bars(indices)
         volume_trade_side_runs_bars = volume_trade_side_runs_bars.rename(columns={'value': 'volume_trade_side_runs'})
         return volume_trade_side_runs_bars
 
     def get_dollar_tick_runs_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_dollar_tick_runs_sampled_indices(
+        indices = tools.get_dollar_tick_runs_sampled_indices(
             self.trades_formatted['price'],
             self.trades_formatted['size'])
         dollar_tick_runs_bars = self._get_bars(indices)
@@ -235,7 +236,7 @@ class MarketData:
         return dollar_tick_runs_bars
 
     def get_dollar_trade_side_runs_bars(self) -> pd.DataFrame:
-        indices = SimpleMarketMaking.Clean.tools.get_dollar_trade_side_runs_sampled_indices(
+        indices = tools.get_dollar_trade_side_runs_sampled_indices(
             self.trades_formatted)
         dollar_trade_side_imbalance_bars = self._get_bars(indices)
         dollar_trade_side_imbalance_bars = dollar_trade_side_imbalance_bars.rename(
