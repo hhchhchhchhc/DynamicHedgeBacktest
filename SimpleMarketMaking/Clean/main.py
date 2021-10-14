@@ -1,27 +1,54 @@
 import datetime
-import scipy as sp
-import matplotlib as mpl
-import SimpleMarketMaking.Clean.config
-import market_data
 import backtest
+# import scipy as sp
+# import matplotlib as mpl
+# import SimpleMarketMaking.Clean.config
+# import market_data
 # from concurrent.futures import ProcessPoolExecutor
 # import numpy as np
 
 start_time = datetime.datetime.now()
 
-for d in range(22):
-    date = datetime.date(2021, 9, 1) + datetime.timedelta(days=d)
-    date_string = date.strftime('%Y%m%d')
-    my_market_data = market_data.MarketData('XRPUSDT')
-    try:
-        my_market_data.load_formatted_trade_data_from_csv(date)
-        secondly_bars = my_market_data.get_time_bars(1000)
-        secondly_bars.to_csv('C:/Users/Tibor/Data/formatted/secondly/' + date_string + '_Binance_XRPUSDT_trades.csv')
-    except FileNotFoundError as error:
-        print(repr(error))
 
-end_time = datetime.datetime.now()
-print('--- ran in ' + str(end_time - start_time))
+def f(c: int) -> None:
+    print('running c = ' + str("{:,.2f}".format(c)))
+    start_date = datetime.date(2021, 9, 22)
+    number_of_days = 1
+    my_backtest = backtest.Backtest(symbol='XRPUSDT', start_date=start_date, number_of_days=number_of_days, c=c)
+    results = my_backtest.run()
+    print(results)
+    results.to_csv('C:/Users/Tibor/Sandbox/results_' + str("{:,.2f}".format(c)) + '.csv')
+    print('')
+
+
+def main():
+    cs = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+    f(cs[3])
+    # with ProcessPoolExecutor(5) as pool:
+    #     for gamma in gammas:
+    #         pool.submit(f, gamma)
+
+    end_time = datetime.datetime.now()
+    print('--- ran in ' + str(end_time - start_time))
+
+
+if __name__ == '__main__':
+    main()
+
+# for d in range(22):
+#     date = datetime.date(2021, 9, 1) + datetime.timedelta(days=d)
+#     date_string = date.strftime('%Y%m%d')
+#     my_market_data = market_data.MarketData('XRPUSDT')
+#     try:
+#         my_market_data.load_formatted_trade_data_from_csv(date)
+#         secondly_bars = my_market_data.get_time_bars(1000)
+#         secondly_bars.to_csv('C:/Users/Tibor/Data/formatted/secondly/' + date_string + '_Binance_XRPUSDT_trades.csv')
+#     except FileNotFoundError as error:
+#         print(repr(error))
+#
+# end_time = datetime.datetime.now()
+# print('--- ran in ' + str(end_time - start_time))
+
 
 # for d in range(22):
 #     date = datetime.date(2021, 9, 1) + datetime.timedelta(days=d)
@@ -39,30 +66,6 @@ print('--- ran in ' + str(end_time - start_time))
 #     except FileNotFoundError as error:
 #         print(repr(error))
 #
-# def f(gamma: float) -> None:
-#     print('running gamma = ' + str("{:,.2f}".format(gamma)))
-#     start_date = datetime.date(2021, 9, 2)
-#     number_of_days = 10
-#     my_backtest = backtest.Backtest(symbol='BTCUSDT', start_date=start_date, number_of_days=number_of_days, k=0.02, gamma=gamma, horizon=60)
-#     results = my_backtest.run()
-#     print(results)
-#     results.to_csv('C:/Users/Tibor/Sandbox/results_' + str("{:,.2f}".format(gamma)) + '.csv')
-#
-#
-# def main():
-#     gammas = np.arange(0.01, 0.11, 0.01)
-#     f(gammas[0])
-#     # with ProcessPoolExecutor(5) as pool:
-#     #     for gamma in gammas:
-#     #         pool.submit(f, gamma)
-#
-#     end_time = datetime.datetime.now()
-#     print('--- ran in ' + str(end_time - start_time))
-#
-#
-# if __name__ == '__main__':
-#     main()
-
 
 
 # look_backs = range(1, 6)
