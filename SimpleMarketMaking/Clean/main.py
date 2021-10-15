@@ -4,29 +4,28 @@ import backtest
 # import matplotlib as mpl
 # import SimpleMarketMaking.Clean.config
 # import market_data
-# from concurrent.futures import ProcessPoolExecutor
-# import numpy as np
+from concurrent.futures import ProcessPoolExecutor
+import numpy as np
 
 start_time = datetime.datetime.now()
 
 
-def f(c: int) -> None:
-    print('running c = ' + str("{:,.2f}".format(c)))
-    start_date = datetime.date(2021, 9, 22)
+def f(phi: float) -> None:
+    print('running c = ' + str("{:,.2f}".format(phi)))
+    start_date = datetime.date(2021, 9, 21)
     number_of_days = 1
-    my_backtest = backtest.Backtest(symbol='XRPUSDT', start_date=start_date, number_of_days=number_of_days, c=c)
-    results = my_backtest.run()
-    print(results)
-    results.to_csv('C:/Users/Tibor/Sandbox/results_' + str("{:,.2f}".format(c)) + '.csv')
-    print('')
+    my_backtest = backtest.Backtest(symbol='XRPUSDT', start_date=start_date, number_of_days=number_of_days, phi=phi)
+    results, summary = my_backtest.run()
+    results.to_csv('/Users/rahmanw/Dev/Puffin/SimpleMarketMaking/Clean/output/results_0921_phi_farm_max_pos_100_quote_10' + str("{:,.2f}".format(phi)) + '.csv', index=False)
+    summary.to_csv('/Users/rahmanw/Dev/Puffin/SimpleMarketMaking/Clean/output/summary_0921_phi_farm_max_pos_100_quote_10' + str("{:,.2f}".format(phi)) + '.csv', index=False)
 
 
 def main():
-    cs = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
-    f(cs[3])
-    # with ProcessPoolExecutor(5) as pool:
-    #     for gamma in gammas:
-    #         pool.submit(f, gamma)
+    phis = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+    #phis = np.arange(0.1,10,0.1)
+    with ProcessPoolExecutor(5) as pool:
+        for phi in phis:
+            pool.submit(f, phi)
 
     end_time = datetime.datetime.now()
     print('--- ran in ' + str(end_time - start_time))

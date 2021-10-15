@@ -3,7 +3,7 @@ import random
 import numpy as np
 import pandas as pd
 import tools
-
+from typing import Tuple
 
 class Backtest:
     def _get_tobs_from_csvs(self, start_date: datetime.date, number_of_days: int) -> pd.DataFrame:
@@ -12,7 +12,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             tob = pd.read_csv(
-                'C:/Users/Tibor/Data/formatted/tobs/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
+                '/Users/rahmanw/Dev/Puffin/SimpleMarketMaking/Clean/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
             tobs = tobs.append(tob)
         return tobs
 
@@ -22,13 +22,13 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             trade = pd.read_csv(
-                'C:/Users/Tibor/Data/formatted/trades/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
+                '/Users/rahmanw/Dev/Puffin/SimpleMarketMaking/Clean/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
             trades = trades.append(trade)
         return trades
 
-    def __init__(self, symbol: str, start_date: datetime.date, number_of_days: int, c: int) -> None:
+    def __init__(self, symbol: str, start_date: datetime.date, number_of_days: int, phi: int) -> None:
         self.symbol = symbol
-        self.c = c
+        self.phi = phi
         self.horizon = 60
         self.tobs = self._get_tobs_from_csvs(start_date, number_of_days)
         self.trades = self._get_trades_from_csvs(start_date, number_of_days)
@@ -66,7 +66,7 @@ class Backtest:
         self.cumulative_volume = 0
         self.cumulative_volume_dollar = 0
 
-    def run(self) -> pd.DataFrame:
+    def run(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         trades_index = 0
         tobs_index = 0
         trades_n = len(self.trades.index)
@@ -111,7 +111,9 @@ class Backtest:
             map(lambda x: None if x is None else x * self.tick_size, self.backtest_skews))
         backtest_results['sigma'] = list(
             map(lambda x: None if x is None else x * self.tick_size, self.backtest_sigmas))
-        return backtest_results
+        
+        summary_stats = self._generate_summary_statistics(backtest_results)
+        return backtest_results, summary_stats
 
     def _trade_event(self, trade: pd.Series) -> None:
         if self.time_bar_start_timestamp is None:
@@ -144,9 +146,9 @@ class Backtest:
             if len(self.vwap_buffer) >= self.horizon:
                 self.sigma = np.diff(self.vwap_buffer).std()
             if self.sigma is not None:
-                self.skew = (self.c * (self.sigma * self.tick_size) * self.position / (
+                self.skew = (self.phi * (self.sigma * self.tick_size) * self.position / (
                     self.max_position)) / self.tick_size
-                self.spread = self.c * self.sigma
+                self.spread = self.phi * self.sigma
                 self.bid = int(vwap - (self.spread / 2) - self.skew)
                 self.ask = int(vwap + (self.spread / 2) - self.skew)
                 if self.bid is not None and self.market_ask is not None and self.bid >= self.market_ask:
@@ -207,3 +209,31 @@ class Backtest:
         self.cumulative_volume_dollar = self.cumulative_volume_dollar + sum(self.volume_traded_dollar_buffer)
         self.backtest_cumulative_volume_dollars.append(self.cumulative_volume_dollar)
         self.volume_traded_dollar_buffer = []
+
+    def _generate_summary_statistics(self, backtest: pd.DataFrame) -> pd.DataFrame:
+        last_row = backtest.iloc[-1]
+        pnl_yield = last_row.pnl/last_row.cumulative_volume_dollar
+        max_dd_dollars, max_dd_percentage = self._get_max_drawdown(backtest)
+        sharpe_zero_risk_free = self._get_annualised_sharpe(backtest, risk_free_rate = 0)
+        summary = pd.DataFrame({'yield':pnl_yield, 
+            'max_drawdown_dollars': max_dd_dollars, 'max_drawdown_percentage': max_dd_percentage,
+            'sharpe_zero_risk_free': sharpe_zero_risk_free}, index=[0])
+        return summary
+
+
+    def _get_max_drawdown(self, backtest: pd.DataFrame) -> Tuple[float, float]:
+        idx = backtest[backtest.pnl == min(backtest.pnl)].index[0]
+        data_window = backtest.head(idx)
+        peak = max(data_window.pnl)
+        trough = min(backtest.pnl)
+        maxdd_dollars = (peak - trough)
+        maxdd_percentage = (maxdd_dollars/peak)*100
+        return maxdd_dollars, maxdd_percentage
+
+    def _get_annualised_sharpe(self, backtest: pd.DataFrame, risk_free_rate: float) -> float:
+        returns = np.log(backtest.pnl/ backtest.pnl.shift(1))
+        returns = returns[np.isfinite(returns)]
+        vol = returns.dropna().std()#*np.sqrt(365.25*24*60*60)
+        sharpe = (returns.mean() - risk_free_rate)/vol
+        annual_sharpe = sharpe*np.sqrt(365.25*24*60*60)
+        return sharpe
