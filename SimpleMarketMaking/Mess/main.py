@@ -6,6 +6,8 @@ start_time = datetime.datetime.now()
 # tools.s3_download_directory('C:/Users/Tibor/Sandbox', 'binance-historical', 'USDTvsBUSD-20210908-to-20210916')
 
 
+# new comment
+
 # for parameter in [0]:
 #     parameter_name = 'no_param'
 #     my_backtest = backtest.Backtest(None)
