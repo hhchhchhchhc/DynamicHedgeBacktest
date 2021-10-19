@@ -67,7 +67,7 @@ def _get_imbalance_sampled_indices(b: pd.Series) -> pd.DataFrame:
     ema_t = t
     ema_imbalance = np.abs(b.head(t).mean())
     threshold = ema_t * ema_imbalance
-    ema_memory_weight = 0.5
+    ema_memory_weight: float = 0.5
     indices = []
     values = []
     bar_start_index = t
@@ -106,7 +106,7 @@ def get_tick_imbalance_sampled_indices(prices: pd.Series) -> pd.DataFrame:
 
 
 def _get_ticks(prices: pd.Series) -> pd.Series:
-    b = [np.nan]
+    b: list[float] = [np.nan]
     for i in range(1, len(prices)):
         delta_price = prices.iloc[i] - prices.iloc[i - 1]
         new_b = b[-1]

@@ -1,10 +1,8 @@
 import datetime
-
 import numpy as np
 import pandas as pd
 import tools
 import config as con
-import pyarrow.parquet as pq
 
 
 class MarketData:
@@ -19,16 +17,16 @@ class MarketData:
         symbol_id: int = tools.get_id_from_symbol(self.symbol)
         symbol_id_string = str(symbol_id)
         date_string = date.strftime('%Y%m%d')
-        self.top_of_book_raw = pq.read_table(con.source_directory + 'raw/parquet/' +
-                                             date_string + '_' + symbol_id_string + '_tob.parquet').to_pandas()
+        self.top_of_book_raw = pd.read_parquet(con.source_directory + 'raw/parquet/' +
+                                               date_string + '_' + symbol_id_string + '_tob.parquet')
 
     def load_trade_data_from_parquet(self, date: datetime.date) -> None:
         symbol_id: int = tools.get_id_from_symbol(self.symbol)
         symbol_id_string = str(symbol_id)
         date_string = date.strftime('%Y%m%d')
-        self.trades_raw = pq.read_table(
-                con.source_directory + 'raw/parquet/' + date_string
-                + '_' + symbol_id_string + '_trade.parquet').to_pandas()
+        self.trades_raw = pd.read_parquet(
+            con.source_directory + 'raw/parquet/' + date_string
+            + '_' + symbol_id_string + '_trade.parquet')
 
     def load_formatted_trade_data_from_csv(self, date: datetime.date) -> None:
         date_string = date.strftime('%Y%m%d')

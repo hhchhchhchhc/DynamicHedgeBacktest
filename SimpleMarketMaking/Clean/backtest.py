@@ -5,6 +5,36 @@ import pandas as pd
 import tools
 from typing import Tuple
 
+
+def _get_annualised_sharpe(backtest: pd.DataFrame, risk_free_rate: float) -> float:
+    returns = np.log(backtest.pnl / backtest.pnl.shift(1))
+    returns = returns[np.isfinite(returns)]
+    vol = returns.dropna().std()
+    sharpe = (returns.mean() - risk_free_rate) / vol
+    return sharpe
+
+
+def _get_max_drawdown(backtest: pd.DataFrame) -> Tuple[float, float]:
+    idx = backtest[backtest.pnl == min(backtest.pnl)].index[0]
+    data_window = backtest.head(idx)
+    peak = max(data_window.pnl)
+    trough = min(backtest.pnl)
+    maxdd_dollars = (peak - trough)
+    maxdd_percentage = (maxdd_dollars / peak) * 100
+    return maxdd_dollars, maxdd_percentage
+
+
+def _generate_summary_statistics(backtest: pd.DataFrame) -> pd.DataFrame:
+    last_row = backtest.iloc[-1]
+    pnl_yield = last_row.pnl / last_row.cumulative_volume_dollar
+    max_dd_dollars, max_dd_percentage = _get_max_drawdown(backtest)
+    sharpe_zero_risk_free = _get_annualised_sharpe(backtest, risk_free_rate=0)
+    summary = pd.DataFrame({'yield': pnl_yield,
+                            'max_drawdown_dollars': max_dd_dollars, 'max_drawdown_percentage': max_dd_percentage,
+                            'sharpe_zero_risk_free': sharpe_zero_risk_free}, index=[0])
+    return summary
+
+
 class Backtest:
     def _get_tobs_from_csvs(self, start_date: datetime.date, number_of_days: int) -> pd.DataFrame:
         tobs = pd.DataFrame()
@@ -12,7 +42,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             tob = pd.read_csv(
-                '/Users/rahmanw/Dev/Puffin/SimpleMarketMaking/Clean/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
+                'C:/Users/Tibor/Data/formatted/tobs/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
             tobs = tobs.append(tob)
         return tobs
 
@@ -22,11 +52,11 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             trade = pd.read_csv(
-                '/Users/rahmanw/Dev/Puffin/SimpleMarketMaking/Clean/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
+                'C:/Users/Tibor/Data/formatted/trades/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
             trades = trades.append(trade)
         return trades
 
-    def __init__(self, symbol: str, start_date: datetime.date, number_of_days: int, phi: int) -> None:
+    def __init__(self, symbol: str, start_date: datetime.date, number_of_days: int, phi: float) -> None:
         self.symbol = symbol
         self.phi = phi
         self.horizon = 60
@@ -111,8 +141,8 @@ class Backtest:
             map(lambda x: None if x is None else x * self.tick_size, self.backtest_skews))
         backtest_results['sigma'] = list(
             map(lambda x: None if x is None else x * self.tick_size, self.backtest_sigmas))
-        
-        summary_stats = self._generate_summary_statistics(backtest_results)
+
+        summary_stats = _generate_summary_statistics(backtest_results)
         return backtest_results, summary_stats
 
     def _trade_event(self, trade: pd.Series) -> None:
@@ -149,8 +179,12 @@ class Backtest:
                 self.skew = (self.phi * (self.sigma * self.tick_size) * self.position / (
                     self.max_position)) / self.tick_size
                 self.spread = self.phi * self.sigma
-                self.bid = int(vwap - (self.spread / 2) - self.skew)
-                self.ask = int(vwap + (self.spread / 2) - self.skew)
+                if self.skew > 0:
+                    self.bid = int(vwap - (self.spread / 2) - self.skew)
+                    self.ask = int(vwap + (self.spread / 2))
+                else:
+                    self.bid = int(vwap - (self.spread / 2))
+                    self.ask = int(vwap + (self.spread / 2) - self.skew)
                 if self.bid is not None and self.market_ask is not None and self.bid >= self.market_ask:
                     self._aggressive_buy()
                 if self.ask is not None and self.market_bid is not None and self.ask <= self.market_bid:
@@ -160,35 +194,29 @@ class Backtest:
         self._record_backtest_results()
 
     def _passive_buy(self) -> None:
-        quote_size = self.quote_size
-        self.cash = self.cash - (quote_size * self.bid)
-        self.position = self.position + quote_size
-        self.volume_traded_buffer.append(quote_size)
-        self.volume_traded_dollar_buffer.append(quote_size * self.bid)
+        self._buy(self.bid)
+
+    def _aggressive_buy(self) -> None:
+        self._buy(self.market_ask)
+
+    def _buy(self, price: int) -> None:
+        self.cash = self.cash - (self.quote_size * price)
+        self.position = self.position + self.quote_size
+        self.volume_traded_buffer.append(self.quote_size)
+        self.volume_traded_dollar_buffer.append(self.quote_size * price)
         self.bid = None
 
     def _passive_sell(self) -> None:
-        quote_size = self.quote_size
-        self.cash = self.cash + (quote_size * self.ask)
-        self.position = self.position - quote_size
-        self.volume_traded_buffer.append(quote_size)
-        self.volume_traded_dollar_buffer.append(quote_size * self.ask)
-        self.ask = None
-
-    def _aggressive_buy(self) -> None:
-        quote_size = self.quote_size
-        self.cash = self.cash - (quote_size * self.market_ask)
-        self.position = self.position + quote_size
-        self.volume_traded_buffer.append(quote_size)
-        self.volume_traded_dollar_buffer.append(quote_size * self.market_ask)
-        self.bid = None
+        self._sell(self.ask)
 
     def _aggressive_sell(self) -> None:
-        quote_size = self.quote_size
-        self.cash = self.cash + (quote_size * self.market_bid)
-        self.position = self.position - quote_size
-        self.volume_traded_buffer.append(quote_size)
-        self.volume_traded_dollar_buffer.append(quote_size * self.market_bid)
+        self._sell(self.market_bid)
+
+    def _sell(self, price):
+        self.cash = self.cash + (self.quote_size * price)
+        self.position = self.position - self.quote_size
+        self.volume_traded_buffer.append(self.quote_size)
+        self.volume_traded_dollar_buffer.append(self.quote_size * price)
         self.ask = None
 
     def _record_backtest_results(self) -> None:
@@ -209,31 +237,3 @@ class Backtest:
         self.cumulative_volume_dollar = self.cumulative_volume_dollar + sum(self.volume_traded_dollar_buffer)
         self.backtest_cumulative_volume_dollars.append(self.cumulative_volume_dollar)
         self.volume_traded_dollar_buffer = []
-
-    def _generate_summary_statistics(self, backtest: pd.DataFrame) -> pd.DataFrame:
-        last_row = backtest.iloc[-1]
-        pnl_yield = last_row.pnl/last_row.cumulative_volume_dollar
-        max_dd_dollars, max_dd_percentage = self._get_max_drawdown(backtest)
-        sharpe_zero_risk_free = self._get_annualised_sharpe(backtest, risk_free_rate = 0)
-        summary = pd.DataFrame({'yield':pnl_yield, 
-            'max_drawdown_dollars': max_dd_dollars, 'max_drawdown_percentage': max_dd_percentage,
-            'sharpe_zero_risk_free': sharpe_zero_risk_free}, index=[0])
-        return summary
-
-
-    def _get_max_drawdown(self, backtest: pd.DataFrame) -> Tuple[float, float]:
-        idx = backtest[backtest.pnl == min(backtest.pnl)].index[0]
-        data_window = backtest.head(idx)
-        peak = max(data_window.pnl)
-        trough = min(backtest.pnl)
-        maxdd_dollars = (peak - trough)
-        maxdd_percentage = (maxdd_dollars/peak)*100
-        return maxdd_dollars, maxdd_percentage
-
-    def _get_annualised_sharpe(self, backtest: pd.DataFrame, risk_free_rate: float) -> float:
-        returns = np.log(backtest.pnl/ backtest.pnl.shift(1))
-        returns = returns[np.isfinite(returns)]
-        vol = returns.dropna().std()#*np.sqrt(365.25*24*60*60)
-        sharpe = (returns.mean() - risk_free_rate)/vol
-        annual_sharpe = sharpe*np.sqrt(365.25*24*60*60)
-        return sharpe
