@@ -1,3 +1,5 @@
+import pandas as pd
+
 from ftx_utilities import *
 from ftx_history import *
 from ftx_ftx import *
@@ -30,42 +32,41 @@ def enricher(exchange,futures):
     return futures
 
 def basis_scanner(exchange,futures,hy_history,point_in_time='live', depths=[0],
-                  holding_period_slippage_assumption=timedelta(days=3),
+                  holding_period__for_slippage=timedelta(days=3),
                   signal_horizon=timedelta(days=3),
                   slippage_scaler=0.25,
                   params={'naive':True, 'history':True}):###perps assumed held 1 w for slippage calc
     borrows = fetch_coin_details(exchange)
     markets = exchange.fetch_markets()
 
+    #-----------------  screening --------------
     ### only if active and  spot trades
     futures=futures[(futures['enabled']==True)&(futures['type']!="move")]
     futures['spot_ticker'] = futures.apply(lambda x: str(find_spot_ticker(markets, x, 'name')), axis=1)
     futures=futures[futures.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)>0.0] #### only if spot trades
-
     #### need borrow to be present
     futures = futures[futures['borrow']>=-999]
 
-    ########### naive basis for all futures: point in time
+    #-----------------naive basis for all futures, point in time --------
     if point_in_time!='live':
         futures['mark'] = futures['name'].apply(lambda f: hy_history.loc[point_in_time,  f + '/mark/c'])
         futures['index'] = futures['name'].apply(lambda f: hy_history.loc[point_in_time, f + '/indexes/close'])
         futures['last'] = futures['name'].apply(lambda f: hy_history.loc[point_in_time, f + '/spot/c'])
-        futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
-            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], point_in_time), axis=1)
         futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures.loc[futures['type'] == 'perpetual','name'].apply(
             lambda f: hy_history.loc[point_in_time, f + '/rate/funding'] * 24 * 365.25)
     else:
         point_in_time=datetime.now()
-        futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
-            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], point_in_time), axis=1)
         futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
             lambda f: float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate']) * 24 * 365.25,axis=1)
 
     futures['expiryTime']=futures.apply(lambda x:
-        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else point_in_time+holding_period_slippage_assumption,axis=1)#.replace(tzinfo=timezone.utc)
+        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else point_in_time+holding_period__for_slippage,axis=1)#.replace(tzinfo=timezone.utc)
+    futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
+        lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], point_in_time), axis=1)
 
-    ############ add slippage, fees and speed (as of now, not point in time0
-    fees=(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker'])/2
+    #-------------------- transaction costs---------------
+    ############ add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
+    fees=2*(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker'])/2
     for size in depths:
         ### relative semi-spreads incl fees, and speed
         if size==0:
@@ -90,11 +91,13 @@ def basis_scanner(exchange,futures,hy_history,point_in_time='live', depths=[0],
             (f['future_ask_in_' + str(size)] - f['spot_bid_in_' + str(size)]) \
             / np.max([1, (f['expiryTime'] - point_in_time).seconds * 365.25*24*3600]),axis=1)
 
+    # -------------------- carry EWMA ---------------
+    #### also stdev but not used, covar with the right coefs later.
+
+    ### EMWA for borrow
     perps=futures[futures['type'] == 'perpetual']
     if (perps.index.empty == False)&(params['history']==True):
-        ### EMA for basis
-
-        gamma = 1.0 / signal_horizon.total_seconds()
+        gamma = np.log(2) / signal_horizon.total_seconds()
         exp_time = pd.Series(index=hy_history.index,
                              data=[np.exp(gamma * (t.timestamp() - datetime.now(tz=timezone.utc).timestamp())) for t in
                                    hy_history.index])
@@ -111,7 +114,7 @@ def basis_scanner(exchange,futures,hy_history,point_in_time='live', depths=[0],
         IMM['stdevBasis']=0
     futures = pd.concat([perps, IMM], join='outer', axis=0)
 
-    ### EMA for borrow
+    ### EMWA for borrow
     futures['avgBorrow'] = futures.apply(
         lambda h: (hy_history[h['underlying']+'/rate/borrow']
                    * exp_time).sum() / exp_time.sum(), axis=1)
@@ -123,11 +126,11 @@ def basis_scanner(exchange,futures,hy_history,point_in_time='live', depths=[0],
     stdUSDborrow = (np.power(hy_history['USD/rate/borrow']-avgUSDborrow,2)
                * exp_time).sum() / exp_time.sum()
 
-    #### finally, adjust for fees, slippage, funding and collateral cost
+    #-------------- max weight under margin constraint--------------
+
+    #### IM calc
     account_leverage=exchange.privateGetAccount()['result']
-
     if float(account_leverage['leverage']) >= 50: print("margin rules not implemented for leverage >=50")
-
     dummy_size=10000 ## IM is in ^3/2 not linear, but rule typically kicks in at a few M for optimal leverage of 20 so we linearize
     futures['futIM']=(futures['imfFactor']*np.sqrt(dummy_size/futures['mark'])).clip(lower=1/float(account_leverage['leverage']))
 
@@ -135,16 +138,27 @@ def basis_scanner(exchange,futures,hy_history,point_in_time='live', depths=[0],
     ### we do assume that we are net short USD, so shorts generate usd borrow offset
     futures['adjLongCarry'] = (futures['avgBasis']+futures['bid_rate_slippage_in_' + str(size)] - avgUSDborrow)
     futures['adjShortCarry'] = (futures['avgBasis']+futures['ask_rate_slippage_in_' + str(size)] + futures['avgBorrow'] - avgUSDborrow)
-    futures['xccyBasis']=0
-    futures.loc[futures['adjLongCarry']>0,'xccyBasis'] = futures.loc[futures['adjLongCarry']>0,'adjLongCarry']
-    futures.loc[futures['adjShortCarry']< 0, 'xccyBasis'] = -futures.loc[futures['adjShortCarry'] < 0, 'adjShortCarry']
-    futures['maxPos']=0
-    futures.loc[futures['adjLongCarry']>0,'maxPos'] = 1/(1+
+    futures['avgCarry']=0
+    futures.loc[futures['adjLongCarry']>0,'avgCarry'] = futures.loc[futures['adjLongCarry']>0,'adjLongCarry']
+    futures.loc[futures['adjShortCarry']< 0, 'avgCarry'] = -futures.loc[futures['adjShortCarry'] < 0, 'adjShortCarry']
+    futures['maxWeight']=0
+    futures.loc[futures['adjLongCarry']>0,'maxWeight'] = 1/(1+
                                                          (futures.loc[futures['adjLongCarry']>0,'futIM']
                                                          -futures.loc[futures['adjLongCarry']>0,'collateralWeight'])/1.1)
-    futures.loc[futures['adjShortCarry']< 0,'maxPos'] = -1/(futures.loc[futures['adjShortCarry']<0,'futIM']
+    futures.loc[futures['adjShortCarry']< 0,'maxWeight'] = -1/(futures.loc[futures['adjShortCarry']<0,'futIM']
                                                           +1.1/(0.05+futures.loc[futures['adjShortCarry']<0,'collateralWeight'])-1)
-    futures['maxCarry'] = np.abs(futures['maxPos'])*futures['xccyBasis']
+    futures['maxCarry'] = np.abs(futures['maxWeight'])*futures['avgCarry']
+
+    #---------- compute covariance
+    carry_processes=pd.concat(
+            [h['maxWeight']*
+            (hy_history[h['name']+'/rate/funding']-hy_history['USD/rate/borrow']+
+            (hy_history[h['underlying']+'/rate/borrow'] if h['maxWeight']<0 else 0))
+          for h in futures],
+        axis=1,columns= [h['name'] for h in futures])
+
+    avgCarry = pd.ewma(carry_processes,halflife=signal_horizon.total_seconds())
+    covCarry = pd.ewmcov(carry_processes,halflife=signal_horizon.total_seconds())
 
     return futures
 
