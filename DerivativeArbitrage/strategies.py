@@ -76,11 +76,11 @@ if True:
         (enriched['expired'] == False)
         & (enriched['funding_volume'] * enriched['mark'] > 1e4)
         & (enriched['volumeUsd24h'] > 1e5)
-        & (enriched['tokenizedEquity']!=True)]
+        & (enriched['tokenizedEquity']!=True)
+        & (enriched['type']=='perpetual')]
 
     #### get history ( this is sloooow)
-    hy_history = pd.concat([perp_rate_history(pre_filtered[pre_filtered['type']=='perpetual'],exchange),
-                            fine_history(pre_filtered[pre_filtered['type']=='future'],exchange)],axis=1)
+    hy_history = build_history(pre_filtered,exchange)
 
     scanned=basis_scanner(exchange,pre_filtered,hy_history,depths=[0],slippage_scaler=0.5)
     print(scanned[['symbol','maxPos','maxCarry']])

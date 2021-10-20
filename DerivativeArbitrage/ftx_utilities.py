@@ -1,5 +1,6 @@
 import os
 import pickle
+import openpyxl
 import dateutil
 from datetime import datetime,timezone,timedelta,date
 import ccxt
@@ -97,6 +98,17 @@ def open_exchange(exchange_name):
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
     return  exchange
+
+
+def optional_debug_info(datatype,exchange = "ftx", params={}):
+    if  params['pickleit']:
+        pickleit(data,"C:/Users/david/Dropbox/mobilier/crypto/"+exchange + datatype +".pickle","wb")
+    if params['excelit']:
+        try:
+            data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange + datatype + ".xlsx")
+        except:###usually because file is open
+            data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange + datatype + "copy.xlsx")
+    return None
 
 #a=openit('ftxStopout.pickle')
 #outputit(a,'ftx','ftxstopout',params={'pickleit':False,'excelit':True})
