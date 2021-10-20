@@ -1,21 +1,6 @@
-# -*- coding: utf-8 -*-
-import numpy as np
-import pandas as pd
-import os
-import sys
 from ftx_utilities import *
 from ftx_history import *
 from ftx_ftx import *
-
-root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(root + '/python')
-
-import ccxt  # noqa: E402
-from datetime import datetime,timezone,timedelta,date
-import time
-import pickle
-
-print('CCXT Version:', ccxt.__version__)
 
 def enricher(exchange,futures):
     coin_details=pd.DataFrame(exchange.publicGetWalletCoins()['result'],dtype=float).set_index('id')

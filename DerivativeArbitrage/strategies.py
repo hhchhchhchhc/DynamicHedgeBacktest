@@ -77,9 +77,10 @@ def strategy2():
     max_nb_coins = 10
     carry_floor = 0.4
     slippage_scaler=0.5
-    slippage_for_size=0
+    slippage_orderbook_depth=0
     signal_horizon=timedelta(days=3)
-    backtest_window=timedelta(days=3)
+    backtest_window=timedelta(days=180)
+    holding_period_slippage_assumption=timedelta(days=3)
 
     enriched=enricher(exchange, futures)
     pre_filtered = enriched[
@@ -92,14 +93,22 @@ def strategy2():
     #### get history ( this is sloooow)
     try:
         hy_history = from_parquet("history.parquet")
+        existing_futures = [name.split('/')[0] for name in hy_history.columns]
+        new_futures = pre_filtered[pre_filtered['symbol'].isin(existing_futures)==False]
+        if new_futures.empty==False:
+            hy_history=pd.concat([hy_history,
+                    build_history(new_futures,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)],
+                    join='outer',axis=1)
+            to_parquet(hy_history, "history.parquet")
         asofdate = np.max(hy_history.index)
     except:
-        hy_history = build_history(pre_filtered,exchange)
+        asofdate = datetime.today()
+        hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
         to_parquet(hy_history,"history.parquet")
 
-    scanned=basis_scanner(exchange,pre_filtered,hy_history,
-                            depths=[slippage_for_size],slippage_scaler=slippage_scaler,
-                            holding_period_slippage_assumption = backtest_window,
+    scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=asofdate,
+                            depths=[slippage_orderbook_depth],slippage_scaler=slippage_scaler,
+                            holding_period_slippage_assumption = holding_period_slippage_assumption,
                             signal_horizon=signal_horizon).sort_values(by='maxCarry')
     print(scanned[['symbol','maxPos','maxCarry']])
     scanned=scanned[scanned['maxCarry']>carry_floor].tail(max_nb_coins)
@@ -107,7 +116,10 @@ def strategy2():
 
     #    sns.histplot(data=pd.DataFrame([(a.loc[1:,'BTC-PERP/mark/c']-a.loc[:-2,'BTC-PERP/mark/c']),a['BTC-PERP/rate/c'],a['BTC-PERP/rate/h']-a['BTC-PERP/rate/c'],a['BTC-PERP/rate/l']-a['BTC-PERP/rate/c']]))
     outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
-    outputit(static_backtest.describe([.1, .5, .9]).T,'backtest','ftx',{'excelit':True,'pickleit':False})
+    outputit(static_backtest.T.describe([.1, .5, .9]).T*24*365.25,'backtest','ftx',{'excelit':True,'pickleit':False})
 
 
 strategy2()
+
+#hy_history = from_parquet("fullhistory.parquet")
+hy_history=[]

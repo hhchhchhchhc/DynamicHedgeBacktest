@@ -1,13 +1,16 @@
 import os
+
+import ccxt
+import numpy as np
+import pandas as pd
 import pickle
+#import s3
 import pyarrow as pa
 import pyarrow.parquet as pq
-import openpyxl
-import dateutil
+
 from datetime import datetime,timezone,timedelta,date
-import ccxt
-import pandas as pd
-import numpy as np
+import dateutil
+
 
 os.chdir('C:\\Users\\david\\Dropbox\\mobilier\\crypto')
 
@@ -122,3 +125,5 @@ def optional_debug_info(datatype,exchange = "ftx", params={}):
 #a=openit('ftxStopout.pickle')
 #outputit(a,'ftx','ftxstopout',params={'pickleit':False,'excelit':True})
 #a.columns
+
+#sd=from_parquet("history.parquet")

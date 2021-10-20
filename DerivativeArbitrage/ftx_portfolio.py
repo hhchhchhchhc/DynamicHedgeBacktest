@@ -1,20 +1,6 @@
 # -*- coding: utf-8 -*-
-import numpy as np
-import pandas as pd
-import numpy
-import os
-import sys
 from ftx_utilities import *
 from ftx_ftx import *
-
-root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(root + '/python')
-
-import ccxt  # noqa: E402
-from datetime import datetime,timezone,timedelta,date
-#import time
-import pickle
-import dateutil
 
 ### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
 ### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl

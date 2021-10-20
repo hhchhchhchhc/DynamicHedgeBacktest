@@ -54,5 +54,5 @@ def hack_reader(f = r'C:\Users\david\Dropbox\mobilier\crypto\archived data\ftx\2
             print(t)
 
 # example:
-s3_download_directory('C:/Users/david/Dropbox/mobilier/crypto/archived data/ftx', 'gof.crypto.shared', 'ftx20211017')
-s3_upload_file()
+#s3_download_directory('C:/Users/david/Dropbox/mobilier/crypto/archived data/ftx', 'gof.crypto.shared', 'ftx20211017')
+#s3_upload_file()
