@@ -70,15 +70,22 @@ def strategy1(nb_pos=1,account_equity=10000,params={'type':'perpetual','excelit'
 if True:
     exchange=open_exchange('ftx')
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
-    scanner=basis_scanner(exchange,futures,depths=[0],slippage_scaler=0)
-    filtered = scanner[
-        ((scanner['type']=='perpetual')|(scanner['type']=='future'))
-        &(scanner['expired']==False)
-        &(scanner['funding_volume']*scanner['mark']>1e4)
-        &(scanner['volumeUsd24h']>1e5)
-        &(scanner['maxCarry']>0.4)]
-    print(scanner[['symbol','maxPos','maxCarry']])
-    a = fine_history(filtered,exchange,'15s',start=datetime.strptime('Oct 26 2019', '%b %d %Y'),params={'excelit':False,'pickleit':True}) ## critical size 26 oct 19 (2019,42,6)
+
+    enriched=enricher(exchange, futures)
+    pre_filtered = enriched[
+        (enriched['expired'] == False)
+        & (enriched['funding_volume'] * enriched['mark'] > 1e4)
+        & (enriched['volumeUsd24h'] > 1e5)
+        & (enriched['tokenizedEquity']!=True)]
+
+    #### get history ( this is sloooow)
+    hy_history = pd.concat([perp_rate_history(pre_filtered[pre_filtered['type']=='perpetual'],exchange),
+                            fine_history(pre_filtered[pre_filtered['type']=='future'],exchange)],axis=1)
+
+    scanned=basis_scanner(exchange,pre_filtered,hy_history,depths=[0],slippage_scaler=0.5)
+    print(scanned[['symbol','maxPos','maxCarry']])
+    backtest = max_leverage_carry(scanned,hy_history)
+    #a = fine_history(filtered,exchange,'1h',start=datetime.strptime('Oct 19 2021', '%b %d %Y'),params={'excelit':False,'pickleit':True}) ## critical size 26 oct 19 (2019,42,6)
     #    sns.histplot(data=pd.DataFrame([(a.loc[1:,'BTC-PERP/mark/c']-a.loc[:-2,'BTC-PERP/mark/c']),a['BTC-PERP/rate/c'],a['BTC-PERP/rate/h']-a['BTC-PERP/rate/c'],a['BTC-PERP/rate/l']-a['BTC-PERP/rate/c']]))
-    outputit(scanner,'maxCarry','ftx',{'excelit':True,'pickleit':False})
-    outputit(a,      'stopout','ftx',{'excelit':False,'pickleit':True})
+    outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
+    outputit(backtest,'backtest','ftx',{'excelit':True,'pickleit':False})

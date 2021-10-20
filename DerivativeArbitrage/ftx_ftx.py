@@ -64,7 +64,7 @@ def fetch_my_borrows(exchange,coin,params={}):
     return response['result']
 
 def fetch_coin_details(exchange):
-    coin_details=pd.DataFrame(exchange.privateGetWalletCoins()['result']).astype(dtype={'collateralWeight': 'float','indexPrice': 'float'}).set_index('id')
+    coin_details=pd.DataFrame(exchange.publicGetWalletCoins()['result']).astype(dtype={'collateralWeight': 'float','indexPrice': 'float'}).set_index('id')
 
     borrow_rates = pd.DataFrame(exchange.private_get_spot_margin_borrow_rates()['result']).astype(dtype={'coin': 'str', 'estimate': 'float', 'previous': 'float'}).set_index('coin')[['estimate']]
     borrow_rates[['estimate']]*=24*365.25
@@ -74,7 +74,7 @@ def fetch_coin_details(exchange):
     lending_rates[['estimate']] *= 24 * 365.25
     lending_rates.rename(columns={'estimate': 'lend'}, inplace=True)
 
-    borrow_volumes = pd.DataFrame(exchange.private_get_spot_margin_borrow_summary()['result']).astype(dtype={'coin': 'str', 'size': 'float'}).set_index('coin')
+    borrow_volumes = pd.DataFrame(exchange.public_get_spot_margin_borrow_summary()['result']).astype(dtype={'coin': 'str', 'size': 'float'}).set_index('coin')
     borrow_volumes.rename(columns={'size': 'funding_volume'}, inplace=True)
 
     all= pd.concat([coin_details,borrow_rates,lending_rates,borrow_volumes],join='outer',axis=1)
@@ -100,7 +100,10 @@ def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}):
         'end_time': end_time
     }
 
-    response = exchange.publicGetSpotMarginHistory(exchange.extend(request, params))
+    try:
+        response = exchange.publicGetSpotMarginHistory(exchange.extend(request, params))
+    except:
+        return pd.DataFrame()
 
     if len(exchange.safe_value(response, 'result', []))==0: return pd.DataFrame()
     result = pd.DataFrame(exchange.safe_value(response, 'result', [])).astype({'coin':str,'time':str,'size':float,'rate':float})

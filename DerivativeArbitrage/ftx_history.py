@@ -8,7 +8,6 @@ from ftx_ftx import *
 import dateutil
 from datetime import datetime,timezone,timedelta,date
 
-
 volumeList = ['BTC','ETH','BNB','SOL','LTC','XRP','LINK','OMG','TRX','DOGE','SUSHI']
 
 root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,18 +24,11 @@ def fine_history(futures,exchange,
     if params['pickleit']:
         pickleit(pd.DataFrame(),"C:/Users/david/Dropbox/mobilier/crypto/"+exchange.name + "partial.pickle","wb")
     futures.loc[futures['type'] == 'future','expiryTime'] = futures[futures['type'] == 'future'].apply(lambda x:
-                                                                                                       dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None), axis=1)  # .replace(tzinfo=timezone.utc)
+                        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None), axis=1)  # .replace(tzinfo=timezone.utc)
 
     ###### this is only needed to have getUnderlyingType, which is cosmetic.
-    coin_details = fetch_coin_details(exchange)
     data=pd.DataFrame()
     for (useless,future) in futures.iterrows():
-        try:
-            coin_detail_item = coin_details.loc[future['underlying']] ###### this is only needed to have getUnderlyingType, which is cosmetic.
-            if (coin_detail_item['hidden']==True):
-                continue
-        except: continue
-
         indexes=[]
         mark=[]
         spot=[]
@@ -78,18 +70,18 @@ def fine_history(futures,exchange,
         ########## rates from index to mark --> for futures stopout
         if future['type']=='future':
             expiry_time = dateutil.parser.isoparse(future['expiry']).timestamp()
-            mark['rate/T']=mark.apply(lambda t: (expiry_time-int(t.name)/1000)/3600/24/365,axis=1)
+            new_data['rate/T']=new_data.apply(lambda t: (expiry_time-int(t.name)/1000)/3600/24/365,axis=1)
 
             new_data['rate/c'] = new_data.apply(
                 lambda y: calc_basis(y['mark/c'],
-                                     indexes.loc[y.name,'indexes/close'], future['expiryTime'], datetime.fromtimestamp(int(y.name / 1000),tz=None),
-                                     future['type']), axis=1)
+                                     indexes.loc[y.name,'indexes/close'], future['expiryTime'],
+                                     datetime.fromtimestamp(int(y.name / 1000),tz=None)), axis=1)
             new_data['rate/h'] = new_data.apply(
-                lambda y: calc_basis(y['mark/h'], indexes.loc[y.name,'indexes/high'], future['expiryTime'], datetime.fromtimestamp(int(y.name / 1000),tz=None),
-                                     future['type']), axis=1)
+                lambda y: calc_basis(y['mark/h'], indexes.loc[y.name,'indexes/high'], future['expiryTime'],
+                                     datetime.fromtimestamp(int(y.name / 1000),tz=None)), axis=1)
             new_data['rate/l'] = new_data.apply(
-                lambda y: calc_basis(y['mark/l'], indexes.loc[y.name,'indexes/low'], future['expiryTime'], datetime.fromtimestamp(int(y.name / 1000),tz=None),
-                                     future['type']), axis=1)
+                lambda y: calc_basis(y['mark/l'], indexes.loc[y.name,'indexes/low'], future['expiryTime'],
+                                     datetime.fromtimestamp(int(y.name / 1000),tz=None)), axis=1)
         elif future['type']=='perpetual':
             new_data['rate/c']=mark['mark/c']/indexes['indexes/close']-1
             new_data['rate/h']=mark['mark/h']/indexes['indexes/high']-1
@@ -107,7 +99,7 @@ def fine_history(futures,exchange,
     data.index = [datetime.fromtimestamp(x/ 1000) for x in data.index]
 
     ### optional debug info
-    datatype = "Stopout"
+    datatype = "finehistory"
     exchange = "ftx"
     if  params['pickleit']:
         pickleit(data,"C:/Users/david/Dropbox/mobilier/crypto/"+exchange + datatype +".pickle","wb")
@@ -120,16 +112,13 @@ def fine_history(futures,exchange,
     return data
 
 ### only perps, only borrow and funding, only hourly
-def rate_history(perps,exchange,
+def perp_rate_history(perps,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                  params={'excelit':False,'pickleit':False}):
     perps=perps[perps['type']=='perpetual'] ####  only perps here
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
-
-    ###### this is only needed to have getUnderlyingType, which is cosmetic.
-    coin_details = fetch_coin_details(exchange)
 
     ### USD only has borrow data
     spot='USD'
@@ -197,7 +186,7 @@ def rate_history(perps,exchange,
     data.index = [datetime.fromtimestamp(x/ 1000) for x in data.index]
 
     ### optional debug info
-    datatype = "rateshistory"
+    datatype = "perphistory"
     exchange = "ftx"
     if  params['pickleit']:
         pickleit(data,"C:/Users/david/Dropbox/mobilier/crypto/"+exchange + datatype +".pickle","wb")
@@ -208,3 +197,38 @@ def rate_history(perps,exchange,
             data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange + datatype + "copy.xlsx")
 
     return data
+
+def single_perp(future,rates_history,
+                   end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
+                   start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
+    rates_history = rates_history[start:end]
+    USDborrow = rates_history['USD/rate/borrow']
+    pnlHistory=pd.DataFrame()
+    pnlHistory['funding'] = (rates_history[future['name']+'/rate/funding']*np.sign(future['maxPos']))/365.25/24
+    pnlHistory['borrow'] = (-USDborrow*np.sign(future['maxPos'])-
+                rates_history[future['underlying']+'/rate/borrow'] if future['maxPos']> 0 else 0)/365.25/24
+    pnlHistory['maxCarry'] = pnlHistory['funding']+pnlHistory['borrow']
+    return pnlHistory
+
+def single_future(future,rates_history,
+                   end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
+                   start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
+    rates_history=rates_history[start:end]
+    USDborrow = rates_history['USD/rate/borrow']
+    pnlHistory = pd.DataFrame()
+    pnlHistory['funding'] = (rates_history.loc[start,future['name']+'/rate/funding']*np.sign(future['maxPos']))/365.25/24
+    pnlHistory['borrow'] = (-USDborrow*np.sign(future['maxPos'])-
+                rates_history[future['underlying']+'/rate/borrow'] if future['maxPos']> 0 else 0)/365.25/24
+    pnlHistory['maxCarry'] = pnlHistory['funding']+pnlHistory['borrow']
+    return pnlHistory
+
+def max_leverage_carry(futures,rates_history,
+                       end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
+                       start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
+    data = pd.concat([single_perp(future,rates_history,start=start,end=end) for (useless,future) in futures[futures['type']=='perpetual'].iterrows()]
+                    +[single_future(future,rates_history,start=start,end=end) for (useless,future) in futures[futures['type']=='future'].iterrows()],
+                     join='inner', axis=0)
+
+    return data
+
+#def max_leverage moments

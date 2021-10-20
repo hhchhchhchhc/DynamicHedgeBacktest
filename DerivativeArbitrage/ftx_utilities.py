@@ -8,13 +8,11 @@ import numpy as np
 
 os.chdir('C:\\Users\\david\\Dropbox\\mobilier\\crypto')
 
-def calc_basis(f,s,T,t,type='future'): # T is tring, t is date
-    basis = float(f)/float(s)-1.0
-    if type=='perpetual':
-        return basis*365.25
-    else:
-        res= (T-t)
-        return basis/np.max([1, res.days])*365.25
+########## only for dated futures
+def calc_basis(f,s,T,t): # T is tring, t is date
+    basis = np.log(float(f)/float(s))
+    res= (T-t)
+    return basis/np.max([1, res.days])*365.25
 
 #index_list=['DEFI_PERP','SHIT_PERP','ALT_PERP','MID_PERP','DRGN_PERP','PRIV_PERP']
 #publicGetIndexesIndexNameWeights()GET /indexes/{index_name}/weights

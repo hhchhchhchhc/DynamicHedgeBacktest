@@ -17,38 +17,61 @@ import pickle
 
 print('CCXT Version:', ccxt.__version__)
 
-#### needs futures['quote_estimate'] = float(borrows.loc['USD','estimate'])
-def basis_scanner(exchange,futures,point_in_time=datetime.now(), depths=[0],perp_holding_period=timedelta(days=3),slippage_scaler=0.25,params={'naive':True, 'history':True}):###perps assumed held 1 w for slippage calc
-    coin_details=pd.DataFrame(exchange.privateGetWalletCoins()['result']).set_index('id')
+def enricher(exchange,futures):
+    coin_details=pd.DataFrame(exchange.publicGetWalletCoins()['result'],dtype=float).set_index('id')
+    futures = pd.merge(futures, coin_details[['spotMargin','tokenizedEquity','collateralWeight','usdFungible','fiat']], how='left', left_on='underlying', right_index=True)
+
     markets = exchange.fetch_markets()
     futures['spot_ticker'] = futures.apply(lambda x: str(find_spot_ticker(markets, x, 'name')), axis=1)
-    point_in_time = datetime.now()  # tz=timezone.utc)
     futures['expiryTime']=futures.apply(lambda x:
-        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else point_in_time+timedelta(days=1),axis=1)#.replace(tzinfo=timezone.utc)
+        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else np.NaN,axis=1)#.replace(tzinfo=timezone.utc)
 
     ### only if active and  spot trades
     futures=futures[(futures['enabled']==True)&(futures['type']!="move")]
-    futures['spot_ask']=futures.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)
-    futures=futures[futures['spot_ask']>0.0] #### only if spot trades
+    futures=futures[futures.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)>0.0] #### only if spot trades
+
+    ########### add borrows
+    borrows = fetch_coin_details(exchange)
+    futures = pd.merge(futures, borrows[['borrow','lend','funding_volume']], how='left', left_on='underlying', right_index=True)
+    futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
+    futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
+    #### need borrow to be present
+    futures = futures[futures['borrow']>=-999]
+
+    ########### naive basis for all futures
+    futures.loc[futures['type']=='future','basis_mid'] = futures[futures['type']=='future'].apply(lambda f: calc_basis(f['mark'],f['index'],f['expiryTime'],datetime.now()),axis=1)
+    futures.loc[futures['type'] == 'perpetual','basis_mid'] = futures[futures['type'] == 'perpetual'].apply(lambda f:
+                                                                         float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate']) * 24 * 365.25,axis=1)
+    return futures
+
+def basis_scanner(exchange,futures,hy_history,point_in_time=datetime.now(), depths=[0],perp_holding_period=timedelta(days=3),slippage_scaler=0.25,params={'naive':True, 'history':True}):###perps assumed held 1 w for slippage calc
+    borrows = fetch_coin_details(exchange)
+    markets = exchange.fetch_markets()
+
+    futures['spot_ticker'] = futures.apply(lambda x: str(find_spot_ticker(markets, x, 'name')), axis=1)
+    futures['expiryTime']=futures.apply(lambda x:
+        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else point_in_time+perp_holding_period,axis=1)#.replace(tzinfo=timezone.utc)
+
+    ### only if active and  spot trades
+    futures=futures[(futures['enabled']==True)&(futures['type']!="move")]
+    futures=futures[futures.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)>0.0] #### only if spot trades
+
+    #### need borrow to be present
+    futures = futures[futures['borrow']>=-999]
 
     ########### naive basis for all futures
     futures.loc[futures['type']=='future','basis_mid'] = futures[futures['type']=='future'].apply(lambda f: calc_basis(f['mark'],f['index'],f['expiryTime'],point_in_time),axis=1)
     futures.loc[futures['type'] == 'perpetual','basis_mid'] = futures[futures['type'] == 'perpetual'].apply(lambda f:
                                                                          float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate']) * 24 * 365.25,axis=1)
-    ########### add borrows
-    borrows = fetch_coin_details(exchange)
-    futures = pd.merge(futures, borrows, how='left', left_on='underlying', right_index=True)
-    futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
-    futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
 
     ############ add slippage, fees and speed
     fees=(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker'])/2
     for size in depths:
         ### relative semi-spreads incl fees, and speed
         if size==0:
-            futures['spot_ask_in_0'] = futures.apply(lambda f: fees+0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)
+            futures['spot_ask_in_0'] = fees+futures.apply(lambda f: 0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler
             futures['spot_bid_in_0'] = -futures['spot_ask_in_0']
-            futures['future_ask_in_0'] = fees+0.5*(futures['ask'].astype(float)/futures['bid'].astype(float)-1)
+            futures['future_ask_in_0'] = fees+0.5*(futures['ask'].astype(float)/futures['bid'].astype(float)-1)*slippage_scaler
             futures['future_bid_in_0'] = -futures['future_ask_in_0']
             futures['speed_in_0']=0##*futures['future_ask_in_0'] ### just 0
         else:
@@ -59,19 +82,13 @@ def basis_scanner(exchange,futures,point_in_time=datetime.now(), depths=[0],perp
             futures['speed_in_'+str(size)]=futures['name'].apply(lambda x:mkt_speed(exchange,x,size).seconds)
 
         #### rate slippage assuming perps are rolled every perp_holding_period
-        futures['bid_rate_slippage_in_' + str(size)] = futures.apply(lambda x: calc_basis(
-            float(x['mark']) * (1 + x['future_bid_in_' + str(size)]),
-            float(x['index']) * (1 + x['spot_ask_in_' + str(size)]),
-            x['expiryTime'] if x['type']=='future' else point_in_time+perp_holding_period, point_in_time) - x['basis_mid'],axis=1)
-        futures['ask_rate_slippage_in_' + str(size)] = futures.apply(lambda x: calc_basis(
-            float(x['mark']) * (1 + x['future_ask_in_'+str(size)]),
-            float(x['index']) * (1 + x['spot_bid_in_'+str(size)]),
-            x['expiryTime'] if x['type']=='future' else point_in_time+perp_holding_period,point_in_time)-x['basis_mid'],axis=1)
-
-    #### get history ( this is sloooow)
-    hy_history=rate_history(futures, exchange,end=point_in_time,start=point_in_time-timedelta(days=4*perp_holding_period.days))
-    #### need borrow and funding rates
-    futures = futures[futures['underlying'].apply(lambda p: p+'/rate/borrow' in hy_history.columns)==True]
+        #### use centred bid ask for robustness
+        futures['bid_rate_slippage_in_' + str(size)] = futures.apply(lambda f: \
+            (f['future_bid_in_' + str(size)]-f['spot_ask_in_' + str(size)]) \
+            / np.max([1, (f['expiryTime'] - point_in_time).seconds* 365.25*24*3600]) ,axis=1)
+        futures['ask_rate_slippage_in_' + str(size)] = futures.apply(lambda f: \
+            (f['future_ask_in_' + str(size)] - f['spot_bid_in_' + str(size)]) \
+            / np.max([1, (f['expiryTime'] - point_in_time).seconds * 365.25*24*3600]),axis=1)
 
     perps=futures[futures['type'] == 'perpetual']
     if (perps.index.empty == False)&(params['history']==True):
@@ -107,7 +124,6 @@ def basis_scanner(exchange,futures,point_in_time=datetime.now(), depths=[0],perp
 
     #### finally, adjust for fees, slippage, funding and collateral cost
     account_leverage=exchange.privateGetAccount()['result']
-    futures['collateralWeight']=futures.apply(lambda f:float(coin_details.loc[f['underlying']]['collateralWeight']),axis=1)
 
     if float(account_leverage['leverage']) >= 50: print("margin rules not implemented for leverage >=50")
 
