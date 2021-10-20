@@ -1,5 +1,7 @@
 import os
 import pickle
+import pyarrow as pa
+import pyarrow.parquet as pq
 import openpyxl
 import dateutil
 from datetime import datetime,timezone,timedelta,date
@@ -35,6 +37,13 @@ def pickleit(object,filename,mode="ab+"):############ timestamp and append to pi
         pickle.dump(object,file)
         file.close()
     return
+
+def to_parquet(df,filename,mode="w"):
+    pq_df = pa.Table.from_pandas(df)
+    pq.write_table(pq_df, filename)
+    return None
+def from_parquet(filename):
+    return pq.read_table(filename).to_pandas()
 
 def openit(filename,mode="rb"):#### to open pickle
     data=pd.DataFrame()

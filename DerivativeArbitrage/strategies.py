@@ -67,25 +67,46 @@ def strategy1(nb_pos=1,account_equity=10000,params={'type':'perpetual','excelit'
     #outputit(scanner[1], "smallhistory", "ftx", params=params)
     return greeks
 
-if True:
+def strategy2():
     exchange=open_exchange('ftx')
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
+
+    funding_threshold = 1e4
+    volume_threshold = 1e6
+    type_allowed='perpetual'
+    max_nb_coins = 10
+    carry_floor = 0.4
+    slippage_scaler=0.5
+    slippage_for_size=0
+    signal_horizon=timedelta(days=3)
+    backtest_window=timedelta(days=30)
 
     enriched=enricher(exchange, futures)
     pre_filtered = enriched[
         (enriched['expired'] == False)
-        & (enriched['funding_volume'] * enriched['mark'] > 1e4)
-        & (enriched['volumeUsd24h'] > 1e5)
+        & (enriched['funding_volume'] * enriched['mark'] > funding_threshold)
+        & (enriched['volumeUsd24h'] > volume_threshold)
         & (enriched['tokenizedEquity']!=True)
-        & (enriched['type']=='perpetual')]
+        & (enriched['type']==type_allowed)]
 
     #### get history ( this is sloooow)
-    hy_history = build_history(pre_filtered,exchange)
+    try:
+        hy_history = from_parquet("history.parquet")
+        asofdate = np.max(hy_history.index)
+    except:
+        hy_history = build_history(pre_filtered,exchange)
+        to_parquet(hy_history,"history.parquet")
 
-    scanned=basis_scanner(exchange,pre_filtered,hy_history,depths=[0],slippage_scaler=0.5)
+    scanned=basis_scanner(exchange,pre_filtered,hy_history,
+                            depths=[slippage_for_size],slippage_scaler=slippage_scaler,
+                            holding_period_slippage_assumption = timedelta(days=3),
+                            signal_horizon=signal_horizon).sort_values(by='maxCarry')
     print(scanned[['symbol','maxPos','maxCarry']])
-    backtest = max_leverage_carry(scanned,hy_history)
-    #a = fine_history(filtered,exchange,'1h',start=datetime.strptime('Oct 19 2021', '%b %d %Y'),params={'excelit':False,'pickleit':True}) ## critical size 26 oct 19 (2019,42,6)
+    scanned=scanned[scanned['maxCarry']>carry_floor].tail(max_nb_coins)
+    backtest = max_leverage_carry(scanned,hy_history,end=asofdate,start=asofdate-backtest_window).transpose()
     #    sns.histplot(data=pd.DataFrame([(a.loc[1:,'BTC-PERP/mark/c']-a.loc[:-2,'BTC-PERP/mark/c']),a['BTC-PERP/rate/c'],a['BTC-PERP/rate/h']-a['BTC-PERP/rate/c'],a['BTC-PERP/rate/l']-a['BTC-PERP/rate/c']]))
     outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
     outputit(backtest,'backtest','ftx',{'excelit':True,'pickleit':False})
+
+
+strategy2()

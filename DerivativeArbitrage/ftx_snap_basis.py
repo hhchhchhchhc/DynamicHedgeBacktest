@@ -44,13 +44,17 @@ def enricher(exchange,futures):
                                                                          float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate']) * 24 * 365.25,axis=1)
     return futures
 
-def basis_scanner(exchange,futures,hy_history,point_in_time=datetime.now(), depths=[0],perp_holding_period=timedelta(days=3),slippage_scaler=0.25,params={'naive':True, 'history':True}):###perps assumed held 1 w for slippage calc
+def basis_scanner(exchange,futures,hy_history,point_in_time=datetime.now(), depths=[0],
+                  holding_period_slippage_assumption=timedelta(days=3),
+                  signal_horizon=timedelta(days=3),
+                  slippage_scaler=0.25,
+                  params={'naive':True, 'history':True}):###perps assumed held 1 w for slippage calc
     borrows = fetch_coin_details(exchange)
     markets = exchange.fetch_markets()
 
     futures['spot_ticker'] = futures.apply(lambda x: str(find_spot_ticker(markets, x, 'name')), axis=1)
     futures['expiryTime']=futures.apply(lambda x:
-        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else point_in_time+perp_holding_period,axis=1)#.replace(tzinfo=timezone.utc)
+        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else point_in_time+holding_period_slippage_assumption,axis=1)#.replace(tzinfo=timezone.utc)
 
     ### only if active and  spot trades
     futures=futures[(futures['enabled']==True)&(futures['type']!="move")]
@@ -93,7 +97,8 @@ def basis_scanner(exchange,futures,hy_history,point_in_time=datetime.now(), dept
     perps=futures[futures['type'] == 'perpetual']
     if (perps.index.empty == False)&(params['history']==True):
         ### EMA for basis
-        gamma = 1 / (perp_holding_period.days * 24 * 3600)  ## 7days half life
+
+        gamma = 1.0 / signal_horizon.total_seconds()
         exp_time = pd.Series(index=hy_history.index,
                              data=[np.exp(gamma * (t.timestamp() - datetime.now(tz=timezone.utc).timestamp())) for t in
                                    hy_history.index])
@@ -166,9 +171,3 @@ def futures_to_dataframe(futures,size=0,### change wanted greeks if size!=0
     data.set_index('updated',append=True,inplace=True)
 
     return data ### not using multiindex for now...
-
-if False:
-    exchange=open_exchange('ftx')
-    futures = pd.DataFrame(fetch_futures(exchange))
-    a=basis_scanner(exchange,futures,depths=[0],perp_holding_period=timedelta(weeks=1),params={'naive':True,'history':False})
-    outputit(a[0],'basis','ftx',{'excelit':True,'pickleit':False})
