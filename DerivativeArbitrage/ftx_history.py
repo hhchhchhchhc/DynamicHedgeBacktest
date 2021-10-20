@@ -36,7 +36,7 @@ def fine_history(futures,exchange,
         end_time = end.timestamp()
         start_time = (datetime.fromtimestamp(end_time) - timedelta(seconds=max_mark_data*int(resolution))).timestamp()
 
-        while end_time > start.timestamp():
+        while end_time >= start.timestamp():
             if datetime.fromtimestamp(end_time).month>datetime.fromtimestamp(start_time).month:
                 print(future['symbol'] + ' on ' + str(datetime.fromtimestamp(start_time)))
             if start_time<start.timestamp(): start_time=start.timestamp()
@@ -125,7 +125,7 @@ def perp_rate_history(perps,exchange,
     borrow_data = pd.DataFrame()
     end_time = end.timestamp()
     start_time = (datetime.fromtimestamp(end_time) - timedelta(seconds=max_funding_data*int(resolution))).timestamp()
-    while end_time > start.timestamp():
+    while end_time >= start.timestamp():
         if start_time < start.timestamp(): start_time = start.timestamp()
         new_borrows = fetch_borrow_rate_history(exchange,spot, start_time,end_time)#,resolution)  ####very wasteful as retrieves all coins
 
@@ -201,25 +201,28 @@ def perp_rate_history(perps,exchange,
 def single_perp(future,rates_history,
                    end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                    start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
+    prekey=future['name']+'/PnL/'
     rates_history = rates_history[start:end]
     USDborrow = rates_history['USD/rate/borrow']
     pnlHistory=pd.DataFrame()
-    pnlHistory['funding'] = (rates_history[future['name']+'/rate/funding']*np.sign(future['maxPos']))/365.25/24
-    pnlHistory['borrow'] = (-USDborrow*np.sign(future['maxPos'])-
+    pnlHistory[prekey+'funding'] = (rates_history[future['name']+'/rate/funding']*np.sign(future['maxPos']))/365.25/24
+    pnlHistory[prekey+'borrow'] = (-USDborrow*np.sign(future['maxPos'])-
                 rates_history[future['underlying']+'/rate/borrow'] if future['maxPos']> 0 else 0)/365.25/24
-    pnlHistory['maxCarry'] = pnlHistory['funding']+pnlHistory['borrow']
+    pnlHistory[prekey+'maxCarry'] = pnlHistory[prekey+'funding']+pnlHistory[prekey+'borrow']
     return pnlHistory
 
 def single_future(future,rates_history,
                    end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                    start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
+    prekey = future['name'] + '/PnL/'
     rates_history=rates_history[start:end]
     USDborrow = rates_history['USD/rate/borrow']
     pnlHistory = pd.DataFrame()
-    pnlHistory['funding'] = (rates_history.loc[start,future['name']+'/rate/funding']*np.sign(future['maxPos']))/365.25/24
-    pnlHistory['borrow'] = (-USDborrow*np.sign(future['maxPos'])-
+    #### ignores future curves since future no cst maturity
+    pnlHistory[prekey+'funding'] = (rates_history.loc[start+timedelta(hours=1),future['name']+'/rate/c']*np.sign(future['maxPos']))/365.25/24
+    pnlHistory[prekey+'borrow'] = (-USDborrow*np.sign(future['maxPos'])-
                 rates_history[future['underlying']+'/rate/borrow'] if future['maxPos']> 0 else 0)/365.25/24
-    pnlHistory['maxCarry'] = pnlHistory['funding']+pnlHistory['borrow']
+    pnlHistory[prekey+'maxCarry'] = pnlHistory[prekey+'funding']+pnlHistory[prekey+'borrow']
     return pnlHistory
 
 def max_leverage_carry(futures,rates_history,
@@ -228,7 +231,6 @@ def max_leverage_carry(futures,rates_history,
     data = pd.concat([single_perp(future,rates_history,start=start,end=end) for (useless,future) in futures[futures['type']=='perpetual'].iterrows()]
                     +[single_future(future,rates_history,start=start,end=end) for (useless,future) in futures[futures['type']=='future'].iterrows()],
                      join='inner', axis=0)
+    describe = data.describe([.1, .5, .9])
 
-    return data
-
-#def max_leverage moments
+    return describe
