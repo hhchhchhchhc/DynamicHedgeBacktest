@@ -4,13 +4,17 @@ import numpy as np
 import pandas as pd
 import tools
 from typing import Tuple
+from config import Strategy
 
 
 def _get_annualised_sharpe(backtest: pd.DataFrame, risk_free_rate: float) -> float:
-    returns = np.log(backtest.pnl / backtest.pnl.shift(1))
-    returns = returns[np.isfinite(returns)]
-    vol = returns.dropna().std()
-    sharpe = (returns.mean() - risk_free_rate) / vol
+    returns = []
+    for i in range(len(backtest.index) - 1):
+        if backtest['pnl'].iloc[i] != 0.0:
+            r = backtest['pnl'].iloc[i + 1] / backtest['pnl'].iloc[i]
+            if r > 0.0:
+                returns.append(np.log(r))
+    sharpe = (np.mean(returns) - risk_free_rate) / np.std(returns)
     return sharpe
 
 
@@ -20,7 +24,9 @@ def _get_max_drawdown(backtest: pd.DataFrame) -> Tuple[float, float]:
     peak = max(data_window.pnl)
     trough = min(backtest.pnl)
     maxdd_dollars = (peak - trough)
-    maxdd_percentage = (maxdd_dollars / peak) * 100
+    maxdd_percentage = np.nan
+    if peak != 0:
+        maxdd_percentage = (maxdd_dollars / peak) * 100
     return maxdd_dollars, maxdd_percentage
 
 
@@ -56,9 +62,11 @@ class Backtest:
             trades = trades.append(trade)
         return trades
 
-    def __init__(self, symbol: str, start_date: datetime.date, number_of_days: int, phi: float) -> None:
+    def __init__(self, symbol: str, strategy: Strategy, parameters: dict[str, float], start_date: datetime.date,
+                 number_of_days: int) -> None:
         self.symbol = symbol
-        self.phi = phi
+        self.strategy = strategy
+        self.parameters = parameters
         self.horizon = 60
         self.tobs = self._get_tobs_from_csvs(start_date, number_of_days)
         self.trades = self._get_trades_from_csvs(start_date, number_of_days)
@@ -168,6 +176,37 @@ class Backtest:
             self._passive_sell()
 
     def _end_of_bar(self) -> None:
+        if self.strategy == Strategy.ASMM_PHI:
+            self._end_of_bar_asmm_phi()
+        elif self.strategy == Strategy.ASMM_HIGH_LOW:
+            self._end_of_bar_asmm_high_low()
+        if self.position >= self.max_position:
+            self.bid = None
+        if self.position <= -self.max_position:
+            self.ask = None
+        if self.bid is not None and self.ask is not None:
+            self.spread = self.ask - self.bid
+        if self.bid is not None and self.market_ask is not None and self.bid >= self.market_ask:
+            self._aggressive_buy()
+        if self.ask is not None and self.market_bid is not None and self.ask <= self.market_bid:
+            self._aggressive_sell()
+        self.price_buffer = []
+        self.size_buffer = []
+        self._record_backtest_results()
+
+    def _end_of_bar_asmm_high_low(self) -> None:
+        if self.price_buffer:
+            high = np.max(self.price_buffer)
+            low = np.min(self.price_buffer)
+            self.skew = (self.position / self.max_position) * (high - low)
+            if self.skew > 0:
+                self.bid = int(low - self.skew)
+                self.ask = int(high)
+            else:
+                self.bid = int(low)
+                self.ask = int(high - self.skew)
+
+    def _end_of_bar_asmm_phi(self) -> None:
         if len(self.price_buffer) > 0:
             vwap = np.average(self.price_buffer, weights=self.size_buffer)
             self.vwap_buffer.append(vwap)
@@ -176,22 +215,15 @@ class Backtest:
             if len(self.vwap_buffer) >= self.horizon:
                 self.sigma = np.diff(self.vwap_buffer).std()
             if self.sigma is not None:
-                self.skew = (self.phi * (self.sigma * self.tick_size) * self.position / (
+                self.skew = (self.parameters['phi'] * (self.sigma * self.tick_size) * self.position / (
                     self.max_position)) / self.tick_size
-                self.spread = self.phi * self.sigma
+                self.spread = self.parameters['phi'] * self.sigma
                 if self.skew > 0:
                     self.bid = int(vwap - (self.spread / 2) - self.skew)
                     self.ask = int(vwap + (self.spread / 2))
                 else:
                     self.bid = int(vwap - (self.spread / 2))
                     self.ask = int(vwap + (self.spread / 2) - self.skew)
-                if self.bid is not None and self.market_ask is not None and self.bid >= self.market_ask:
-                    self._aggressive_buy()
-                if self.ask is not None and self.market_bid is not None and self.ask <= self.market_bid:
-                    self._aggressive_sell()
-        self.price_buffer = []
-        self.size_buffer = []
-        self._record_backtest_results()
 
     def _passive_buy(self) -> None:
         self._buy(self.bid)

@@ -1,5 +1,5 @@
 import datetime
-import backtest
+from backtest import Backtest
 import config as _config
 import pandas as pd
 from market_data import MarketData
@@ -8,23 +8,38 @@ from concurrent.futures import ProcessPoolExecutor
 
 def f(phi: float) -> None:
     print('running c = ' + str("{:,.2f}".format(phi)))
-    start_date = datetime.date(2021, 9, 21)
+    start_date = datetime.date(2021, 10, 1)
     number_of_days = 1
-    my_backtest = backtest.Backtest(symbol='XRPUSDT', start_date=start_date, number_of_days=number_of_days, phi=phi)
+    strategy = _config.Strategy.ASMM_PHI
+    parameters = {'phi': phi}
+    my_backtest = Backtest('XRPUSDT', strategy, parameters, start_date, number_of_days)
     results, summary = my_backtest.run()
     results.to_csv(_config.source_directory + 'new_results_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
     summary.to_csv(_config.source_directory + 'new_summary_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
 
 
+def run_high_low():
+    print('running high low strategy')
+    start_date = datetime.date(2021, 10, 1)
+    number_of_days = 1
+    strategy = _config.Strategy.ASMM_HIGH_LOW
+    parameters = None
+    my_backtest = Backtest('XRPUSDT', strategy, parameters, start_date, number_of_days)
+    results, summary = my_backtest.run()
+    results.to_csv(_config.source_directory + 'new_results_high_low.csv', index=False)
+    summary.to_csv(_config.source_directory + 'new_summary_high_low.csv', index=False)
+
+
 def main():
-    market_data = MarketData('BTCUSDT')
-    market_data.load_trade_data_from_parquet(date=datetime.date(2021, 9, 22))
-    market_data.generate_formatted_trades_data()
-    market_data.trades_formatted.to_csv('C:/Users/Tibor/Sandbox/test.csv')
-    # phis = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
-    # with ProcessPoolExecutor(5) as pool:
-    #     for phi in phis:
-    #         pool.submit(f, phi)
+    f(phi=1.0)
+    run_high_low()
+
+
+def run_phis():
+    phis = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+    with ProcessPoolExecutor(5) as pool:
+        for phi in phis:
+            pool.submit(f, phi)
 
 
 if __name__ == '__main__':
