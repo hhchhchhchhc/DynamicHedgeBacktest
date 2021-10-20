@@ -44,7 +44,7 @@ def enricher(exchange,futures):
                                                                          float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate']) * 24 * 365.25,axis=1)
     return futures
 
-def basis_scanner(exchange,futures,hy_history,point_in_time=datetime.now(), depths=[0],
+def basis_scanner(exchange,futures,hy_history,point_in_time='live', depths=[0],
                   holding_period_slippage_assumption=timedelta(days=3),
                   signal_horizon=timedelta(days=3),
                   slippage_scaler=0.25,
@@ -52,23 +52,34 @@ def basis_scanner(exchange,futures,hy_history,point_in_time=datetime.now(), dept
     borrows = fetch_coin_details(exchange)
     markets = exchange.fetch_markets()
 
-    futures['spot_ticker'] = futures.apply(lambda x: str(find_spot_ticker(markets, x, 'name')), axis=1)
-    futures['expiryTime']=futures.apply(lambda x:
-        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else point_in_time+holding_period_slippage_assumption,axis=1)#.replace(tzinfo=timezone.utc)
-
     ### only if active and  spot trades
     futures=futures[(futures['enabled']==True)&(futures['type']!="move")]
+    futures['spot_ticker'] = futures.apply(lambda x: str(find_spot_ticker(markets, x, 'name')), axis=1)
     futures=futures[futures.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)>0.0] #### only if spot trades
 
     #### need borrow to be present
     futures = futures[futures['borrow']>=-999]
 
-    ########### naive basis for all futures
-    futures.loc[futures['type']=='future','basis_mid'] = futures[futures['type']=='future'].apply(lambda f: calc_basis(f['mark'],f['index'],f['expiryTime'],point_in_time),axis=1)
-    futures.loc[futures['type'] == 'perpetual','basis_mid'] = futures[futures['type'] == 'perpetual'].apply(lambda f:
-                                                                         float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate']) * 24 * 365.25,axis=1)
+    ########### naive basis for all futures: point in time
+    if point_in_time!='live':
+        futures['mark'] = futures['name'].apply(lambda f: hy_history.loc[point_in_time,  f + '/mark/c'])
+        futures['index'] = futures['name'].apply(lambda f: hy_history.loc[point_in_time, f + '/indexes/close'])
+        futures['last'] = futures['name'].apply(lambda f: hy_history.loc[point_in_time, f + '/spot/c'])
+        futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
+            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], point_in_time), axis=1)
+        futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures.loc[futures['type'] == 'perpetual','name'].apply(
+            lambda f: hy_history.loc[point_in_time, f + '/rate/funding'] * 24 * 365.25)
+    else:
+        point_in_time=datetime.now()
+        futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
+            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], point_in_time), axis=1)
+        futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
+            lambda f: float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate']) * 24 * 365.25,axis=1)
 
-    ############ add slippage, fees and speed
+    futures['expiryTime']=futures.apply(lambda x:
+        dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x['type']=='future' else point_in_time+holding_period_slippage_assumption,axis=1)#.replace(tzinfo=timezone.utc)
+
+    ############ add slippage, fees and speed (as of now, not point in time0
     fees=(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker'])/2
     for size in depths:
         ### relative semi-spreads incl fees, and speed

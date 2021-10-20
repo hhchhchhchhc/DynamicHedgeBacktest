@@ -222,9 +222,3 @@ def live_risk():
                     (updated,'IM'): float(account_info['initialMarginRequirement']),
                     (updated,'MM'): float(account_info['maintenanceMarginRequirement'])})
     return greeks
-
-if False:
-    live_risk()
-#outputit(live_risk(),'risk','ftx',params={'excelit':True,'pickleit':False})
-#pickleit(greeks,"C:/Users/david/Dropbox/mobilier/crypto/ftxrisk.pickle","ab+")
-#excelit("C:/Users/david/Dropbox/mobilier/crypto/ftxrisk.pickle","C:/Users/david/Dropbox/mobilier/crypto/ftxrisk.xlsx")

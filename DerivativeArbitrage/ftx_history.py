@@ -241,7 +241,4 @@ def max_leverage_carry(futures,rates_history,
                        start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
     data = pd.concat(futures.apply(lambda f:carry_backtest(f,rates_history,start=start,end=end), axis = 1).to_list(),join='inner', axis=1)
 
-    stats = data.describe([.1, .5, .9])
-
-
-    return stats
+    return data

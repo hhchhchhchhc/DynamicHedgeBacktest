@@ -79,15 +79,15 @@ def strategy2():
     slippage_scaler=0.5
     slippage_for_size=0
     signal_horizon=timedelta(days=3)
-    backtest_window=timedelta(days=30)
+    backtest_window=timedelta(days=3)
 
     enriched=enricher(exchange, futures)
     pre_filtered = enriched[
         (enriched['expired'] == False)
         & (enriched['funding_volume'] * enriched['mark'] > funding_threshold)
         & (enriched['volumeUsd24h'] > volume_threshold)
-        & (enriched['tokenizedEquity']!=True)
-        & (enriched['type']==type_allowed)]
+        & (enriched['tokenizedEquity']!=True)]
+        #& (enriched['type']==type_allowed)]
 
     #### get history ( this is sloooow)
     try:
@@ -99,14 +99,15 @@ def strategy2():
 
     scanned=basis_scanner(exchange,pre_filtered,hy_history,
                             depths=[slippage_for_size],slippage_scaler=slippage_scaler,
-                            holding_period_slippage_assumption = timedelta(days=3),
+                            holding_period_slippage_assumption = backtest_window,
                             signal_horizon=signal_horizon).sort_values(by='maxCarry')
     print(scanned[['symbol','maxPos','maxCarry']])
     scanned=scanned[scanned['maxCarry']>carry_floor].tail(max_nb_coins)
-    backtest = max_leverage_carry(scanned,hy_history,end=asofdate,start=asofdate-backtest_window).transpose()
+    static_backtest = max_leverage_carry(scanned,hy_history,end=asofdate,start=asofdate-backtest_window).transpose()
+
     #    sns.histplot(data=pd.DataFrame([(a.loc[1:,'BTC-PERP/mark/c']-a.loc[:-2,'BTC-PERP/mark/c']),a['BTC-PERP/rate/c'],a['BTC-PERP/rate/h']-a['BTC-PERP/rate/c'],a['BTC-PERP/rate/l']-a['BTC-PERP/rate/c']]))
     outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
-    outputit(backtest,'backtest','ftx',{'excelit':True,'pickleit':False})
+    outputit(static_backtest.describe([.1, .5, .9]).T,'backtest','ftx',{'excelit':True,'pickleit':False})
 
 
 strategy2()
