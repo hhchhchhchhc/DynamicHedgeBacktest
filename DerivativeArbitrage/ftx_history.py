@@ -217,11 +217,13 @@ def single_future(future,rates_history,
     prekey = future['name'] + '/PnL/'
     rates_history=rates_history[start:end]
     USDborrow = rates_history['USD/rate/borrow']
-    pnlHistory = pd.DataFrame()
+    pnlHistory = pd.DataFrame(index=rates_history.index)
     #### ignores future curves since future no cst maturity
-    pnlHistory[prekey+'funding'] = (rates_history.loc[start+timedelta(hours=1),future['name']+'/rate/c']*np.sign(future['maxPos']))/365.25/24
-    pnlHistory[prekey+'borrow'] = (-USDborrow*np.sign(future['maxPos'])-
-                rates_history[future['underlying']+'/rate/borrow'] if future['maxPos']> 0 else 0)/365.25/24
+    pnlHistory[prekey +'borrow'] = (-USDborrow * np.sign(future['maxPos']) -
+                                     rates_history[future['underlying'] + '/rate/borrow']
+                                     if future['maxPos'] < 0 else 0) / 365.25 / 24
+    pnlHistory[prekey+'funding'] = (rates_history.loc[start+timedelta(hours=1),future['name']+'/rate/c']
+                                    *np.sign(future['maxPos']))/365.25/24.0
     pnlHistory[prekey+'maxCarry'] = pnlHistory[prekey+'funding']+pnlHistory[prekey+'borrow']
     return pnlHistory
 
