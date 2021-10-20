@@ -35,7 +35,8 @@ class MarketData:
 
     def generate_formatted_top_of_book_data(self) -> None:
         self.top_of_book_formatted = pd.DataFrame()
-        self.top_of_book_formatted['timestamp_millis'] = self.top_of_book_raw['exchange_timestamp_nanos'].div(1000000)
+        self.top_of_book_formatted['timestamp_millis'] = self.top_of_book_raw['exchange_timestamp_nanos'].apply(
+            lambda t: int(t / 1000000))
         self.top_of_book_formatted['timestamp_millis'] = self.top_of_book_formatted['timestamp_millis'].astype('int64')
         config: pd.DataFrame = con.config
         tick_size = float(config[config['symbol'] == self.symbol]['tick_size'])
@@ -51,8 +52,8 @@ class MarketData:
 
     def generate_formatted_trades_data(self) -> None:
         formatted_data = pd.DataFrame()
-        formatted_data['timestamp_millis'] = self.trades_raw['exchange_timestamp_nanos'].div(1000000)
-        formatted_data['timestamp_millis'] = formatted_data['timestamp_millis'].astype('int64')
+        formatted_data['timestamp_millis'] = self.trades_raw['exchange_timestamp_nanos'].apply(
+            lambda t: int(t / 1000000))
         config: pd.DataFrame = con.config
         tick_size = float(config[config['symbol'] == self.symbol]['tick_size'])
         formatted_data['price'] = self.trades_raw['price'].div(tick_size)

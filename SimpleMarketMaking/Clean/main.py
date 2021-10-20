@@ -17,10 +17,14 @@ def f(phi: float) -> None:
 
 
 def main():
-    phis = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
-    with ProcessPoolExecutor(5) as pool:
-        for phi in phis:
-            pool.submit(f, phi)
+    market_data = MarketData('BTCUSDT')
+    market_data.load_trade_data_from_parquet(date=datetime.date(2021, 9, 22))
+    market_data.generate_formatted_trades_data()
+    market_data.trades_formatted.to_csv('C:/Users/Tibor/Sandbox/test.csv')
+    # phis = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
+    # with ProcessPoolExecutor(5) as pool:
+    #     for phi in phis:
+    #         pool.submit(f, phi)
 
 
 if __name__ == '__main__':
