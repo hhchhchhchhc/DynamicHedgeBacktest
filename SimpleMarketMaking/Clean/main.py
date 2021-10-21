@@ -6,40 +6,56 @@ from market_data import MarketData
 from concurrent.futures import ProcessPoolExecutor
 
 
-def f(phi: float) -> None:
-    print('running c = ' + str("{:,.2f}".format(phi)))
+def main():
+    run_nu(nu=1.0)
+
+
+def create_tick_bars():
+    date = datetime.date(2021, 10, 1)
+    market_data = MarketData('XRPUSDT')
+    market_data.load_formatted_trade_data_from_csv(date)
+    tick_bars = market_data.get_tick_bars(10)
+    tick_bars.to_csv(_config.source_directory + 'tick_bars.csv')
+
+
+def run_phi(phi: float) -> None:
+    print('running phi = ' + str("{:,.2f}".format(phi)))
     start_date = datetime.date(2021, 10, 1)
     number_of_days = 1
+    bar = _config.Bar.ONE_SECOND
     strategy = _config.Strategy.ASMM_PHI
     parameters = {'phi': phi}
-    my_backtest = Backtest('XRPUSDT', strategy, parameters, start_date, number_of_days)
+    my_backtest = Backtest('XRPUSDT', bar, strategy, parameters, start_date, number_of_days)
     results, summary = my_backtest.run()
     results.to_csv(_config.source_directory + 'new_results_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
     summary.to_csv(_config.source_directory + 'new_summary_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
 
 
-def run_high_low():
-    print('running high low strategy')
+def run_nu(nu: float) -> None:
+    print('running nu = ' + str("{:,.2f}".format(nu)))
     start_date = datetime.date(2021, 10, 1)
     number_of_days = 1
+    bar = _config.Bar.TEN_TICKS
     strategy = _config.Strategy.ASMM_HIGH_LOW
-    parameters = None
-    my_backtest = Backtest('XRPUSDT', strategy, parameters, start_date, number_of_days)
+    parameters = {'nu': nu}
+    my_backtest = Backtest('XRPUSDT', bar, strategy, parameters, start_date, number_of_days)
     results, summary = my_backtest.run()
-    results.to_csv(_config.source_directory + 'new_results_high_low.csv', index=False)
-    summary.to_csv(_config.source_directory + 'new_summary_high_low.csv', index=False)
+    results.to_csv(_config.source_directory + 'new_results_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
+    summary.to_csv(_config.source_directory + 'new_summary_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
 
 
-def main():
-    f(phi=1.0)
-    run_high_low()
+def run_nus():
+    nus = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+    with ProcessPoolExecutor(5) as pool:
+        for nu in nus:
+            pool.submit(run_nu, nu)
 
 
 def run_phis():
     phis = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
     with ProcessPoolExecutor(5) as pool:
         for phi in phis:
-            pool.submit(f, phi)
+            pool.submit(run_phi, phi)
 
 
 if __name__ == '__main__':
