@@ -26,7 +26,24 @@ def f(phi: float) -> None:
     print('running c = ' + str("{:,.2f}".format(phi)))
     date_string ='20210912'
     start_date = datetime.date(int(date_string[0:4]), int(date_string[4:6]), int(date_string[6:8]))
+
+
+def main():
+    run_nu(nu=1.0)
+
+def create_tick_bars():
+    date = datetime.date(2021, 10, 1)
+    market_data = MarketData('XRPUSDT')
+    market_data.load_formatted_trade_data_from_csv(date)
+    tick_bars = market_data.get_tick_bars(10)
+    tick_bars.to_csv(_config.source_directory + 'tick_bars.csv')
+
+
+def run_phi(phi: float) -> None:
+    print('running phi = ' + str("{:,.2f}".format(phi)))
+    start_date = datetime.date(2021, 10, 1)
     number_of_days = 1
+    bar = _config.Bar.ONE_SECOND
     strategy = _config.Strategy.ASMM_PHI
     parameters = {'phi': phi}
     symbol = 'ADAUSDT'
@@ -41,7 +58,12 @@ def run_high_low():
     print('running high low strategy')
     date_string ='20210912'
     start_date = datetime.date(int(date_string[0:4]), int(date_string[4:6]), int(date_string[6:8]))
+    
+def run_nu(nu: float) -> None:
+    print('running nu = ' + str("{:,.2f}".format(nu)))
+    start_date = datetime.date(2021, 10, 1)
     number_of_days = 1
+    bar = _config.Bar.TEN_TICKS
     strategy = _config.Strategy.ASMM_HIGH_LOW
     parameters = None
     symbol = 'ADAUSDT'
@@ -71,7 +93,7 @@ def run_phis():
     phis = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]
     with ProcessPoolExecutor(5) as pool:
         for phi in phis:
-            pool.submit(f, phi)
+            pool.submit(run_phi, phi)
 
 
 if __name__ == '__main__':

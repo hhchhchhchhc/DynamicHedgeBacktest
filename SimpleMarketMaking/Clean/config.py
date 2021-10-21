@@ -20,3 +20,8 @@ class Strategy(Enum):
     ASMM_PHI = 1
     ASMM_HIGH_LOW = 2
     ROLL_MODEL = 3
+
+
+class Bar(Enum):
+    ONE_SECOND = 1
+    TEN_TICKS = 2

@@ -1,20 +1,6 @@
 # -*- coding: utf-8 -*-
-import numpy as np
-import pandas as pd
-import numpy
-import os
-import sys
 from ftx_utilities import *
 from ftx_ftx import *
-
-root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(root + '/python')
-
-import ccxt  # noqa: E402
-from datetime import datetime,timezone,timedelta,date
-#import time
-import pickle
-import dateutil
 
 ### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
 ### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
@@ -222,9 +208,3 @@ def live_risk():
                     (updated,'IM'): float(account_info['initialMarginRequirement']),
                     (updated,'MM'): float(account_info['maintenanceMarginRequirement'])})
     return greeks
-
-if False:
-    live_risk()
-#outputit(live_risk(),'risk','ftx',params={'excelit':True,'pickleit':False})
-#pickleit(greeks,"C:/Users/david/Dropbox/mobilier/crypto/ftxrisk.pickle","ab+")
-#excelit("C:/Users/david/Dropbox/mobilier/crypto/ftxrisk.pickle","C:/Users/david/Dropbox/mobilier/crypto/ftxrisk.xlsx")

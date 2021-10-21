@@ -6,6 +6,9 @@ import tools
 from typing import Tuple, Dict
 from config import Strategy
 import config as _config
+from typing import Tuple
+from config import Strategy, Bar
+
 
 def _get_annualised_sharpe(backtest: pd.DataFrame, risk_free_rate: float) -> float:
     returns = []
@@ -82,10 +85,11 @@ class Backtest:
             trades = trades.append(trade)
         return trades
 
-    def __init__(self, symbol: str, strategy: Strategy, parameters: Dict[str, float], start_date: datetime.date,
-                 number_of_days: int) -> None:
+    def __init__(self, symbol: str, bar: Bar, strategy: Strategy, parameters: dict[str, float],
+                 start_date: datetime.date, number_of_days: int) -> None:
         self.symbol = symbol
         self.strategy = strategy
+        self.bar = bar
         self.parameters = parameters
         self.horizon = 60
         self.tobs = self._get_tobs_from_csvs(start_date, number_of_days)
@@ -97,6 +101,7 @@ class Backtest:
         self.quote_dollars = None
         self.max_position_dollars = None
         self.time_bar_start_timestamp = None
+        self.tick_bar_counter = 0
         self.price_buffer = []
         self.size_buffer = []
         self.bid = None
@@ -176,20 +181,13 @@ class Backtest:
         return backtest_results, summary_stats
 
     def _trade_event(self, trade: pd.Series) -> None:
-        if self.time_bar_start_timestamp is None:
-            self.time_bar_start_timestamp = trade.timestamp_millis
-        if trade.timestamp_millis - self.time_bar_start_timestamp >= 1000:
-            self._end_of_bar()
-            self.time_bar_start_timestamp = trade.timestamp_millis
+
+        self._check_for_end_of_bar(trade.timestamp_millis)
         self.price_buffer.append(trade.price)
         self.size_buffer.append(trade.size)
 
     def _tob_event(self, tob: pd.Series) -> None:
-        if self.time_bar_start_timestamp is None:
-            self.time_bar_start_timestamp = tob.timestamp_millis
-        if tob.timestamp_millis - self.time_bar_start_timestamp >= 1000:
-            self._end_of_bar()
-            self.time_bar_start_timestamp = tob.timestamp_millis
+        self._check_for_end_of_bar(tob.timestamp_millis)
         self.market_bid = tob.bid_price
         self.market_ask = tob.ask_price
         if self.bid is not None and self.market_ask is not None and self.bid >= self.market_ask:
@@ -197,11 +195,24 @@ class Backtest:
         if self.ask is not None and self.market_bid is not None and self.ask <= self.market_bid:
             self._passive_sell()
 
+    def _check_for_end_of_time_bar(self, timestamp: datetime.datetime) -> None:
+        if self.bar == Bar.ONE_SECOND:
+            if self.time_bar_start_timestamp is None:
+                self.time_bar_start_timestamp = timestamp
+            if timestamp - self.time_bar_start_timestamp >= 1000:
+                self._end_of_bar()
+                self.time_bar_start_timestamp = timestamp
+        elif self.bar == Bar.TEN_TICKS:
+            self.tick_bar_counter = self.tick_bar_counter + 1
+            if self.tick_bar_counter >= 10:
+                self._end_of_bar()
+                self.tick_bar_counter = 0
+
     def _end_of_bar(self) -> None:
         if self.strategy == Strategy.ASMM_PHI:
             self._end_of_bar_asmm_phi()
         elif self.strategy == Strategy.ASMM_HIGH_LOW:
-            self._end_of_bar_asmm_high_low()
+            self._end_of_bar_asmm_nu()
         elif self.strategy == Strategy.ROLL_MODEL:
             self._end_of_bar_roll_model()
         if self.position >= self.max_position:
@@ -218,11 +229,11 @@ class Backtest:
         self.size_buffer = []
         self._record_backtest_results()
 
-    def _end_of_bar_asmm_high_low(self) -> None:
+    def _end_of_bar_asmm_nu(self) -> None:
         if self.price_buffer:
             high = np.max(self.price_buffer)
             low = np.min(self.price_buffer)
-            self.skew = (self.position / self.max_position) * (high - low)
+            self.skew = self.parameters['nu'] * (self.position / self.max_position) * (high - low)
             if self.skew > 0:
                 self.bid = int(low - self.skew)
                 self.ask = int(high)
