@@ -3,8 +3,6 @@ import random
 import numpy as np
 import pandas as pd
 import tools
-from typing import Tuple, Dict
-from config import Strategy
 import config as _config
 from typing import Tuple
 from config import Strategy, Bar
@@ -43,24 +41,25 @@ def _generate_summary_statistics(backtest: pd.DataFrame) -> pd.DataFrame:
                             'sharpe_zero_risk_free': sharpe_zero_risk_free}, index=[0])
     return summary
 
-def _get_autocovariance(Xi,t):
+
+def _get_autocovariance(xi, t):
     """
     for series of values x_i, length N, compute empirical auto-cov with lag t
-    defined: 1/(N-1) * \sum_{i=0}^{N-t} ( x_i - x_s ) * ( x_{i+t} - x_s )
+    defined: 1/(N-1) * sum_{i=0}^{N-t} ( x_i - x_s ) * ( x_{i+t} - x_s )
     """
-    N = len(Xi)
+    n = len(xi)
 
     # use sample mean estimate from whole series
-    Xs = np.mean(Xi)
+    xs = np.mean(xi)
 
     # construct copies of series shifted relative to each other, 
     # with mean subtracted from values
-    end_padded_series = np.zeros(N+t)
-    end_padded_series[:N] = Xi - Xs
-    start_padded_series = np.zeros(N+t)
-    start_padded_series[t:] = Xi - Xs
+    end_padded_series = np.zeros(n + t)
+    end_padded_series[:n] = xi - xs
+    start_padded_series = np.zeros(n + t)
+    start_padded_series[t:] = xi - xs
 
-    auto_cov = 1./(N-1) * np.sum( start_padded_series*end_padded_series )
+    auto_cov = 1. / (n - 1) * np.sum(start_padded_series * end_padded_series)
     return auto_cov
 
 
@@ -71,7 +70,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             tob = pd.read_csv(
-                _config.source_directory + 'inputs/' + date_string + '_Binance_' + self.symbol + '_tob.csv')
+                _config.source_directory + 'inputs/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
             tobs = tobs.append(tob)
         return tobs
 
@@ -264,49 +263,34 @@ class Backtest:
                 else:
                     self.bid = int(vwap - (self.spread / 2))
                     self.ask = int(vwap + (self.spread / 2) - self.skew)
-    
+
     def _end_of_bar_roll_model(self) -> None:
         if len(self.price_buffer) > 0:
-            autocov = None
+            autocovariance = None
             vwap = np.average(self.price_buffer, weights=self.size_buffer)
-            high = np.max(self.price_buffer)
-            low = np.min(self.price_buffer)
-            self.skew = (self.position / self.max_position) * (high - low)
             self.vwap_buffer.append(vwap)
             trend = None
             if len(self.vwap_buffer) > self.horizon:
                 self.vwap_buffer.pop(0)
             if len(self.vwap_buffer) >= self.horizon:
-                #Calculate autocorrelation
                 delta_vwaps = np.diff(self.vwap_buffer)
                 delta_vwaps = np.array(delta_vwaps)
                 x = delta_vwaps[~np.isnan(delta_vwaps)]
-                autocov = _get_autocovariance(x,1)#lag 1
-                pd_vwaps = pd.Series(self.vwap_buffer)
-                ema = pd_vwaps.ewm(halflife=20, min_periods = 60).mean()
-                trend = ema[-1] - ema[-2]
+                autocovariance = _get_autocovariance(x, 1)
+                trend = self.vwap_buffer[-1] - self.vwap_buffer[0]
                 self.sigma = delta_vwaps.std()
-            if self.sigma is not None and autocov < 0:
-                #self.skew = (self.parameters['phi'] * (self.sigma * self.tick_size) * self.position / (
-                #    self.max_position)) / self.tick_size
-                self.spread = np.sqrt(-1 * autocov)
-                #self.spread = self.parameters['phi'] * self.sigma
-                self.ask = int(vwap + (self.spread))
-                self.bid = int(vwap - (self.spread))
-                #if self.skew > 0:
-                #    self.bid = int(vwap - (self.spread) - self.skew)
-                #    self.ask = int(vwap + (self.spread))
-                #else:
-                #    self.bid = int(vwap - (self.spread))
-                #    self.ask = int(vwap + (self.spread) - self.skew)
+            self.bid = None
+            self.ask = None
+            if self.sigma is not None and autocovariance < 0:
+                self.spread = np.sqrt(-1 * autocovariance)
+                self.ask = int(vwap + self.spread)
+                self.bid = int(vwap - self.spread)
             elif trend is not None:
-                if trend >0:
-                    self.bid = int(vwap - (self.spread))
-                else:
-                    self.ask = int(vwap + (self.spread))
-            else:
-                self.bid = None
-                self.ask = None
+                self.spread = np.sqrt(autocovariance)
+                if trend > 0:
+                    self.bid = int(vwap - self.spread)
+                elif trend < 0:
+                    self.ask = int(vwap + self.spread)
 
     def _passive_buy(self) -> None:
         self._buy(self.bid)
