@@ -156,13 +156,18 @@ class Backtest:
         return backtest_results, summary_stats
 
     def _trade_event(self, trade: pd.Series) -> None:
-
         self._check_for_end_of_bar(trade.timestamp_millis)
         self.price_buffer.append(trade.price)
         self.size_buffer.append(trade.size)
 
+    def _check_for_end_of_bar(self, timestamp: datetime.datetime) -> None:
+        if self.bar == Bar.ONE_SECOND:
+            self._check_for_end_of_time_bar(timestamp)
+        elif self.bar == Bar.TEN_TICKS:
+            self._check_for_end_of_tick_bar()
+
     def _tob_event(self, tob: pd.Series) -> None:
-        self._check_for_end_of_bar(tob.timestamp_millis)
+        self._check_for_end_of_time_bar(tob.timestamp_millis)
         self.market_bid = tob.bid_price
         self.market_ask = tob.ask_price
         if self.bid is not None and self.market_ask is not None and self.bid >= self.market_ask:
@@ -171,17 +176,17 @@ class Backtest:
             self._passive_sell()
 
     def _check_for_end_of_time_bar(self, timestamp: datetime.datetime) -> None:
-        if self.bar == Bar.ONE_SECOND:
-            if self.time_bar_start_timestamp is None:
-                self.time_bar_start_timestamp = timestamp
-            if timestamp - self.time_bar_start_timestamp >= 1000:
-                self._end_of_bar()
-                self.time_bar_start_timestamp = timestamp
-        elif self.bar == Bar.TEN_TICKS:
-            self.tick_bar_counter = self.tick_bar_counter + 1
-            if self.tick_bar_counter >= 10:
-                self._end_of_bar()
-                self.tick_bar_counter = 0
+        if self.time_bar_start_timestamp is None:
+            self.time_bar_start_timestamp = timestamp
+        if timestamp - self.time_bar_start_timestamp >= 1000:
+            self._end_of_bar()
+            self.time_bar_start_timestamp = timestamp
+
+    def _check_for_end_of_tick_bar(self) -> None:
+        self.tick_bar_counter = self.tick_bar_counter + 1
+        if self.tick_bar_counter >= 10:
+            self._end_of_bar()
+            self.tick_bar_counter = 0
 
     def _end_of_bar(self) -> None:
         if self.strategy == Strategy.ASMM_PHI:
