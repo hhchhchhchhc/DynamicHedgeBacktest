@@ -4,11 +4,32 @@ import config as _config
 import pandas as pd
 from market_data import MarketData
 from concurrent.futures import ProcessPoolExecutor
+import tools
+import os
+
+def run_roll_model(date_string: str) -> None:
+    print(f'running roll model strategy on {date_string}')
+    #date_string ='20210912'
+    start_date = datetime.date(int(date_string[0:4]), int(date_string[4:6]), int(date_string[6:8]))
+    number_of_days = 3
+    strategy = _config.Strategy.ROLL_MODEL
+    parameters = None
+    symbol = 'ADAUSDT'
+    instrument_id = tools.get_id_from_symbol(symbol)
+    my_backtest = Backtest('ADAUSDT', strategy, parameters, start_date, number_of_days)
+    results, summary = my_backtest.run()
+    results.to_csv(_config.source_directory + f'{instrument_id}_{date_string}_new_results_roll_model.csv', index=False)
+    summary.to_csv(_config.source_directory + f'{instrument_id}_{date_string}_new_summary_roll_model.csv', index=False)
+
+
+def f(phi: float) -> None:
+    print('running c = ' + str("{:,.2f}".format(phi)))
+    date_string ='20210912'
+    start_date = datetime.date(int(date_string[0:4]), int(date_string[4:6]), int(date_string[6:8]))
 
 
 def main():
     run_nu(nu=1.0)
-
 
 def create_tick_bars():
     date = datetime.date(2021, 10, 1)
@@ -25,30 +46,47 @@ def run_phi(phi: float) -> None:
     bar = _config.Bar.ONE_SECOND
     strategy = _config.Strategy.ASMM_PHI
     parameters = {'phi': phi}
-    my_backtest = Backtest('XRPUSDT', bar, strategy, parameters, start_date, number_of_days)
+    symbol = 'ADAUSDT'
+    instrument_id = tools.get_id_from_symbol(symbol)
+    my_backtest = Backtest(symbol, strategy, parameters, start_date, number_of_days)
     results, summary = my_backtest.run()
-    results.to_csv(_config.source_directory + 'new_results_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
-    summary.to_csv(_config.source_directory + 'new_summary_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
+    results.to_csv(_config.source_directory + f'{instrument_id}_{date_string}_new_results_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
+    summary.to_csv(_config.source_directory + f'{instrument_id}_{date_string}_new_summary_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
 
 
+def run_high_low():
+    print('running high low strategy')
+    date_string ='20210912'
+    start_date = datetime.date(int(date_string[0:4]), int(date_string[4:6]), int(date_string[6:8]))
+    
 def run_nu(nu: float) -> None:
     print('running nu = ' + str("{:,.2f}".format(nu)))
     start_date = datetime.date(2021, 10, 1)
     number_of_days = 1
     bar = _config.Bar.TEN_TICKS
     strategy = _config.Strategy.ASMM_HIGH_LOW
-    parameters = {'nu': nu}
-    my_backtest = Backtest('XRPUSDT', bar, strategy, parameters, start_date, number_of_days)
+    parameters = None
+    symbol = 'ADAUSDT'
+    instrument_id = tools.get_id_from_symbol(symbol)
+    my_backtest = Backtest('ADAUSDT', strategy, parameters, start_date, number_of_days)
     results, summary = my_backtest.run()
-    results.to_csv(_config.source_directory + 'new_results_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
-    summary.to_csv(_config.source_directory + 'new_summary_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
+    results.to_csv(_config.source_directory + f'{instrument_id}_{date_string}_new_results_high_low.csv', index=False)
+    summary.to_csv(_config.source_directory + f'{instrument_id}_{date_string}_new_summary_high_low.csv', index=False)
 
 
-def run_nus():
-    nus = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
-    with ProcessPoolExecutor(5) as pool:
-        for nu in nus:
-            pool.submit(run_nu, nu)
+def main():
+    #f(phi=1.0)
+    #run_high_low()
+    symbol = 'ADAUSDT'
+    files = os.listdir('/Users/rahmanw/Dev/btc_busd/parquet/')
+    instrument_id  = str(tools.get_id_from_symbol(symbol))
+    files = os.listdir('/Users/rahmanw/Dev/btc_busd/parquet/')
+    symbol_files = sorted([i for i in files if instrument_id in i and 'trade.parquet' in i])
+    symbol_dates =[i.split('_')[0] for i in symbol_files]
+    print('ID:',instrument_id,'Symbol:',symbol, 'dates:', symbol_dates)
+    with ProcessPoolExecutor(4) as pool:
+        for date in symbol_dates:
+            pool.submit(run_roll_model, date)
 
 
 def run_phis():
@@ -83,16 +121,16 @@ def format_files():
     for d in range(22):
         date = datetime.date(2021, 9, 1) + datetime.timedelta(days=d)
         try:
+            symbol = 'XRPUSDT'
+            instrument_id = tools.get_id_from_symbol(symbol)
             my_market_data = MarketData('XRPUSDT')
             my_market_data.load_trade_data_from_parquet(date)
             my_market_data.load_top_of_book_data_from_parquet(date)
             my_market_data.generate_formatted_trades_data()
             my_market_data.generate_formatted_top_of_book_data()
             date_string = date.strftime('%Y%m%d')
-            my_market_data.trades_formatted.to_csv(_config.source_directory + 'formatted/trades/' + date_string +
-                                                   '_Binance_XRPUSDT_trades.csv')
-            my_market_data.top_of_book_formatted.to_csv(_config.source_directory + 'formatted/tobs/' + date_string +
-                                                        '_Binance_XRPUSDT_tobs.csv')
+            my_market_data.trades_formatted.to_csv(_config.source_directory + f'inputs/{instrument_id}_{date_string}_Binance_{symbol}_trades.csv')
+            my_market_data.top_of_book_formatted.to_csv(_config.source_directory + f'inputs/{instrument_id}_{date_string}_Binance_{symbol}_tob.csv')
         except FileNotFoundError as error:
             print(repr(error))
 

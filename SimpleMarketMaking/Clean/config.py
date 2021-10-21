@@ -13,12 +13,13 @@ config = pd.DataFrame(data={'id': [70916, 4610, 70510, 4623, 63048, 4627, 72202,
                                                         0.1],
                             'minimum_order_size_quote': [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]})
 
-source_directory: str = 'C:/Users/Tibor/Data/'
+source_directory: str = '/Users/rahmanw/Dev/Puffin/SimpleMarketMaking/Clean/'
 
 
 class Strategy(Enum):
     ASMM_PHI = 1
     ASMM_HIGH_LOW = 2
+    ROLL_MODEL = 3
 
 
 class Bar(Enum):

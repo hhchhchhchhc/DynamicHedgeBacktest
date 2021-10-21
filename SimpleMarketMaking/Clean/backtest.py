@@ -3,6 +3,9 @@ import random
 import numpy as np
 import pandas as pd
 import tools
+from typing import Tuple, Dict
+from config import Strategy
+import config as _config
 from typing import Tuple
 from config import Strategy, Bar
 
@@ -40,6 +43,26 @@ def _generate_summary_statistics(backtest: pd.DataFrame) -> pd.DataFrame:
                             'sharpe_zero_risk_free': sharpe_zero_risk_free}, index=[0])
     return summary
 
+def _get_autocovariance(Xi,t):
+    """
+    for series of values x_i, length N, compute empirical auto-cov with lag t
+    defined: 1/(N-1) * \sum_{i=0}^{N-t} ( x_i - x_s ) * ( x_{i+t} - x_s )
+    """
+    N = len(Xi)
+
+    # use sample mean estimate from whole series
+    Xs = np.mean(Xi)
+
+    # construct copies of series shifted relative to each other, 
+    # with mean subtracted from values
+    end_padded_series = np.zeros(N+t)
+    end_padded_series[:N] = Xi - Xs
+    start_padded_series = np.zeros(N+t)
+    start_padded_series[t:] = Xi - Xs
+
+    auto_cov = 1./(N-1) * np.sum( start_padded_series*end_padded_series )
+    return auto_cov
+
 
 class Backtest:
     def _get_tobs_from_csvs(self, start_date: datetime.date, number_of_days: int) -> pd.DataFrame:
@@ -48,7 +71,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             tob = pd.read_csv(
-                'C:/Users/Tibor/Data/formatted/tobs/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
+                _config.source_directory + 'inputs/' + date_string + '_Binance_' + self.symbol + '_tob.csv')
             tobs = tobs.append(tob)
         return tobs
 
@@ -58,7 +81,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             trade = pd.read_csv(
-                'C:/Users/Tibor/Data/formatted/trades/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
+                _config.source_directory + 'inputs/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
             trades = trades.append(trade)
         return trades
 
@@ -73,8 +96,10 @@ class Backtest:
         self.trades = self._get_trades_from_csvs(start_date, number_of_days)
         self.tick_size = tools.get_tick_size_from_symbol(self.symbol)
         self.step_size = tools.get_step_size_from_symbol(self.symbol)
-        self.quote_size = 1 / self.step_size
-        self.max_position = 10 / self.step_size
+        self.quote_size = 200 / self.step_size
+        self.max_position = 2000 / self.step_size
+        self.quote_dollars = None
+        self.max_position_dollars = None
         self.time_bar_start_timestamp = None
         self.tick_bar_counter = 0
         self.price_buffer = []
@@ -193,6 +218,8 @@ class Backtest:
             self._end_of_bar_asmm_phi()
         elif self.strategy == Strategy.ASMM_HIGH_LOW:
             self._end_of_bar_asmm_nu()
+        elif self.strategy == Strategy.ROLL_MODEL:
+            self._end_of_bar_roll_model()
         if self.position >= self.max_position:
             self.bid = None
         if self.position <= -self.max_position:
@@ -237,6 +264,49 @@ class Backtest:
                 else:
                     self.bid = int(vwap - (self.spread / 2))
                     self.ask = int(vwap + (self.spread / 2) - self.skew)
+    
+    def _end_of_bar_roll_model(self) -> None:
+        if len(self.price_buffer) > 0:
+            autocov = None
+            vwap = np.average(self.price_buffer, weights=self.size_buffer)
+            high = np.max(self.price_buffer)
+            low = np.min(self.price_buffer)
+            self.skew = (self.position / self.max_position) * (high - low)
+            self.vwap_buffer.append(vwap)
+            trend = None
+            if len(self.vwap_buffer) > self.horizon:
+                self.vwap_buffer.pop(0)
+            if len(self.vwap_buffer) >= self.horizon:
+                #Calculate autocorrelation
+                delta_vwaps = np.diff(self.vwap_buffer)
+                delta_vwaps = np.array(delta_vwaps)
+                x = delta_vwaps[~np.isnan(delta_vwaps)]
+                autocov = _get_autocovariance(x,1)#lag 1
+                pd_vwaps = pd.Series(self.vwap_buffer)
+                ema = pd_vwaps.ewm(halflife=20, min_periods = 60).mean()
+                trend = ema[-1] - ema[-2]
+                self.sigma = delta_vwaps.std()
+            if self.sigma is not None and autocov < 0:
+                #self.skew = (self.parameters['phi'] * (self.sigma * self.tick_size) * self.position / (
+                #    self.max_position)) / self.tick_size
+                self.spread = np.sqrt(-1 * autocov)
+                #self.spread = self.parameters['phi'] * self.sigma
+                self.ask = int(vwap + (self.spread))
+                self.bid = int(vwap - (self.spread))
+                #if self.skew > 0:
+                #    self.bid = int(vwap - (self.spread) - self.skew)
+                #    self.ask = int(vwap + (self.spread))
+                #else:
+                #    self.bid = int(vwap - (self.spread))
+                #    self.ask = int(vwap + (self.spread) - self.skew)
+            elif trend is not None:
+                if trend >0:
+                    self.bid = int(vwap - (self.spread))
+                else:
+                    self.ask = int(vwap + (self.spread))
+            else:
+                self.bid = None
+                self.ask = None
 
     def _passive_buy(self) -> None:
         self._buy(self.bid)
