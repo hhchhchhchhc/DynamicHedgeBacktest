@@ -76,11 +76,12 @@ def strategy2():
     type_allowed='perpetual'
     max_nb_coins = 10
     carry_floor = 0.4
-    slippage_scaler=0.5
-    slippage_orderbook_depth=0
+    slippage_override=2e-4
+#    slippage_scaler=0.5
+#    slippage_orderbook_depth=0
     signal_horizon=timedelta(days=3)
-    backtest_window=timedelta(days=30)
-    holding_period__for_slippage=timedelta(days=3)
+    backtest_window=timedelta(days=180)
+    holding_period_for_slippage=timedelta(days=3)
 
     enriched=enricher(exchange, futures)
     pre_filtered = enriched[
@@ -106,14 +107,14 @@ def strategy2():
         hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
         to_parquet(hy_history,"history.parquet")
 
-    point_in_time=asofdate-backtest_window
+    point_in_time=asofdate-holding_period_for_slippage
     scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=point_in_time,
-                            depths=[slippage_orderbook_depth],slippage_scaler=slippage_scaler,
-                            holding_period__for_slippage = holding_period__for_slippage,
-                            signal_horizon=signal_horizon).sort_values(by='maxCarry')
-    print(scanned[['symbol','maxPos','maxCarry']])
-    scanned=scanned[scanned['maxCarry']>carry_floor].tail(max_nb_coins)
-    static_backtest = max_leverage_carry(scanned,hy_history,end=point_in_time,start=asofdate-backtest_window)
+                            slippage_override=slippage_override,
+                            holding_period__for_slippage = holding_period_for_slippage,signal_horizon=signal_horizon,
+                            risk_aversion=1).sort_values(by='optimalWeight')
+    print(scanned[['symbol','optimalWeight','optimalCarry']])
+    floored=scanned[scanned['optimalCarry']>carry_floor].tail(max_nb_coins)
+    static_backtest = max_leverage_carry(floored,hy_history,end=point_in_time,start=asofdate-backtest_window)
 
     #    sns.histplot(data=pd.DataFrame([(a.loc[1:,'BTC-PERP/mark/c']-a.loc[:-2,'BTC-PERP/mark/c']),a['BTC-PERP/rate/c'],a['BTC-PERP/rate/h']-a['BTC-PERP/rate/c'],a['BTC-PERP/rate/l']-a['BTC-PERP/rate/c']]))
     outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
