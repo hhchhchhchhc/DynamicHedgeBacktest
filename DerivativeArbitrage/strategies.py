@@ -79,7 +79,7 @@ def strategy2():
     slippage_scaler=0.5
     slippage_orderbook_depth=0
     signal_horizon=timedelta(days=3)
-    backtest_window=timedelta(days=180)
+    backtest_window=timedelta(days=30)
     holding_period__for_slippage=timedelta(days=3)
 
     enriched=enricher(exchange, futures)
@@ -106,17 +106,18 @@ def strategy2():
         hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
         to_parquet(hy_history,"history.parquet")
 
-    scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=asofdate,
+    point_in_time=asofdate-backtest_window
+    scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=point_in_time,
                             depths=[slippage_orderbook_depth],slippage_scaler=slippage_scaler,
                             holding_period__for_slippage = holding_period__for_slippage,
                             signal_horizon=signal_horizon).sort_values(by='maxCarry')
     print(scanned[['symbol','maxPos','maxCarry']])
     scanned=scanned[scanned['maxCarry']>carry_floor].tail(max_nb_coins)
-    static_backtest = max_leverage_carry(scanned,hy_history,end=asofdate+backtest_window,start=asofdate).transpose()
+    static_backtest = max_leverage_carry(scanned,hy_history,end=point_in_time,start=asofdate-backtest_window)
 
     #    sns.histplot(data=pd.DataFrame([(a.loc[1:,'BTC-PERP/mark/c']-a.loc[:-2,'BTC-PERP/mark/c']),a['BTC-PERP/rate/c'],a['BTC-PERP/rate/h']-a['BTC-PERP/rate/c'],a['BTC-PERP/rate/l']-a['BTC-PERP/rate/c']]))
     outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
-    outputit(static_backtest.T.describe([.1, .5, .9]).T*24*365.25,'backtest','ftx',{'excelit':True,'pickleit':False})
+    outputit(static_backtest.T.describe([.1,.25, .5,.75, .9])*24*365.25,'backtest','ftx',{'excelit':True,'pickleit':False})
 
 
 strategy2()
