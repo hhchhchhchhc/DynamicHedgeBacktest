@@ -76,12 +76,13 @@ def strategy2():
     type_allowed='perpetual'
     max_nb_coins = 10
     carry_floor = 0.4
-    slippage_override=2e-4
+    slippage_override=2e-4  #### this is given by mktmaker
 #    slippage_scaler=0.5
 #    slippage_orderbook_depth=0
     signal_horizon=timedelta(days=3)
     backtest_window=timedelta(days=180)
-    holding_period_for_slippage=timedelta(days=3)
+    holding_period=timedelta(days=3)
+    loss_tolerance=0.5
 
     enriched=enricher(exchange, futures)
     pre_filtered = enriched[
@@ -107,11 +108,44 @@ def strategy2():
         hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
         to_parquet(hy_history,"history.parquet")
 
-    point_in_time=asofdate-holding_period_for_slippage
+    point_in_time=asofdate-holding_period
     scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=point_in_time,
                             slippage_override=slippage_override,
-                            holding_period__for_slippage = holding_period_for_slippage,signal_horizon=signal_horizon,
-                            risk_aversion=1).sort_values(by='optimalWeight')
+                            holding_period = holding_period,signal_horizon=signal_horizon,
+                            loss_tolerance=loss_tolerance).sort_values(by='optimalWeight')
+
+    by_loss_tolerance = pd.Series(np.linspace(0.01, 0.51, 6)).apply(lambda y:
+                basis_scanner(exchange,pre_filtered,hy_history,
+                point_in_time=point_in_time,
+                slippage_override=slippage_override,
+                holding_period=holding_period,
+                signal_horizon=signal_horizon,
+                loss_tolerance=y))['symbol','optimalWeight','optimalCarry']
+
+    by_time = pd.Series([point_in_time-timedelta(weeks=w) for w in range(20)]).apply(lambda y:
+            basis_scanner(exchange,pre_filtered,hy_history,
+                point_in_time=y,
+                slippage_override=slippage_override,
+                holding_period=holding_period,
+                signal_horizon=signal_horizon,
+                loss_tolerance=loss_tolerance))['symbol','optimalWeight','optimalCarry']
+
+    by_hold = pd.Series([timedelta(days=d) for d in range(10)]).apply(lambda y:
+          basis_scanner(exchange, pre_filtered, hy_history,
+                        point_in_time=point_in_time,
+                        slippage_override=slippage_override,
+                        holding_period=y,
+                        signal_horizon=signal_horizon,
+                        loss_tolerance=loss_tolerance))['symbol', 'optimalWeight', 'optimalCarry']
+
+    by_horizon = pd.Series([timedelta(days=d) for d in range(10)]).apply(lambda y:
+          basis_scanner(exchange, pre_filtered, hy_history,
+                        point_in_time=point_in_time,
+                        slippage_override=slippage_override,
+                        holding_period=holding_period,
+                        signal_horizon=y,
+                        loss_tolerance=loss_tolerance))['symbol', 'optimalWeight', 'optimalCarry']
+
     print(scanned[['symbol','optimalWeight','optimalCarry']])
     floored=scanned[scanned['optimalCarry']>carry_floor].tail(max_nb_coins)
     static_backtest = max_leverage_carry(floored,hy_history,end=point_in_time,start=asofdate-backtest_window)

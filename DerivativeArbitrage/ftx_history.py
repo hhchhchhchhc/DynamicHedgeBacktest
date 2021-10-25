@@ -57,6 +57,7 @@ def borrow_history(spot,exchange,
 
     return data
 
+######### annualized funding for perps
 def funding_history(future,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
@@ -91,6 +92,7 @@ def funding_history(future,exchange,
 
     return data
 
+#### annualized rates for futures and perp
 def rate_history(future,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
@@ -147,10 +149,10 @@ def rate_history(future,exchange,
         data['rate/l'] = data.apply(
             lambda y: calc_basis(y['mark/l'], indexes.loc[y.name, 'indexes/low'], future['expiryTime'],
                                  datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
-    elif future['type'] == 'perpetual':
-        data['rate/c'] = mark['mark/c'] / indexes['indexes/close'] - 1
-        data['rate/h'] = mark['mark/h'] / indexes['indexes/high'] - 1
-        data['rate/l'] = mark['mark/l'] / indexes['indexes/low'] - 1
+    elif future['type'] == 'perpetual': ### 1h funding = (mark/spot-1)/24
+        data['rate/c'] = (mark['mark/c'] / indexes['indexes/close'] - 1)*365.25
+        data['rate/h'] = (mark['mark/h'] / indexes['indexes/high'] - 1)*365.25
+        data['rate/l'] = (mark['mark/l'] / indexes['indexes/low'] - 1)*365.25
     else:
         print('what is ' + future['symbol'] + ' ?')
         return
