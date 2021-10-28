@@ -46,6 +46,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
                   loss_tolerance=0.1,  # for markovitz
                   slippage_scaler=0.25,  # if scaler from order book
                   slippage_override=2e-4,  # external slippage override
+                  concentration_limit=0.25,
                   params={'override_slippage':True}):             # use external rather than order book
     borrows = fetch_coin_details(exchange)
     markets = exchange.fetch_markets()
@@ -161,8 +162,8 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     # banal mean variance...risk_aversion hard to interpret
     #objective = lambda x: -(np.dot(x, E_int) - risk_aversion * np.dot(x, np.dot(covariance, x)))
     #objective_jac = lambda x: -(expectation - risk_aversion * np.dot(covariance, x))
-    maxWeight_list = futures['maxWeight'].values
-    E_int_list = E_int.values
+    maxWeight_list = np.array(futures['maxWeight'])
+    E_int_list = np.array(E_int)
     ### objective is E_int + USDborrow * min(0,sum(w)), subject to weight bounds, sum and loss probability ceiling
     objective = lambda x: -(np.dot(x,E_int_list)) - E_USDborrow_int * min([0,np.dot(x,maxWeight_list)])# - risk_aversion* np.dot(x,np.dot(covariance,x)))
     objective_jac= lambda x: -(E_int_list) - (maxWeight_list*E_USDborrow_int if np.dot(x,maxWeight_list)<0 else np.zeros(len(x)))
@@ -174,7 +175,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     margin_constraint = {'type': 'ineq',
                'fun': lambda x: 1-sum(x),
                'jac': lambda x: -np.ones(n)}
-    bounds = scipy.optimize.Bounds(lb=0.01*np.ones(n), ub=np.ones(n))
+    bounds = scipy.optimize.Bounds(lb=np.zeros(n), ub=concentration_limit*np.ones(n))
 
     # guess: normalized point in time expectation
     x0=np.array(E_int)/sum(E_int)
@@ -183,13 +184,19 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
             constraints = [loss_tolerance_constraint,margin_constraint],bounds = bounds,
             options = {'ftol': 1e-9, 'disp': True})
 
-    futures['optimalWeight'] = res['x'] * futures['maxWeight'].values
-    futures['optimalCarry'] = res['x'] * intCarry_t.loc[point_in_time].values
+    futures['optimalWeight'] = res['x'] * maxWeight_list
+    futures.loc['USD', 'optimalWeight'] = -np.dot(res['x'],maxWeight_list)
+    futures['optimalCarry'] = res['x'] * E_int_list
+    futures.loc['USD','optimalCarry'] = E_USDborrow_int * min([0,np.dot(res['x'],maxWeight_list)])
 
-    col='BTC-PERP'
-    pd.concat([LongCarry[col], ShortCarry[col], E_long_t[col], E_short_t[col], Carry_t[col], intCarry_t[col]],
-                   axis=1).to_excel('all.xlsx',sheet_name=col)
+    for col in futures.sort_values(by='optimalCarry',ascending=False).head(5)['name']:
+        all=pd.concat([LongCarry[col], ShortCarry[col], E_long_t[col], E_short_t[col], Carry_t[col], intCarry_t[col]],
+                       axis=1)
+        all.columns=['LongCarry', 'ShortCarry', 'E_long_t', 'E_short_t', 'Carry_t', 'intCarry_t']
+        all.to_excel('all.xlsx',sheet_name=col)
 
+    futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'direction', 'optimalWeight', 'optimalCarry']].\
+        to_excel('all.xlsx',sheet_name='summary')
 
     return futures
 
