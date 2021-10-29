@@ -75,7 +75,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
         if size==0:
             futures['spot_ask_in_0'] = fees+futures.apply(lambda f: 0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler
             futures['spot_bid_in_0'] = -futures['spot_ask_in_0']
-            futures['future_ask_in_0'] = fees+0.5*(futures['ask'].a+stype(float)/futures['bid'].astype(float)-1)*slippage_scaler
+            futures['future_ask_in_0'] = fees+0.5*(futures['ask'].astype(float)/futures['bid'].astype(float)-1)*slippage_scaler
             futures['future_bid_in_0'] = -futures['future_ask_in_0']
             futures['speed_in_0']=0##*futures['future_ask_in_0'] ### just 0
         else:
@@ -162,13 +162,13 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     # banal mean variance...risk_aversion hard to interpret
     #objective = lambda x: -(np.dot(x, E_int) - risk_aversion * np.dot(x, np.dot(covariance, x)))
     #objective_jac = lambda x: -(expectation - risk_aversion * np.dot(covariance, x))
-    maxWeight_list = np.array(futures['maxWeight'])
-    E_int_list = np.array(E_int)
+    futures.set_index('name', inplace=True)
+    maxWeight_list = futures['maxWeight']
     ### objective is E_int + USDborrow * min(0,sum(w)), subject to weight bounds, sum and loss probability ceiling
-    objective = lambda x: -(np.dot(x,E_int_list)) - E_USDborrow_int * min([0,np.dot(x,maxWeight_list)])# - risk_aversion* np.dot(x,np.dot(covariance,x)))
-    objective_jac= lambda x: -(E_int_list) - (maxWeight_list*E_USDborrow_int if np.dot(x,maxWeight_list)<0 else np.zeros(len(x)))
+    objective = lambda x: -(np.dot(x,E_int)) - E_USDborrow_int * min([0,np.dot(x,maxWeight_list)])# - risk_aversion* np.dot(x,np.dot(covariance,x)))
+    objective_jac= lambda x: -(E_int) - (maxWeight_list*E_USDborrow_int if np.dot(x,maxWeight_list)<0 else np.zeros(len(x)))
 
-    n = len(futures['name'])
+    n = len(futures.index)
     loss_tolerance_constraint = {'type': 'ineq', ##### maybe Bounds is simpler ?
                  'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
                  ## dunno ,'jac': lambda x: 0}
@@ -186,14 +186,14 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
 
     futures['optimalWeight'] = res['x'] * maxWeight_list
     futures.loc['USD', 'optimalWeight'] = -np.dot(res['x'],maxWeight_list)
-    futures['optimalCarry'] = res['x'] * E_int_list
+    futures['optimalCarry'] = res['x'] * E_int
     futures.loc['USD','optimalCarry'] = E_USDborrow_int * min([0,np.dot(res['x'],maxWeight_list)])
 
-    for col in futures.sort_values(by='optimalCarry',ascending=False).head(5)['name']:
+    for col in futures.sort_values(by='optimalCarry',ascending=False).head(5).index:
         all=pd.concat([LongCarry[col], ShortCarry[col], E_long_t[col], E_short_t[col], Carry_t[col], intCarry_t[col]],
                        axis=1)
         all.columns=['LongCarry', 'ShortCarry', 'E_long_t', 'E_short_t', 'Carry_t', 'intCarry_t']
-        all.to_excel('all.xlsx',sheet_name=col)
+        all.to_excel(col+'.xlsx',sheet_name=col)
 
     futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'direction', 'optimalWeight', 'optimalCarry']].\
         to_excel('all.xlsx',sheet_name='summary')
