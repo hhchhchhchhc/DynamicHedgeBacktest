@@ -9,17 +9,27 @@ def build_history(futures,exchange,
 
     if futures[futures['type']=='perpetual'].empty: perp_funding_data=[]
     else:
-        perp_funding_data=futures[futures['type']=='perpetual'].apply(lambda f:funding_history(f,exchange),axis=1).to_list()
+        perp_funding_data=pd.concat([funding_history(f,exchange,start=start,end=end)
+                                     for (i,f) in futures[futures['type']=='perpetual'].iterrows()])
+        pd.DataFrame(perp_funding_data).to_pickle("allfundings.pickle")
 
-    future_rate_data = futures.apply(lambda f: rate_history(f, exchange),axis=1).to_list()
-    spot_data=futures.apply(lambda f: spot_history(f, exchange,timeframe=timeframe),axis=1).to_list()
-    borrow_data=[borrow_history(f, exchange) for f in futures['underlying'].unique()]\
-                +[borrow_history('USD',exchange)]
+    future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe)
+               for (i, f) in futures[futures['type'] == 'perpetual'].iterrows()],
+              axis=1)
+    spot_data=pd.concat([spot_history(f, exchange, end, start, timeframe)
+               for (i, f) in futures[futures['type'] == 'perpetual'].iterrows()],
+              axis=1)
+    borrow_data=pd.concat([borrow_history(f, exchange, end, start)
+               for f in futures['underlying'].unique()]
+                          +[borrow_history('USD',exchange,end,start)],
+              axis=1)
 
-    data= pd.concat(perp_funding_data
-                    +future_rate_data
-                    +spot_data
-                    +borrow_data,join='outer',axis=1)
+    borrow_data.to_pickle("allborrows.pickle")
+
+    data= pd.concat([perp_funding_data,
+                    future_rate_data,
+                    spot_data,
+                    borrow_data],join='outer',axis=1)
     return data
 
 ### only perps, only borrow and funding, only hourly
@@ -159,6 +169,8 @@ def rate_history(future,exchange,
     data.columns = [future['symbol'] + '/' + c for c in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
 
+    data.to_pickle(future['symbol']+"_futures.pickle")
+
     return data
 
 def spot_history(future,exchange,
@@ -189,6 +201,8 @@ def spot_history(future,exchange,
     data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
     data.columns = [future['symbol'] + '/spot/' + column for column in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+
+    data.to_pickle(future['symbol'] + "_spot.pickle")
 
     return data
 
@@ -236,3 +250,4 @@ def max_leverage_carry(futures,rates_history,
     data = pd.concat(futures.apply(lambda f:carry_backtest(f,rates_history,start=start,end=end), axis = 1).to_list(),join='inner', axis=1)
 
     return data
+
