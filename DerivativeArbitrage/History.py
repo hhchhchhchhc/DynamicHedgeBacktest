@@ -1,66 +1,74 @@
 import pandas as pd
 
+from ftx_snap_basis import *
 from ftx_utilities import *
 from ftx_ftx import *
 
 ### History holds times series (fetched or read).
 class RawHistory:
-    def __init__(self, futures: pd.DataFrame, exchange: Exchange) -> None:
-        self.futures=futures ## need name, symbol, underlying, type, expiry
-        self.exchange=exchange
-        self.timeframe=str()
-        self.start_date = datetime()
-        self.end_date = datetime()
-        self.hy_history = pd.DataFrame()
-    def build(self,timeframe: str,
+    def __init__(self, futures: pd.DataFrame) -> None:
+        self._futures=futures ## need name, symbol, underlying, type, expiry
+        self._timeframe='1h'
+        self._start_date = datetime.now()
+        self._end_date = datetime.now()
+        self._history = pd.DataFrame()
+    def build(self,exchange: Exchange,timeframe: str,
                  start_date: datetime.date,
-                 end_date: datetime.date) -> None:
-        self.timeframe = timeframe
-        self.start_date = start_date
-        self.end_date = end_date
-        self.hy_history = RawHistory.read_or_fetch_history(futures, exchange, timeframe, start_date, end_date)
+                 end_date: datetime.date,
+                filename: str='') -> None:
+        self._timeframe = timeframe
+        self._start_date = start_date
+        self._end_date = end_date
+        self._history = RawHistory.read_or_fetch_history(self._futures, exchange,
+                                                            self._timeframe, self._start_date, self._end_date,
+                                                            filename)
     @staticmethod
     def read_or_fetch_history(futures: pd.DataFrame, exchange: Exchange,
                  timeframe: str,
                  start_date: datetime.date,
-                 end_date: datetime.date) -> pd.DataFrame:
+                 end_date: datetime.date,
+                 filename: str) -> pd.DataFrame:
         #### read history, fetch if absent
         try:
-            hy_history = from_parquet("history.parquet")
+            hy_history = from_parquet(filename)
         except:
-            hy_history = fetch_history(futures, exchange, timeframe, end_date, start_date)
-            to_parquet(hy_history, "history.parquet")
+            hy_history = RawHistory.fetch_history(futures, exchange,
+                                                            timeframe, start_date, end_date)
+            to_parquet(hy_history, filename)
             return hy_history
 
         ### if more dates, fetch history
         if not ((start_date in hy_history.index)&(end_date in hy_history.index)): ## ignore timeframe...
-            hy_history = fetch_history(futures, exchange, timeframe, end_date, start_date)
-            to_parquet(hy_history, "history.parquet")
+            hy_history = RawHistory.fetch_history(futures, exchange,
+                                                            timeframe, start_date, end_date)
+            to_parquet(hy_history, filename)
         else:
             existing_futures = [name.split('/')[0] for name in hy_history.columns]
             new_futures = futures[futures['symbol'].isin(existing_futures) == False]
             ### if more futures, only fetch those
             if new_futures.empty == False:
                 hy_history = pd.concat([hy_history,
-                                        fetch_history(new_futures, exchange, timeframe, end_date, start_date)],
+                                    RawHistory.fetch_history(new_futures, exchange,
+                                                            timeframe, start_date, end_date)],
                                        join='outer', axis=1)
-                to_parquet(hy_history, "history.parquet")
+                to_parquet(hy_history, filename)
         return hy_history
 
     @staticmethod
-    def fetch_history(self, futures: pd.DataFrame, exchange: Exchange,
+    def fetch_history(futures: pd.DataFrame, exchange: Exchange,
                  timeframe: str,
                  start: datetime.date,
                  end: datetime.date) -> pd.DataFrame:
 
         if futures[futures['type']=='perpetual'].empty: perp_funding_data=[]
         else:
-            perp_funding_data=futures[futures['type']=='perpetual'].apply(lambda f:fetch_funding_history(f,exchange),axis=1).to_list()
+            perp_funding_data=futures[futures['type']=='perpetual'].apply(lambda f:
+                                RawHistory.fetch_funding_history(f,exchange,start,end),axis=1).to_list()
 
-        future_rate_data = futures.apply(lambda f: fetch_rate_history(f, exchange),axis=1).to_list()
-        spot_data=futures.apply(lambda f: fetch_spot_history(f, exchange,timeframe=timeframe),axis=1).to_list()
-        borrow_data=[fetch_borrow_history(f, exchange) for f in futures['underlying'].unique()]\
-                    +[fetch_borrow_history('USD',exchange)]
+        future_rate_data = futures.apply(lambda f: RawHistory.fetch_rate_history(f, exchange,timeframe,start,end),axis=1).to_list()
+        spot_data=futures.apply(lambda f: RawHistory.fetch_spot_history(f, exchange,timeframe,start,end),axis=1).to_list()
+        borrow_data=[RawHistory.fetch_borrow_history(f, exchange,start,end) for f in futures['underlying'].unique()]\
+                    +[RawHistory.fetch_borrow_history('USD',exchange,start,end)]
 
         data= pd.concat(perp_funding_data
                         +future_rate_data
@@ -244,31 +252,31 @@ class RawHistory:
 
 ### EstimationModel describes how to model distribution of assets. Currently historical ewm but could add hw2f.
 class EstimationModel:
-    def __init__(self,signal_horizon: datetime.timedelta) -->None:
-        self.signal_horizon=signal_horizon
+    def __init__(self,signal_horizon: timedelta) ->None:
+        self._signal_horizon=signal_horizon
 ### AssetDefinition describes atomic positions. Currently only \int{perp-cash} per (name,direction)
 class AssetDefinition:
-    def __init__(self,holding_period: datetime.timedelta) -->None:
-        self.holding_period=holding_period
+    def __init__(self,holding_period: timedelta) ->None:
+        self._holding_period=holding_period
 
 ### ModelledAssets holds risk/reward of atomic positions, whose weights will then be optimized by PortfolioBuilder.
 ### Needs RawHistory, EstimationParameters (eg: ewm window), AssetDefinition (eg: integral over holding period)
 class ModelledAssets:
-    def __init__(self, futures: pd.DataFrame, signal_horizon: datetime.timedelta, holding_period: datetime.timedelta) -> None:
-        self.futures=futures
-        self.asset_definition = AssetDefinition(holding_period)
-        self.history=pd.DataFrame()
-        self.estimation_parameter = EstimationModel(signal_horizon)
+    def __init__(self, raw_history: RawHistory, signal_horizon: timedelta, holding_period: timedelta) -> None:
+        self._futures = raw_history._futures
+        self._asset_definition = AssetDefinition(holding_period)
+        self._history= raw_history._history
+        self._estimation_parameter = EstimationModel(signal_horizon)
 
     ### Constant rate slippage calculation. Reads order book, or applies override.
     def fetch_rate_slippage(self,exchange: Exchange,
-                      slippage_override: int=-999, depths: float=0, slippage_scaler: float=1.0) -> pd.DataFrame():
+                      slippage_override: int=-999, depths: float=0, slippage_scaler: float=1.0) -> None:
         # -------------------- transaction costs---------------
         # add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
         # Unless slippage override, calculate from orderbook (override Only live is supported).
         point_in_time=datetime.now()
         markets=exchange.fetch_markets()
-        futures = self.futures
+        futures = self._futures
         if slippage_override != -999:
             futures['bid_rate_slippage'] = slippage_override
             futures['ask_rate_slippage'] = slippage_override
@@ -319,44 +327,80 @@ class ModelledAssets:
                                                                                                'expiryTime'] - point_in_time).seconds * 365.25 * 24 * 3600]),
                                                                          axis=1)
             ### not very parcimonious...
-            self.futures['expiryTime']=futures['expiryTime']
-            self.futures['bid_rate_slippage']=futures['bid_rate_slippage']
-            self.futures['ask_rate_slippage'] = futures['ask_rate_slippage']
+            self._futures['expiryTime']=futures['expiryTime']
+            self._futures['bid_rate_slippage']=futures['bid_rate_slippage']
+            self._futures['ask_rate_slippage'] = futures['ask_rate_slippage']
 
-    def build_assets_history(self,history: RawHistory, exchange: Exchange, point_in_time: datetime=datetime.now()) -> None:
-        ModelledAssets.fetch_rate_slippage(exchange,slippage_override= 0.0002)
+    def build_assets_history(self,raw_history: RawHistory, exchange: Exchange, point_in_time: datetime = datetime.now()) -> None:
+        self.fetch_rate_slippage(exchange,slippage_override= 0.0002)
         ### remove blanks for this
-        history = history.fillna(method='ffill', limit=2, inplace=False)
+        history = raw_history._history.fillna(method='ffill', limit=2, inplace=False)
 
         # ---------- compute max leveraged \int{carry moments}, long and short
         # for perps, compute carry history to estimate moments.
         # for future, funding is deterministic because rate change is compensated by carry change (well, modulo funding...)
-        LongCarry = self.futures.apply(lambda f:
+        LongCarry = self._futures.apply(lambda f:
                                       f['bid_rate_slippage'] - history['USD/rate/borrow'] +
                                       history[f['name'] + '/rate/funding'] if f['type'] == 'perpetual'
                                       else history.loc[point_in_time, f['name'] + '/rate/funding'],
                                   axis=1).T
-        LongCarry.columns = ('long/'+self.futures['name']).tolist()
+        LongCarry.columns = ('long/'+self._futures['name']).tolist()
 
-        ShortCarry = self.futures.apply(lambda f:
+        ShortCarry = self._futures.apply(lambda f:
                                        f['ask_rate_slippage'] - history['USD/rate/borrow'] +
                                        history[f['name'] + '/rate/funding'] if f['type'] == 'perpetual'
                                        else history.loc[point_in_time, f['name'] + '/rate/funding']
                                             + history[f['underlying'] + '/rate/borrow'],
                                    axis=1).T
-        ShortCarry.columns = ('short/'+self.futures['name']).tolist()
+        ShortCarry.columns = ('short/'+self._futures['name']).tolist()
 
         ### not sure how to define window as a timedelta :(
-        intLongCarry = LongCarry.rolling(int(self.asset_definition.holding_period.total_seconds() / 3600)).mean()
-        intShortCarry = ShortCarry.rolling(int(self.asset_definition.holding_period.total_seconds() / 3600)).mean()
-        intUSDborrow = history['USD/rate/borrow'].rolling(int(self.asset_definition.holding_period.total_seconds() / 3600)).mean()
-        self.history=pd.concat([intLongCarry,intShortCarry,intUSDborrow])
+        intLongCarry = LongCarry.rolling(int(self._asset_definition._holding_period.total_seconds() / 3600)).mean()
+        intShortCarry = ShortCarry.rolling(int(self._asset_definition._holding_period.total_seconds() / 3600)).mean()
+        intUSDborrow = history['USD/rate/borrow'].rolling(int(self._asset_definition._holding_period.total_seconds() / 3600)).mean()
+        self._history=pd.concat([intLongCarry,intShortCarry,intUSDborrow],axis=1)
 
     def build_assets_processes(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         ### E_int and C_int are moments of the integral of annualized carry.
-        Expectation = self.history.ewm(times=self.history.index, halflife=self.estimation_parameter.signal_horizon, axis=0).mean()
-        Covariance = self.history.ewm(times=self.history.index, halflife=self.estimation_parameter.signal_horizon, axis=0).cov()
+        Expectation = self._history.ewm(times=self._history.index, halflife=self._estimation_parameter._signal_horizon, axis=0).mean()
+        Covariance = self._history.ewm(times=self._history.index, halflife=self._estimation_parameter._signal_horizon, axis=0).cov()
         return Expectation,Covariance
+
+def strategyOO():
+    exchange = open_exchange('ftx')
+    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False))
+
+    funding_threshold = 1e4
+    volume_threshold = 1e6
+    type_allowed = 'perpetual'
+    max_nb_coins = 10
+    carry_floor = 0.4
+    slippage_override = 2e-4  #### this is given by mktmaker
+    #    slippage_scaler=0.5
+    #    slippage_orderbook_depth=0
+    signal_horizon = timedelta(days=3)
+    backtest_window = timedelta(days=200)
+    holding_period = timedelta(days=2)
+    concentration_limit = 0.25
+    loss_tolerance = 0.01
+
+    enriched = enricher(exchange, futures)
+    pre_filtered = enriched[
+        (enriched['expired'] == False)
+        & (enriched['funding_volume'] * enriched['mark'] > funding_threshold)
+        & (enriched['volumeUsd24h'] > volume_threshold)
+        & (enriched['tokenizedEquity'] != True)
+        & (enriched['type'] == type_allowed)]
+
+    today=datetime.today().replace(hour=0,minute=0,second=0,microsecond=0)
+    history=RawHistory(pre_filtered)
+    history.build(exchange, '1h',today-timedelta(days=30),today,"test.parquet")
+    carries=ModelledAssets(history,signal_horizon,holding_period)
+    carries.build_assets_history(history,exchange,today)
+    carries.build_assets_processes()[0].to_excel("testE.xlsx")
+    carries.build_assets_processes()[1].to_excel("testC.xlsx")
+
+strategyOO()
 
 #### naive plex of a perp,assuming cst size.
 def perp_carry_backtest(future,rates_history,
