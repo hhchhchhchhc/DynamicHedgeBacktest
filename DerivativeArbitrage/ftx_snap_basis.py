@@ -103,7 +103,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     #### IM calc
     account_leverage=exchange.privateGetAccount()['result']
     if float(account_leverage['leverage']) >= 50: print("margin rules not implemented for leverage >=50")
-    dummy_size=10000 ## IM is in ^3/2 not linear, but rule typically kicks in at a few M for optimal leverage of 20 so we linearize
+    dummy_size=100000 ## IM is in ^3/2 not linear, but rule typically kicks in at a few M for optimal leverage of 20 so we linearize
     futIM = (futures['imfFactor']*np.sqrt(dummy_size/futures['mark'])).clip(lower=1/float(account_leverage['leverage']))
     ##### max weights ---> CHECK formulas, short < long no ??
     futures['longWeight'] = 1 / (1 + (futIM - futures['collateralWeight']) / 1.1)
@@ -127,7 +127,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
                         axis=1).T
     ShortCarry.columns = futures['name'].tolist()
 
-    ##### E_long/short_t is expectation of carry
+    ##### E_long/short_t is expectation of carry --> MUST REMOVE SPIKES
     ##### assume direction only depends on sign(E[long]-E[short]), no integral.
     # Freeze direction into Carry_t and assign max weights.
     E_long_t = LongCarry.ewm(times=hy_history.index,halflife=signal_horizon,axis=0).mean()
@@ -195,8 +195,9 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
         all.columns=['LongCarry', 'ShortCarry', 'E_long_t', 'E_short_t', 'Carry_t', 'intCarry_t']
         all.to_excel(col+'.xlsx',sheet_name=col)
 
-    futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'direction', 'optimalWeight', 'optimalCarry']].\
-        to_excel('all.xlsx',sheet_name='summary')
+    futures['E_int']=futures['symbol'].apply(lambda f: E_int.loc(point_in_time,f))
+    futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'E_int', 'longWeight', 'shortWeight', 'direction', 'optimalWeight', 'optimalCarry']].\
+        to_excel('optimal.xlsx',sheet_name='summary')
 
     return futures
 
