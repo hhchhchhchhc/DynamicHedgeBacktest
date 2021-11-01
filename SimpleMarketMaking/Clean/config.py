@@ -25,3 +25,14 @@ class Strategy(Enum):
 class Bar(Enum):
     ONE_SECOND = 1
     TEN_TICKS = 2
+
+
+class AlphaModel(Enum):
+    NONE = 0
+    MOMENTUM = 1
+
+
+class Direction(Enum):
+    SHORT = -1
+    NEUTRAL = 0
+    LONG = 1
