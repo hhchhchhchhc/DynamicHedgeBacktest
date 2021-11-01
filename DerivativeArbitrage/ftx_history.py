@@ -7,38 +7,39 @@ from dateutil import rrule
 def build_history(futures,exchange,
         timeframe='1h',
         end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-        start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
+        start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
+                  dirname='temporary_parquets'):
 
     if futures[futures['type']=='perpetual'].empty: perp_funding_data=[]
     else:
-        parquet_filename = 'temporary_parquets/allfundings.parquet'
+        parquet_filename = dirname+'/allfundings.parquet'
         if os.path.isfile(parquet_filename):
             perp_funding_data=from_parquet(parquet_filename)
         else:
-            perp_funding_data=pd.concat([funding_history(f,exchange,start=start,end=end)
+            perp_funding_data=pd.concat([funding_history(f,exchange,start,end,dirname)
                                      for (i,f) in futures[futures['type']=='perpetual'].iterrows()],join='outer',axis=1)
-            perp_funding_data.to_parquet('temporary_parquets/allfundings.parquet')
+            perp_funding_data.to_parquet(dirname+'/allfundings.parquet')
 
-    future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe)
+    future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe,dirname)
                for (i, f) in futures[futures['type'] == 'perpetual'].iterrows()],
               join='outer',axis=1)
-    future_price_data=pd.concat([price_history(f['symbol'], exchange, end, start, timeframe)
+    future_price_data=pd.concat([price_history(f['symbol'], exchange, end, start, timeframe,dirname)
                for (i, f) in futures.iterrows()],
               join='outer',axis=1)
-    spot_price_data = pd.concat([price_history(f['underlying']+'/USD', exchange, end, start, timeframe)
+    spot_price_data = pd.concat([price_history(f['underlying']+'/USD', exchange, end, start, timeframe,dirname)
                                    for (i, f) in futures.iterrows()],
                                   join='outer', axis=1)
 
-    parquet_filename = 'temporary_parquets/allborrows.parquet'
+    parquet_filename = dirname+'/allborrows.parquet'
     if os.path.isfile(parquet_filename):
         borrow_data = from_parquet(parquet_filename)
     else:
-        borrow_data=pd.concat([borrow_history(f, exchange, end, start)
+        borrow_data=pd.concat([borrow_history(f, exchange, end, start,dirname)
                for f in futures['underlying'].unique()]
-                          +[borrow_history('USD',exchange,end,start)],
+                          +[borrow_history('USD',exchange,end,start,dirname)],
               join='outer',axis=1)
 
-    borrow_data.to_parquet('temporary_parquets/allborrows.parquet')
+    borrow_data.to_parquet(parquet_filename)
 
     ## just couldn't figure out pd.concat...
     data =  perp_funding_data.join(
@@ -54,8 +55,9 @@ def build_history(futures,exchange,
 ### only perps, only borrow and funding, only hourly
 def borrow_history(spot,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
-    parquet_filename = 'temporary_parquets/allborrows.parquet'
+                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
+                   dirname='temporary_parquets'):
+    parquet_filename = dirname+'/allborrows.parquet'
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
@@ -91,8 +93,9 @@ def borrow_history(spot,exchange,
 ######### annualized funding for perps
 def funding_history(future,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
-    parquet_filename='temporary_parquets/allfundings.parquet'
+                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
+                    dirname='temporary_parquets'):
+    parquet_filename=dirname+'/allfundings.parquet'
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
@@ -129,8 +132,9 @@ def funding_history(future,exchange,
 def rate_history(future,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                 timeframe='1h'):
-    parquet_filename='temporary_parquets/'+future['symbol']+'_futures.parquet'
+                 timeframe='1h',
+                 dirname='temporary_parquets'):
+    parquet_filename=dirname+'/'+future['symbol']+'_futures.parquet'
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
 
     max_mark_data = int(1500)
@@ -196,7 +200,7 @@ def rate_history(future,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()]
 
-    data.to_parquet('temporary_parquets/'+future['symbol']+"_futures.parquet")
+    data.to_parquet(dirname+'/'+future['symbol']+"_futures.parquet")
 
     return data
 
@@ -204,8 +208,9 @@ def rate_history(future,exchange,
 def price_history(symbol,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                 timeframe='1h'):
-    parquet_filename = 'temporary_parquets/' + symbol.replace('/USD','') + '_price.parquet'
+                 timeframe='1h',
+                  dirname='temporary_parquets'):
+    parquet_filename = dirname +'/' + symbol.replace('/USD','') + '_price.parquet'
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
 
     max_mark_data = int(5000)
@@ -234,7 +239,7 @@ def price_history(symbol,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()]
 
-    data.to_parquet('temporary_parquets/'+ symbol.replace('/USD','') + "_price.parquet")
+    data.to_parquet(dirname+'/'+ symbol.replace('/USD','') + "_price.parquet")
 
     return data
 
