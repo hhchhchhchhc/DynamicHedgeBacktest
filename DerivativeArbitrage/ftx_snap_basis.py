@@ -4,6 +4,7 @@ from scipy.stats import norm
 from pandas.tseries.frequencies import to_offset
 
 from ftx_utilities import *
+from ftx_portfolio import *
 from ftx_history import *
 from ftx_ftx import *
 
@@ -154,6 +155,8 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     E_int = intCarry_t.ewm(times=hy_history.index, halflife=signal_horizon, axis=0).mean().loc[point_in_time]
     C_int = intCarry_t.ewm(times=hy_history.index, halflife=signal_horizon, axis=0).cov().loc[point_in_time]
 
+    E_int = intCarry_t.rolling(int(holding_period.total_seconds()/3600)).median().loc[point_in_time]
+
     E_USDborrow_int = hy_history['USD/rate/borrow'].rolling(int(holding_period.total_seconds()/3600)).mean()\
         .ewm(times=hy_history.index, halflife=signal_horizon, axis=0).mean().loc[point_in_time]
     ###### then use in convex optimiziation with lagrange multipliers w>0 and sum w=1
@@ -188,14 +191,17 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     futures.loc['USD', 'optimalWeight'] = -np.dot(res['x'],maxWeight_list)
     futures['optimalCarry'] = res['x'] * E_int
     futures.loc['USD','optimalCarry'] = E_USDborrow_int * min([0,np.dot(res['x'],maxWeight_list)])
+    futures.loc['total', 'optimalCarry'] = futures['optimalCarry'].sum()
+    futures.loc['total', 'lossProbability'] = loss_tolerance - loss_tolerance_constraint['fun'](res['x'])
+    #futures.loc['total', 'margin'] = carry_portfolio_greeks(exchange,futures)
 
-    for col in futures.sort_values(by='optimalCarry',ascending=False).head(5).index:
+    for col in futures.sort_values(by='optimalCarry',ascending=False).head(5).drop(index='total').index:
         all=pd.concat([LongCarry[col], ShortCarry[col], E_long_t[col], E_short_t[col], Carry_t[col], intCarry_t[col]],
                        axis=1)
         all.columns=['LongCarry', 'ShortCarry', 'E_long_t', 'E_short_t', 'Carry_t', 'intCarry_t']
         all.to_excel(col+'.xlsx',sheet_name=col)
 
-    futures['E_int']=futures['symbol'].apply(lambda f: E_int.loc(point_in_time,f))
+    futures['E_int']=E_int
     futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'E_int', 'longWeight', 'shortWeight', 'direction', 'optimalWeight', 'optimalCarry']].\
         to_excel('optimal.xlsx',sheet_name='summary')
 
