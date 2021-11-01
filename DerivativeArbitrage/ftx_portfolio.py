@@ -6,7 +6,63 @@ from ftx_ftx import *
 ### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
 ### balances need coin, total
 ### careful: carry on balances cannot be overal positive.
-def portfolio_greeks(exchange,positions,balances,params={'positive_carry_on_balances':False}):
+def portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False}):
+    markets = exchange.fetch_markets()
+    coin_details = fetch_coin_details(exchange)  ### * (1+500*taker fee)
+
+    greeks = pd.DataFrame()
+    updated=str(datetime.now())
+    rho=0.4
+
+    for x in futures:
+        ## size>0 --> short future
+        size = x['optimalWeight']
+        if np.abs(size)> 0.001:
+            coin = x['underlying']
+            underlyingType=getUnderlyingType(coin_details.loc[coin]) if coin in coin_details.index else 'index'
+            funding_stats =fetch_funding_rates(exchange,x['name'])['result']
+
+            chg = float(x['change24h'])
+            f=float(x['mark'])
+            s = float(x['index'])
+            if x['type']=='perpetual':
+                t=0.0
+                future_carry= size*s*float(funding_stats['nextFundingRate'])*24*365.25
+            else:
+                days_diff = (dateutil.parser.isoparse(x['expiry']) - datetime.now(tz=timezone.utc))
+                t=days_diff.days/365.25
+                future_carry = size*f * np.log(f / s) / t
+            spot_carry=size * s * float(coin_details.loc[coin if (size < 0) else 'USD', 'borrow'])
+
+            collateralValue=size*s*(coin_details.loc[coin,'collateralWeight'] if size>0 else 1)
+            ### weight(initial)=weight(total)-5% for all but stablecoins/ftt(0) and BTC (2.5)
+            spot_im= s* ((1.1 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
+            spot_mm=s* ((1.03 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
+            future_im=float(x['initialMarginRequirement']) * np.abs(size) * f
+            future_mm=float(x['maintenanceMarginRequirement']) * np.abs(size) * f
+
+            greeks[x['name']] = pd.Series({
+                    'PV':0,
+                     'ref': f,
+                    'Delta':size*(s-f),
+                    'ShadowDelta':size*(s-f*(1+rho*t)),
+                    'Gamma':size*-f*rho*t*(1+rho*t),
+                    'IR01':size*t*-f/10000,
+                    'Carry':spot_carry+future_carry,
+                    'collateralValue':collateralValue,
+                    'IM': future_im+spot_im,
+                    'MM': future_mm+spot_mm,
+                        })
+    ## add a sum column
+    greeks.sort_index(axis=1, ascending=True,inplace=True)
+    greeks['sum'] = greeks.sum(axis=1)
+    return greeks
+
+### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
+### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
+### balances need coin, total
+### careful: carry on balances cannot be overal positive.
+def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False}):
     markets = exchange.fetch_markets()
     coin_details = fetch_coin_details(exchange)  ### * (1+500*taker fee)
     futures = fetch_futures(exchange)
@@ -16,7 +72,7 @@ def portfolio_greeks(exchange,positions,balances,params={'positive_carry_on_bala
     rho=0.4
 
     for x in positions:
-        if float(x['netSize']) !=0.0:
+        if float(x['optimalWeight']) !=0.0:
 
             future_item=next(item for item in futures if item['name'] == x['future'])
             coin = future_item['underlying']
@@ -208,3 +264,5 @@ def live_risk():
                     (updated,'IM'): float(account_info['initialMarginRequirement']),
                     (updated,'MM'): float(account_info['maintenanceMarginRequirement'])})
     return greeks
+
+#live_risk()
