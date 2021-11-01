@@ -1,8 +1,8 @@
 import datetime
-from backtest import Backtest
-import config as _config
+from puffin.backtest import Backtest
+import puffin.config as _config
 import pandas as pd
-from market_data import MarketData
+from puffin.market_data import MarketData
 from concurrent.futures import ProcessPoolExecutor
 
 
