@@ -13,7 +13,7 @@ with (here /'requirements.txt').open() as fp:
 setup(
     name='puffin',
     version='0.1.0',
-    packages=find_packages(include=['SimpleMarketMaking.Clean']),
+    packages=find_packages(include=['puffin', 'puffin.*']),
     python_requires='>=3.9',
 
     # This field lists other packages that your project depends on to run.
