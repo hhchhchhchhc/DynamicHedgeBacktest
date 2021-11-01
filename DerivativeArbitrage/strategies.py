@@ -76,11 +76,14 @@ def strategy2():
     type_allowed='perpetual'
     max_nb_coins = 10
     carry_floor = 0.4
-    slippage_scaler=0.5
-    slippage_orderbook_depth=0
+    slippage_override=2e-4  #### this is given by mktmaker
+#    slippage_scaler=0.5
+#    slippage_orderbook_depth=0
     signal_horizon=timedelta(days=3)
-    backtest_window=timedelta(days=180)
-    holding_period__for_slippage=timedelta(days=3)
+    backtest_window=timedelta(days=200)
+    holding_period=timedelta(days=2)
+    concentration_limit = 0.25
+    loss_tolerance=0.01
 
     enriched=enricher(exchange, futures)
     pre_filtered = enriched[
@@ -91,8 +94,12 @@ def strategy2():
         & (enriched['type']==type_allowed)]
 
     #### get history ( this is sloooow)
+    build_history(pre_filtered, exchange, timeframe='15s', end=datetime.today(),
+                  start=datetime.today() - timedelta(weeks=200)).to_parquet("15shistory.parquet")
+    return None
     try:
         hy_history = from_parquet("history.parquet")
+        asofdate = np.max(hy_history.index)
         existing_futures = [name.split('/')[0] for name in hy_history.columns]
         new_futures = pre_filtered[pre_filtered['symbol'].isin(existing_futures)==False]
         if new_futures.empty==False:
@@ -100,26 +107,28 @@ def strategy2():
                     build_history(new_futures,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)],
                     join='outer',axis=1)
             to_parquet(hy_history, "history.parquet")
-        asofdate = np.max(hy_history.index)
     except:
         asofdate = datetime.today()
         hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
         to_parquet(hy_history,"history.parquet")
 
-    scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=asofdate,
-                            depths=[slippage_orderbook_depth],slippage_scaler=slippage_scaler,
-                            holding_period__for_slippage = holding_period__for_slippage,
-                            signal_horizon=signal_horizon).sort_values(by='maxCarry')
-    print(scanned[['symbol','maxPos','maxCarry']])
-    scanned=scanned[scanned['maxCarry']>carry_floor].tail(max_nb_coins)
-    static_backtest = max_leverage_carry(scanned,hy_history,end=asofdate+backtest_window,start=asofdate).transpose()
+    point_in_time=asofdate-holding_period
+    scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=point_in_time,
+                            slippage_override=slippage_override,
+                            holding_period = holding_period,signal_horizon=signal_horizon,concentration_limit=0.25,
+                            loss_tolerance=loss_tolerance).sort_values(by='optimalWeight')
+
+    floored=scanned[scanned['optimalCarry']>carry_floor].tail(max_nb_coins)
+    static_backtest = max_leverage_carry(floored,hy_history,end=point_in_time,start=asofdate-backtest_window)
 
     #    sns.histplot(data=pd.DataFrame([(a.loc[1:,'BTC-PERP/mark/c']-a.loc[:-2,'BTC-PERP/mark/c']),a['BTC-PERP/rate/c'],a['BTC-PERP/rate/h']-a['BTC-PERP/rate/c'],a['BTC-PERP/rate/l']-a['BTC-PERP/rate/c']]))
     outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
-    outputit(static_backtest.T.describe([.1, .5, .9]).T*24*365.25,'backtest','ftx',{'excelit':True,'pickleit':False})
+    outputit(static_backtest.T.describe([.1,.25, .5,.75, .9])*24*365.25,'backtest','ftx',{'excelit':True,'pickleit':False})
+
 
 
 strategy2()
+#strategyOO()
 
 #hy_history = from_parquet("fullhistory.parquet")
 hy_history=[]

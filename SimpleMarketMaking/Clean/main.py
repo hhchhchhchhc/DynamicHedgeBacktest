@@ -18,13 +18,16 @@ def run_roll_model() -> None:
     print('running roll model')
     start_date = datetime.date(2021, 10, 1)
     number_of_days = 1
-    bar = _config.Bar.ONE_SECOND
+    bar = _config.Bar.TEN_TICKS
     strategy = _config.Strategy.ROLL_MODEL
-    parameters = {}
-    my_backtest = Backtest('XRPUSDT', bar, strategy, parameters, start_date, number_of_days)
+    strategy_parameters = {}
+    alpha = _config.AlphaModel.NONE
+    alpha_parameters = {}
+    my_backtest = Backtest('XRPUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
+                           number_of_days)
     results, summary = my_backtest.run()
-    results.to_csv(_config.source_directory + 'new_results_roll_second.csv', index=False)
-    summary.to_csv(_config.source_directory + 'new_summary_roll_second.csv', index=False)
+    results.to_csv(_config.source_directory + 'new_results_roll_ticks.csv', index=False)
+    summary.to_csv(_config.source_directory + 'new_summary_roll_ticks.csv', index=False)
 
 
 def run_phi(phi: float) -> None:
@@ -33,8 +36,11 @@ def run_phi(phi: float) -> None:
     number_of_days = 1
     bar = _config.Bar.ONE_SECOND
     strategy = _config.Strategy.ASMM_PHI
-    parameters = {'phi': phi}
-    my_backtest = Backtest('XRPUSDT', bar, strategy, parameters, start_date, number_of_days)
+    strategy_parameters = {'phi': phi}
+    alpha = _config.AlphaModel.NONE
+    alpha_parameters = {}
+    my_backtest = Backtest('XRPUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
+                           number_of_days)
     results, summary = my_backtest.run()
     results.to_csv(_config.source_directory + 'new_results_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
     summary.to_csv(_config.source_directory + 'new_summary_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
@@ -46,15 +52,18 @@ def run_nu(nu: float) -> None:
     number_of_days = 1
     bar = _config.Bar.TEN_TICKS
     strategy = _config.Strategy.ASMM_HIGH_LOW
-    parameters = {'nu': nu}
-    my_backtest = Backtest('XRPUSDT', bar, strategy, parameters, start_date, number_of_days)
+    strategy_parameters = {'nu': nu}
+    alpha = _config.AlphaModel.MOMENTUM
+    alpha_parameters = {}
+    my_backtest = Backtest('XRPUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
+                           number_of_days)
     results, summary = my_backtest.run()
     results.to_csv(_config.source_directory + 'new_results_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
     summary.to_csv(_config.source_directory + 'new_summary_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
 
 
 def run_nus():
-    nus = [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+    nus = [1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0]
     with ProcessPoolExecutor(5) as pool:
         for nu in nus:
             pool.submit(run_nu, nu)
@@ -217,7 +226,7 @@ def create_all_sorts_of_bars(my_market_data: MarketData):
 
 
 def main():
-    run_roll_model()
+    run_nu(nu=10)
 
 
 if __name__ == '__main__':

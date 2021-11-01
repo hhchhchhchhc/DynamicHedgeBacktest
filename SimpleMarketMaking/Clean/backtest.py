@@ -5,7 +5,7 @@ import pandas as pd
 import tools
 import config as _config
 from typing import Tuple
-from config import Strategy, Bar
+from config import Strategy, Bar, AlphaModel
 
 
 def _get_annualised_sharpe(backtest: pd.DataFrame, risk_free_rate: float) -> float:
@@ -84,13 +84,16 @@ class Backtest:
             trades = trades.append(trade)
         return trades
 
-    def __init__(self, symbol: str, bar: Bar, strategy: Strategy, parameters: dict[str, float],
+    def __init__(self, symbol: str, bar: Bar, strategy: Strategy, strategy_parameters: dict[str, float],
+                 alpha_model: AlphaModel, alpha_parameters: dict[str, float],
                  start_date: datetime.date, number_of_days: int) -> None:
         self.symbol = symbol
         self.strategy = strategy
         self.bar = bar
-        self.parameters = parameters
-        self.horizon = 60
+        self.strategy_parameters = strategy_parameters
+        self.alpha_model = alpha_model
+        self.alpha_parameters = alpha_parameters
+        self.vwap_horizon = 60
         self.tobs = self._get_tobs_from_csvs(start_date, number_of_days)
         self.trades = self._get_trades_from_csvs(start_date, number_of_days)
         self.tick_size = tools.get_tick_size_from_symbol(self.symbol)
@@ -115,10 +118,15 @@ class Backtest:
         self.backtest_pnls = []
         self.backtest_bids = []
         self.backtest_asks = []
+        self.vwap = None
         self.spread = None
         self.skew = None
+        self.alpha_direction = _config.Direction.NEUTRAL
+        self.alpha_value = 0
+        self.short_ma = None
         self.backtest_spreads = []
         self.backtest_skews = []
+        self.backtest_alphas = []
         self.backtest_market_bids = []
         self.backtest_market_asks = []
         self.backtest_sigmas = []
@@ -138,7 +146,7 @@ class Backtest:
         progress_pct = 0
         while trades_index < trades_n and tobs_index < tobs_n:
             if np.floor(100 * trades_index / trades_n) > progress_pct:
-                progress_pct = progress_pct + 1
+                progress_pct = progress_pct + 5
                 print(str(progress_pct) + '% ', end='')
             trades_timestamp = self.trades['timestamp_millis'].iloc[trades_index]
             tobs_timestamp = self.tobs['timestamp_millis'].iloc[tobs_index]
@@ -173,6 +181,8 @@ class Backtest:
             map(lambda x: None if x is None else x * self.tick_size, self.backtest_spreads))
         backtest_results['skew'] = list(
             map(lambda x: None if x is None else x * self.tick_size, self.backtest_skews))
+        backtest_results['alpha'] = list(
+            map(lambda x: None if x is None else x * self.tick_size, self.backtest_alphas))
         backtest_results['sigma'] = list(
             map(lambda x: None if x is None else x * self.tick_size, self.backtest_sigmas))
 
@@ -213,6 +223,13 @@ class Backtest:
             self.tick_bar_counter = 0
 
     def _end_of_bar(self) -> None:
+        if len(self.price_buffer) > 0:
+            self.vwap = np.average(self.price_buffer, weights=self.size_buffer)
+            self.vwap_buffer.append(self.vwap)
+        if len(self.vwap_buffer) > self.vwap_horizon:
+            self.vwap_buffer.pop(0)
+        if self.alpha_model is not _config.AlphaModel.NONE:
+            self._compute_alpha()
         if self.strategy == Strategy.ASMM_PHI:
             self._end_of_bar_asmm_phi()
         elif self.strategy == Strategy.ASMM_HIGH_LOW:
@@ -237,42 +254,37 @@ class Backtest:
         if self.price_buffer:
             high = np.max(self.price_buffer)
             low = np.min(self.price_buffer)
-            self.skew = self.parameters['nu'] * (self.position / self.max_position) * (high - low)
+            if np.abs(high - low) < 0.5:
+                high = high + 1
+                low = low - 1
+            self.skew = self.strategy_parameters['nu'] * (self.position / self.max_position) * (high - low)
             if self.skew > 0:
-                self.bid = int(low - self.skew)
-                self.ask = int(high)
+                self.bid = int(low + self.alpha_value - self.skew)
+                self.ask = int(high + self.alpha_value)
             else:
-                self.bid = int(low)
-                self.ask = int(high - self.skew)
+                self.bid = int(low + self.alpha_value)
+                self.ask = int(high + self.alpha_value - self.skew)
 
     def _end_of_bar_asmm_phi(self) -> None:
         if len(self.price_buffer) > 0:
-            vwap = np.average(self.price_buffer, weights=self.size_buffer)
-            self.vwap_buffer.append(vwap)
-            if len(self.vwap_buffer) > self.horizon:
-                self.vwap_buffer.pop(0)
-            if len(self.vwap_buffer) >= self.horizon:
+            if len(self.vwap_buffer) >= self.vwap_horizon:
                 self.sigma = np.diff(self.vwap_buffer).std()
             if self.sigma is not None:
-                self.skew = (self.parameters['phi'] * (self.sigma * self.tick_size) * self.position / (
+                self.skew = (self.strategy_parameters['phi'] * (self.sigma * self.tick_size) * self.position / (
                     self.max_position)) / self.tick_size
-                self.spread = self.parameters['phi'] * self.sigma
+                self.spread = self.strategy_parameters['phi'] * self.sigma
                 if self.skew > 0:
-                    self.bid = int(vwap - (self.spread / 2) - self.skew)
-                    self.ask = int(vwap + (self.spread / 2))
+                    self.bid = int(self.vwap - (self.spread / 2) - self.skew)
+                    self.ask = int(self.vwap + (self.spread / 2))
                 else:
-                    self.bid = int(vwap - (self.spread / 2))
-                    self.ask = int(vwap + (self.spread / 2) - self.skew)
+                    self.bid = int(self.vwap - (self.spread / 2))
+                    self.ask = int(self.vwap + (self.spread / 2) - self.skew)
 
     def _end_of_bar_roll_model(self) -> None:
         if len(self.price_buffer) > 0:
             autocovariance = None
-            vwap = np.average(self.price_buffer, weights=self.size_buffer)
-            self.vwap_buffer.append(vwap)
             trend = None
-            if len(self.vwap_buffer) > self.horizon:
-                self.vwap_buffer.pop(0)
-            if len(self.vwap_buffer) >= self.horizon:
+            if len(self.vwap_buffer) >= self.vwap_horizon:
                 delta_vwaps = np.diff(self.vwap_buffer)
                 delta_vwaps = np.array(delta_vwaps)
                 x = delta_vwaps[~np.isnan(delta_vwaps)]
@@ -283,14 +295,14 @@ class Backtest:
             self.ask = None
             if self.sigma is not None and autocovariance < 0:
                 self.spread = np.sqrt(-1 * autocovariance)
-                self.ask = int(vwap + self.spread)
-                self.bid = int(vwap - self.spread)
+                self.ask = int(self.vwap + self.spread)
+                self.bid = int(self.vwap - self.spread)
             elif trend is not None:
                 self.spread = np.sqrt(autocovariance)
                 if trend > 0:
-                    self.bid = int(vwap - self.spread)
+                    self.bid = int(self.vwap - self.spread)
                 elif trend < 0:
-                    self.ask = int(vwap + self.spread)
+                    self.ask = int(self.vwap + self.spread)
 
     def _passive_buy(self) -> None:
         self._buy(self.bid)
@@ -329,6 +341,7 @@ class Backtest:
         self.backtest_market_asks.append(self.market_ask)
         self.backtest_spreads.append(self.spread)
         self.backtest_skews.append(self.skew)
+        self.backtest_alphas.append(self.alpha_value)
         self.backtest_sigmas.append(self.sigma)
         self.cumulative_volume = self.cumulative_volume + sum(self.volume_traded_buffer)
         self.backtest_cumulative_volumes.append(self.cumulative_volume)
@@ -336,3 +349,23 @@ class Backtest:
         self.cumulative_volume_dollar = self.cumulative_volume_dollar + sum(self.volume_traded_dollar_buffer)
         self.backtest_cumulative_volume_dollars.append(self.cumulative_volume_dollar)
         self.volume_traded_dollar_buffer = []
+
+    def _compute_alpha(self) -> None:
+        if len(self.vwap_buffer) >= self.vwap_horizon:
+            self.short_ma = np.mean(self.vwap_buffer)
+        if self.short_ma is not None and self.vwap is not None:
+            indicator = (self.vwap - self.short_ma)/self.vwap
+            if self.alpha_direction == _config.Direction.NEUTRAL and indicator > 8e-4:
+                self.alpha_direction = _config.Direction.LONG
+            if self.alpha_direction == _config.Direction.NEUTRAL and indicator < -8e-4:
+                self.alpha_direction = _config.Direction.SHORT
+            if self.alpha_direction == _config.Direction.LONG and indicator < 0:
+                self.alpha_direction = _config.Direction.NEUTRAL
+            if self.alpha_direction == _config.Direction.SHORT and indicator > 0:
+                self.alpha_direction = _config.Direction.NEUTRAL
+        if self.alpha_direction == _config.Direction.SHORT:
+            self.alpha_value = -1
+        if self.alpha_direction == _config.Direction.NEUTRAL:
+            self.alpha_value = 0
+        if self.alpha_direction == _config.Direction.LONG:
+            self.alpha_value = 1
