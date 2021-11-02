@@ -10,9 +10,6 @@ from datetime import *
 import dateutil
 
 # -----------------------------------------------------------------------------
-def weight_initial_shft(exchange,spot):
-
-
 def mkt_depth(exchange,symbol,side , target_depth=10000):
     #side='bids' or 'asks'
     # returns average px of a mkt order of size target_depth (in USD), and the volume actually done
