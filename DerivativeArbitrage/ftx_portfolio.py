@@ -16,6 +16,7 @@ def portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False
 
     for (i,x) in futures.iterrows():
         ## size>0 --> short future
+        ## spot position = size/s and future position = -size/f
         size = x['optimalWeight']
         if np.abs(size)> 0.001:
             coin = x['underlying']
@@ -26,29 +27,29 @@ def portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False
             f=float(x['mark'])
             s = float(x['index'])
             if x['type']=='perpetual':
-                t=0.0
-                future_carry= size*s*float(funding_stats['nextFundingRate'])*24*365.25
+                t=1/365
+                future_carry= size*float(funding_stats['nextFundingRate'])*24*365.25
             else:
                 days_diff = (dateutil.parser.isoparse(x['expiry']) - datetime.now(tz=timezone.utc))
                 t=days_diff.days/365.25
-                future_carry = size*f * np.log(f / s) / t
-            spot_carry=size * s * float(coin_details.loc[coin if (size < 0) else 'USD', 'borrow'])
+                future_carry = size * np.log(f / s) / t
+            spot_carry=size  * float(coin_details.loc[coin if (size < 0) else 'USD', 'borrow'])
 
-            collateralValue=size*s*(coin_details.loc[coin,'collateralWeight'] if size>0 else 1)
+            collateralValue=size*(coin_details.loc[coin,'collateralWeight']-1 if size>0 else 0)
             ### weight(initial)=weight(total)-5% for all but stablecoins/ftt(0) and BTC (2.5)
-            spot_im= s* ((1.1 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
-            spot_mm=s* ((1.03 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
-            future_im=float(x['initialMarginRequirement']) * np.abs(size) * f
-            future_mm=float(x['maintenanceMarginRequirement']) * np.abs(size) * f
+            spot_im= ((1.1 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
+            spot_mm=((1.03 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
+            future_im=float(x['initialMarginRequirement']) * np.abs(size)
+            future_mm=float(x['maintenanceMarginRequirement']) * np.abs(size)
 
             greeks[x['symbol']] = pd.Series({
                     'PV':0,
                     'spot': s,
                     'mark': f,
-                    'Delta':size*(s-f),
-                    'ShadowDelta':size*(s-f*(1+rho*t)),
-                    'Gamma':size*-f*rho*t*(1+rho*t),
-                    'IR01':size*t*-f/10000,
+                    'Delta':0,
+                    'ShadowDelta':size*(1-(1+rho*t)),
+                    'Gamma':-size*rho*t*(1+rho*t),
+                    'IR01':size*t/10000,
                     'Carry':spot_carry+future_carry,
                     'collateralValue':collateralValue,
                     'IM': future_im+spot_im,
