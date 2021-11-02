@@ -170,9 +170,8 @@ def fetch_futures(exchange,includeExpired=False,params={}):
             'underlying': exchange.safe_string(market, 'underlying'),
             'upperBound': exchange.safe_value(market, 'upperBound'),
             'type': exchange.safe_string(market, 'type'),
-            'initialMarginRequirement': (imfFactor * np.sqrt(dummy_size / mark)).clip(
-            lower=1 / float(account_leverage['leverage']))
-            'maintenanceMarginRequirement' = 3 / 5 * (imfFactor * np.sqrt(dummy_size / mark)).clip(
-            lower=1 / float(account_leverage['leverage']))  ## TODO: not sure
+            'initialMarginRequirement': (imfFactor * np.sqrt(dummy_size / mark)).clip(min=1 / float(account_leverage['leverage'])),
+            'maintenanceMarginRequirement': 3 / 5 * (imfFactor * np.sqrt(dummy_size / mark)).clip(
+            min=1 / float(account_leverage['leverage']))  ## TODO: not sure
         })
     return result
