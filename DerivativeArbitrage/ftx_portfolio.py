@@ -14,13 +14,13 @@ def portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False
     updated=str(datetime.now())
     rho=0.4
 
-    for x in futures:
+    for (i,x) in futures.iterrows():
         ## size>0 --> short future
         size = x['optimalWeight']
         if np.abs(size)> 0.001:
             coin = x['underlying']
             underlyingType=getUnderlyingType(coin_details.loc[coin]) if coin in coin_details.index else 'index'
-            funding_stats =fetch_funding_rates(exchange,x['name'])['result']
+            funding_stats =fetch_funding_rates(exchange,x['symbol'])['result']
 
             chg = float(x['change24h'])
             f=float(x['mark'])
@@ -41,9 +41,10 @@ def portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False
             future_im=float(x['initialMarginRequirement']) * np.abs(size) * f
             future_mm=float(x['maintenanceMarginRequirement']) * np.abs(size) * f
 
-            greeks[x['name']] = pd.Series({
+            greeks[x['symbol']] = pd.Series({
                     'PV':0,
-                     'ref': f,
+                    'spot': s,
+                    'mark': f,
                     'Delta':size*(s-f),
                     'ShadowDelta':size*(s-f*(1+rho*t)),
                     'Gamma':size*-f*rho*t*(1+rho*t),
