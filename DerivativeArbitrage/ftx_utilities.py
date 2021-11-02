@@ -4,7 +4,7 @@ import ccxt
 import numpy as np
 import pandas as pd
 import pickle
-#import s3
+import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 

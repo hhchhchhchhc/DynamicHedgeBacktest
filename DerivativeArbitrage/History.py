@@ -66,7 +66,7 @@ class RawHistory:
                                 RawHistory.fetch_funding_history(f,exchange,start,end),axis=1).to_list()
 
         future_rate_data = futures.apply(lambda f: RawHistory.fetch_rate_history(f, exchange,timeframe,start,end),axis=1).to_list()
-        spot_data=futures.apply(lambda f: RawHistory.fetch_spot_history(f, exchange,timeframe,start,end),axis=1).to_list()
+        spot_data=futures.apply(lambda f: RawHistory.fetch_price_history(f, exchange,timeframe,start,end),axis=1).to_list()
         borrow_data=[RawHistory.fetch_borrow_history(f, exchange,start,end) for f in futures['underlying'].unique()]\
                     +[RawHistory.fetch_borrow_history('USD',exchange,start,end)]
 
@@ -219,13 +219,13 @@ class RawHistory:
         return data
 
     @staticmethod
-    def fetch_spot_history(future: pd.Series, exchange: Exchange,
+    def fetch_price_history(symbol: str, exchange: Exchange,
                  timeframe: str,
                  start: datetime.date,
                  end: datetime.date) -> pd.DataFrame:
         max_mark_data = int(5000)
         resolution = exchange.describe()['timeframes'][timeframe]
-        print('spot_history: ' + future['name'])
+        print('price_history: ' + symbol)
 
         spot =[]
         end_time = end.timestamp()
@@ -233,7 +233,7 @@ class RawHistory:
 
         while end_time >= start.timestamp():
             if start_time < start.timestamp(): start_time = start.timestamp()
-            new_spot = fetch_ohlcv(exchange, future['symbol'], timeframe=timeframe, start=start_time, end=end_time)
+            new_spot = fetch_ohlcv(exchange, symbol, timeframe=timeframe, start=start_time, end=end_time)
 
             if (len(new_spot) == 0): break
             spot.extend(new_spot)
@@ -245,7 +245,7 @@ class RawHistory:
 
         ###### spot
         data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
-        data.columns = [future['symbol'] + '/spot/' + column for column in data.columns]
+        data.columns = [symbol.replace('USD/','') + '/price/' + column for column in data.columns]
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
 
         return data

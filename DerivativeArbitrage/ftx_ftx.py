@@ -131,10 +131,19 @@ def fetch_funding_rate_history(exchange, perp,start_time,end_time,params={}):
 def fetch_futures(exchange,includeExpired=False,params={}):
     response = exchange.publicGetFutures(params)
     expired = exchange.publicGetExpiredFutures(params) if includeExpired==True else []
+
+    #### for IM calc
+    account_leverage = exchange.privateGetAccount()['result']
+    if float(account_leverage['leverage']) >= 50: print("margin rules not implemented for leverage >=50")
+    dummy_size = 100000  ## IM is in ^3/2 not linear, but rule typically kicks in at a few M for optimal leverage of 20 so we linearize
+
+    markets = exchange.safe_value(response, 'result', []) + exchange.safe_value(expired, 'result', [])
     result = []
-    markets = exchange.safe_value(response, 'result', [])+exchange.safe_value(expired, 'result', [])
     for i in range(0, len(markets)):
         market = markets[i]
+        mark = exchange.safe_number(market, 'mark')
+        imfFactor = exchange.safe_number(market, 'imfFactor')
+
         result.append({
             'ask': exchange.safe_number(market, 'ask'),
             'bid': exchange.safe_number(market, 'bid'),
@@ -160,6 +169,9 @@ def fetch_futures(exchange,includeExpired=False,params={}):
             'sizeIncrement': exchange.safe_value(market, 'sizeIncrement'),
             'underlying': exchange.safe_string(market, 'underlying'),
             'upperBound': exchange.safe_value(market, 'upperBound'),
-            'type': exchange.safe_string(market, 'type')
+            'type': exchange.safe_string(market, 'type'),
+            'initialMarginRequirement': (imfFactor * np.sqrt(dummy_size / mark)).clip(min=1 / float(account_leverage['leverage'])),
+            'maintenanceMarginRequirement': 3 / 5 * (imfFactor * np.sqrt(dummy_size / mark)).clip(
+            min=1 / float(account_leverage['leverage']))  ## TODO: not sure
         })
     return result
