@@ -17,7 +17,7 @@ class MarketData:
         symbol_id: int = tools.get_id_from_symbol(self.symbol)
         symbol_id_string = str(symbol_id)
         date_string = date.strftime('%Y%m%d')
-        self.top_of_book_raw = pd.read_parquet(con.source_directory + 'raw/parquet/' +
+        self.top_of_book_raw = pd.read_parquet(con.source_directory +
                                                date_string + '_' + symbol_id_string + '_tob.parquet')
 
     def load_trade_data_from_parquet(self, date: datetime.date) -> None:
@@ -25,7 +25,7 @@ class MarketData:
         symbol_id_string = str(symbol_id)
         date_string = date.strftime('%Y%m%d')
         self.trades_raw = pd.read_parquet(
-            con.source_directory + 'raw/parquet/' + date_string
+            con.source_directory + date_string
             + '_' + symbol_id_string + '_trade.parquet')
 
     def load_formatted_trade_data_from_csv(self, date: datetime.date) -> None:
@@ -68,8 +68,8 @@ class MarketData:
     def time_sampled_top_of_book(self, millis: int):
         indices = tools.get_time_sampled_indices(
             self.top_of_book_formatted['timestamp_millis'],
-            millis, False)
-        return self.top_of_book_formatted.iloc[indices]
+            millis, False)['index']
+        return self.top_of_book_formatted.iloc[indices.values]
 
     def _get_bars(self, indices: pd.DataFrame):
         bars = pd.DataFrame()
@@ -101,7 +101,9 @@ class MarketData:
                 prices = self.trades_formatted.loc[first_index: last_index, 'price']
                 sizes = self.trades_formatted.loc[first_index: last_index, 'size']
                 givens = self.trades_formatted.loc[first_index: last_index, 'given']
-                vwap = int(prices.multiply(sizes).sum() / sizes.sum())
+                vwap = prices.multiply(sizes).sum() / sizes.sum()
+                if not np.isnan(vwap):
+                    vwap = int(vwap)
                 first_timestamp_millis.append(self.trades_formatted.loc[first_index, 'timestamp_millis'])
                 last_timestamp_millis.append(self.trades_formatted.loc[last_index, 'timestamp_millis'])
                 vwaps.append(vwap)
