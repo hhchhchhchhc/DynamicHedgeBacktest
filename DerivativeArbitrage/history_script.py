@@ -1,3 +1,4 @@
+from time import sleep
 from ftx_history import *
 from ftx_utilities import *
 from ftx_snap_basis import enricher
@@ -27,4 +28,10 @@ def build_fine_history():
                    'gof.crypto.shared', 'ftx_fine_history')
     return None
 
-build_fine_history()
+i=0
+while i<50:
+    try:
+        build_fine_history()
+    except:
+        sleep(15*60)
+    i=i+1
