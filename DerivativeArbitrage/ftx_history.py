@@ -38,11 +38,10 @@ def build_history(futures,exchange,
                for f in futures['underlying'].unique()]
                           +[borrow_history('USD',exchange,end,start,dirname)],
               join='outer',axis=1)
-
-    borrow_data.to_parquet(parquet_filename)
+        borrow_data.to_parquet(parquet_filename)
 
     ## just couldn't figure out pd.concat...
-    data =  perp_funding_data.join(
+    data = perp_funding_data.join(
                 future_rate_data.join(
                     future_price_data.join(
                         spot_price_data.join(borrow_data, how='outer'),
@@ -92,8 +91,8 @@ def borrow_history(spot,exchange,
 
 ######### annualized funding for perps
 def funding_history(future,exchange,
-                 end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
+                    end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                     dirname='temporary_parquets'):
     parquet_filename=dirname+'/allfundings.parquet'
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)

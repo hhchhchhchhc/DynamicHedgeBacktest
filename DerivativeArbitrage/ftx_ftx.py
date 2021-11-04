@@ -4,6 +4,7 @@
 # https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 import numpy as np
 from ccxt.base.exchange import Exchange
+from ftx_utilities import getUnderlyingType,find_spot_ticker
 import pandas as pd
 import dateutil
 from datetime import *
@@ -128,9 +129,19 @@ def fetch_funding_rate_history(exchange, perp,start_time,end_time,params={}):
 
     return result
 
+def collateralWeightInitial(future):# TODO: more exhaustive collateralWeight(Initial) table
+    return future['collateralWeight'] if (
+        (future['underlying'] in ['BTC','FTT'])
+        |(future['underlyingType'] !='crypto')) else future['collateralWeight']-0.05
+def IM(future,size=10000):
+    return (future['imfFactor'] * np.sqrt(size / future['mark'])).clip(min=1 / future['account_leverage'])
+def MM(future,size=10000):
+    return np.max([0.03, 0.6 * IM(future,size)])
+### get all static fields
 def fetch_futures(exchange,includeExpired=False,params={}):
     response = exchange.publicGetFutures(params)
     expired = exchange.publicGetExpiredFutures(params) if includeExpired==True else []
+    coin_details = fetch_coin_details(exchange)
 
     #### for IM calc
     account_leverage = exchange.privateGetAccount()['result']
@@ -141,8 +152,12 @@ def fetch_futures(exchange,includeExpired=False,params={}):
     result = []
     for i in range(0, len(markets)):
         market = markets[i]
+        underlying = exchange.safe_string(market, 'underlying')
         mark = exchange.safe_number(market, 'mark')
         imfFactor = exchange.safe_number(market, 'imfFactor')
+
+        ## eg ADA has no coin details
+        if not underlying in coin_details.index: continue
 
         result.append({
             'ask': exchange.safe_number(market, 'ask'),
@@ -170,8 +185,16 @@ def fetch_futures(exchange,includeExpired=False,params={}):
             'underlying': exchange.safe_string(market, 'underlying'),
             'upperBound': exchange.safe_value(market, 'upperBound'),
             'type': exchange.safe_string(market, 'type'),
-            'initialMarginRequirement': (imfFactor * np.sqrt(dummy_size / mark)).clip(min=1 / float(account_leverage['leverage'])),
-            'maintenanceMarginRequirement': 3 / 5 * (imfFactor * np.sqrt(dummy_size / mark)).clip(
-            min=1 / float(account_leverage['leverage']))  ## TODO: not sure
+         ### additionnals
+            'account_leverage': float(account_leverage['leverage']),
+            'collateralWeight':coin_details.loc[underlying,'collateralWeight'],
+            'underlyingType': getUnderlyingType(coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
+            'spot_ticker': find_spot_ticker(markets, market, 'name'),
+            'spotMargin': coin_details.loc[underlying,'spotMargin'],
+            'tokenizedEquity':coin_details.loc[underlying,'tokenizedEquity'],
+            'usdFungible':coin_details.loc[underlying,'usdFungible'],
+            'fiat':coin_details.loc[underlying,'fiat'],
+            'expiryTime':dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None)
+                            if exchange.safe_string(market, 'type') == 'future' else np.NaN
         })
     return result

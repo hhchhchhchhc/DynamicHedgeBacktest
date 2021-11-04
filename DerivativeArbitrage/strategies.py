@@ -79,12 +79,12 @@ def strategy2():
     slippage_override=2e-4  #### this is given by mktmaker
 #    slippage_scaler=0.5
 #    slippage_orderbook_depth=0
-    signal_horizon=timedelta(days=7)
+    signal_horizon=timedelta(hours=2)
     backtest_window=timedelta(days=30)
     holding_period=timedelta(days=2)
-    concentration_limit = 0.1
-    loss_tolerance=0.01
-    marginal_coin_penalty = 0.05
+    concentration_limit = 99 ## no limit...
+    loss_tolerance=.99 ## no limit..
+    marginal_coin_penalty = 0.05 ## TODO: not used
 
     enriched=enricher(exchange, futures)
     pre_filtered = enriched[
@@ -96,7 +96,7 @@ def strategy2():
 
     #### get history ( this is sloooow)
     try:
-        hy_history = from_parquet("history.parquet")
+        hy_history = from_parquet("temporary_parquets/history.parquet")
         asofdate = np.max(hy_history.index)
         existing_futures = [name.split('/')[0] for name in hy_history.columns]
         new_futures = pre_filtered[pre_filtered['symbol'].isin(existing_futures)==False]
@@ -104,21 +104,27 @@ def strategy2():
             hy_history=pd.concat([hy_history,
                     build_history(new_futures,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)],
                     join='outer',axis=1)
-            to_parquet(hy_history, "history.parquet")
+            to_parquet(hy_history, "temporary_parquets/history.parquet")
     except FileNotFoundError:
         asofdate = datetime.today()
         hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
-        to_parquet(hy_history,"history.parquet")
+        to_parquet(hy_history,"temporary_parquets/history.parquet")
 
     point_in_time=asofdate-holding_period
-    scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=point_in_time,
+    scanned=basis_scanner(exchange,pre_filtered,hy_history,
+                            point_in_time=point_in_time,
                             slippage_override=slippage_override,
-                            holding_period = holding_period,signal_horizon=signal_horizon,concentration_limit=concentration_limit,
-                            loss_tolerance=loss_tolerance,marginal_coin_penalty=marginal_coin_penalty).sort_values(by='optimalWeight')
+                            holding_period = holding_period,
+                            signal_horizon=signal_horizon,
+                            concentration_limit=concentration_limit,
+                            loss_tolerance=loss_tolerance,
+                            marginal_coin_penalty=marginal_coin_penalty).sort_values(by='optimalWeight')
 
     floored=scanned[scanned['ExpectedCarry']>carry_floor].tail(max_nb_coins)
 
-    scanned[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'E_int', 'longWeight', 'shortWeight', 'direction', 'optimalWeight', 'ExpectedCarry','RealizedCarry','IM','MM']].\
+    scanned[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'spotCarry','medianCarryInt',
+             'MaxLongWeight', 'MaxShortWeight', 'direction', 'optimalWeight',
+             'ExpectedCarry','RealizedCarry','lossProbability','excessIM','MM']].\
         to_excel('optimal.xlsx',sheet_name='summary')
 
     return
