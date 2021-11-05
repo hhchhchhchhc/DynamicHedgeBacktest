@@ -53,6 +53,9 @@ def hack_reader(f = r'C:\Users\david\Dropbox\mobilier\crypto\archived data\ftx\2
             t = fp.readline()
             print(t)
 
-# example:
-#s3_download_directory('C:/Users/david/Dropbox/mobilier/crypto/archived data/ftx', 'gof.crypto.shared', 'ftx20211017')
-#s3_upload_file()
+if False:
+    directory='C:/Users/david/Dropbox/mobilier/crypto/archived data/ftx/'
+    for filename in os.listdir(directory):
+        if (".parquet" in filename):
+            s3_upload_file(directory+filename,'gof.crypto.shared', 'ftx_'+filename)
+
