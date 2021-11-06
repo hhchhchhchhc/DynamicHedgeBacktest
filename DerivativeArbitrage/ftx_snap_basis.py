@@ -110,7 +110,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     futures['maintenanceMarginRequirement'] = 3/5*futures['initialMarginRequirement'] ## TODO: not sure
 
     ##### max weights ---> CHECK formulas, short < long no ??
-    futures['longWeight'] = 1 / (1 + (futures['initialMarginRequirement'] - futures['collateralWeight']) / 1.1)
+    futures['longWeight'] = 1 / (1.1 + (futures['initialMarginRequirement'] - futures['collateralWeight']))
     futures['shortWeight'] = -1 / (futures['initialMarginRequirement'] + 1.1 / (0.05 + futures['collateralWeight']) - 1)
 
     #---------- compute max leveraged \int{carry moments}, long and short
@@ -149,7 +149,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     # compute \int(carry)
     Carry_t = futures.apply(lambda f:
                             LongCarry[f['name']] if f['direction']>0
-                            else -ShortCarry[f['name']],
+                            else ShortCarry[f['name']],
                             axis=1).T
     Carry_t.columns = futures['name'].tolist()
     intCarry_t=Carry_t.rolling(int(holding_period.total_seconds()/3600)).mean()
@@ -168,11 +168,11 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     # - do not earn USDborrow if usd balance (1-sum)>0
     # - need 5% carry to add a coin
     objective = lambda x: -(np.dot(x,E_int)) \
-                          + E_USDborrow_int * max([0,1-sum(x)])\
+                          + E_USDborrow_int * max([0,1-sum(x*maxWeight_list)])\
                           #+ marginal_coin_penalty*sum(np.array([np.min[1,np.abs(i)/0.001] for i in x]))
 
     objective_jac= lambda x: -(E_int) \
-                             - E_USDborrow_int if 1-sum(x)>0 else np.zeros(len(x))\
+                             - E_USDborrow_int*maxWeight_list if 1-sum(x)>0 else np.zeros(len(x))\
                            #  + marginal_coin_penalty*np.array([np.sign(i)/0.001 if np.abs(i)<0.001 else 0 for i in x])
 
     #subject to weight bounds, margin and loss probability ceiling
@@ -181,37 +181,41 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
                  'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
                  ## dunno ,'jac': lambda x: 0}
     margin_constraint = {'type': 'ineq',
-               'fun': lambda x: 1-sum(x/maxWeight_list),
-               'jac': lambda x: -np.ones(n)/maxWeight_list}
-    bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit for w in maxWeight_list]),
-                                   ub=np.asarray([0 if w<0 else  concentration_limit for w in maxWeight_list]))
+               'fun': lambda x: 1-sum(x),
+               'jac': lambda x: -np.ones(n)}
+    bounds = scipy.optimize.Bounds(lb=np.zeros(len(maxWeight_list)),
+                                   ub=np.asarray([concentration_limit/abs(w) for w in maxWeight_list]))
 
     # guess: normalized point in time expectation
     x0=np.array(E_int)/sum(E_int)
 
     res = scipy.optimize.minimize(objective, x0, method='SLSQP', jac=objective_jac,
-            constraints = [loss_tolerance_constraint,margin_constraint],bounds = bounds,
+            constraints = [margin_constraint],bounds = bounds,
             options = {'ftol': 1e-9, 'disp': True})
 
     futures['E_int']=E_int
-    futures['optimalWeight'] = res['x']
+    futures['optimalWeight'] = res['x']*maxWeight_list
     futures['ExpectedCarry'] = res['x'] * E_int
     futures['RealizedCarry'] = res['x'] * intCarry_t.loc[point_in_time]
     greeks=portfolio_greeks(exchange,futures).T
+    futures['collateralValue'] = greeks['collateralValue']
     futures['IM'] = greeks['IM']
     futures['MM'] = greeks['MM']
 
     futures.loc['USD', 'E_int'] = E_USDborrow_int
-    futures.loc['USD', 'optimalWeight'] = 1-sum(res['x'])
-    futures.loc['USD','ExpectedCarry'] = E_USDborrow_int * min([0,1-sum(res['x'])])
-    futures.loc['USD','RealizedCarry'] = USDborrow_int.loc[point_in_time]* min([0,1-sum(res['x'])])
+    futures.loc['USD', 'optimalWeight'] = 1-futures['optimalWeight'].sum()
+    futures.loc['USD','ExpectedCarry'] = E_USDborrow_int * min([0,futures.loc['USD', 'optimalWeight']])
+    futures.loc['USD','RealizedCarry'] = USDborrow_int.loc[point_in_time]* min([0,futures.loc['USD', 'optimalWeight']])
 
     futures.loc['total', 'ExpectedCarry'] = futures['ExpectedCarry'].sum()
     futures.loc['total', 'RealizedCarry'] = futures['RealizedCarry'].sum()
     futures.loc['total', 'lossProbability'] = loss_tolerance - loss_tolerance_constraint['fun'](res['x'])
+    futures.loc['total','collateralValue'] = 1+greeks['collateralValue'].sum()
     futures.loc['total', 'IM'] = futures['IM'].sum()
     futures.loc['total', 'MM'] = futures['MM'].sum()
 
+    futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'E_int', 'longWeight', 'shortWeight', 'direction',
+             'optimalWeight', 'ExpectedCarry', 'RealizedCarry', 'collateralValue', 'IM', 'MM']].to_excel('optimal.xlsx', sheet_name='summary')
 
     for col in futures.sort_values(by='ExpectedCarry',ascending=False).head(5).drop(index='total').index:
         all=pd.concat([LongCarry[col],

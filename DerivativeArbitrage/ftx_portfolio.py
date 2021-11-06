@@ -35,10 +35,10 @@ def portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False
                 future_carry = size * np.log(f / s) / t
             spot_carry=size  * float(coin_details.loc[coin if (size < 0) else 'USD', 'borrow'])
 
-            collateralValue=size*(coin_details.loc[coin,'collateralWeight']-1 if size>0 else 0)
+            collateralValue=size*((coin_details.loc[coin,'collateralWeight']-1) if size>0 else 0)
             ### weight(initial)=weight(total)-5% for all but stablecoins/ftt(0) and BTC (2.5)
             spot_im= ((1.1 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
-            spot_mm=((1.03 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
+            spot_mm=((1.03 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.03*size)
             future_im=float(x['initialMarginRequirement']) * np.abs(size)
             future_mm=float(x['maintenanceMarginRequirement']) * np.abs(size)
 
@@ -55,9 +55,6 @@ def portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False
                     'IM': future_im+spot_im,
                     'MM': future_mm+spot_mm,
                         })
-    ## add a sum column
-    greeks.sort_index(axis=1, ascending=True,inplace=True)
-    greeks['sum'] = greeks.sum(axis=1)
     return greeks
 
 ### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
