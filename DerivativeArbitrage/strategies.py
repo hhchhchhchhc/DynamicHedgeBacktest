@@ -79,10 +79,10 @@ def strategy2():
     slippage_override=2e-4  #### this is given by mktmaker
 #    slippage_scaler=0.5
 #    slippage_orderbook_depth=0
-    signal_horizon=timedelta(days=7)
+    signal_horizon=timedelta(hours=1)
     backtest_window=timedelta(days=30)
     holding_period=timedelta(days=2)
-    concentration_limit = 0.1
+    concentration_limit = 0.5
     loss_tolerance=0.01
     marginal_coin_penalty = 0.05
 
@@ -117,9 +117,6 @@ def strategy2():
                             loss_tolerance=loss_tolerance,marginal_coin_penalty=marginal_coin_penalty).sort_values(by='optimalWeight')
 
     floored=scanned[scanned['ExpectedCarry']>carry_floor].tail(max_nb_coins)
-
-    scanned[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'E_int', 'longWeight', 'shortWeight', 'direction', 'optimalWeight', 'ExpectedCarry','RealizedCarry','IM','MM']].\
-        to_excel('optimal.xlsx',sheet_name='summary')
 
     return
 
