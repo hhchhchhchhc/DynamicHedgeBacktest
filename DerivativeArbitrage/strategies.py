@@ -82,7 +82,7 @@ def strategy2():
     signal_horizon=timedelta(hours=1)
     backtest_window=timedelta(days=30)
     holding_period=timedelta(days=2)
-    concentration_limit = 0.5
+    concentration_limit = 0.1
     loss_tolerance=0.01
     marginal_coin_penalty = 0.05
 
@@ -111,12 +111,18 @@ def strategy2():
         to_parquet(hy_history,"history.parquet")
 
     point_in_time=asofdate-holding_period
-    scanned=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=point_in_time,
-                            slippage_override=slippage_override,
-                            holding_period = holding_period,signal_horizon=signal_horizon,concentration_limit=concentration_limit,
-                            loss_tolerance=loss_tolerance,marginal_coin_penalty=marginal_coin_penalty).sort_values(by='optimalWeight')
 
-    floored=scanned[scanned['ExpectedCarry']>carry_floor].tail(max_nb_coins)
+    ladder=pd.Series(np.linspace(0.1,0.5,5))
+    with pd.ExcelWriter('optimal.xlsx',engine='xlsxwriter') as writer:
+        for c in ladder:
+            futures=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=point_in_time,
+                            slippage_override=slippage_override,
+                            holding_period = holding_period,signal_horizon=signal_horizon,concentration_limit=c,
+                            loss_tolerance=loss_tolerance,marginal_coin_penalty=marginal_coin_penalty).sort_values(by='optimalWeight')
+            futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'E_int', 'longWeight', 'shortWeight', 'direction',
+                 'optimalWeight', 'ExpectedCarry', 'RealizedCarry', 'collateralValue', 'IM', 'MM']].to_excel(writer,sheet_name='concentration'+str(int(c*100)))
+
+    #floored=scanned[scanned['ExpectedCarry']>carry_floor].tail(max_nb_coins)
 
     return
 
