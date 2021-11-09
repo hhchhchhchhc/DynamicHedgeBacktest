@@ -27,15 +27,22 @@ def enricher(exchange,futures):
     futures.loc[futures['type']=='future','basis_mid'] = futures[futures['type']=='future'].apply(lambda f: calc_basis(f['mark'],f['index'],f['expiryTime'],datetime.now()),axis=1)
     futures.loc[futures['type'] == 'perpetual','basis_mid'] = futures[futures['type'] == 'perpetual'].apply(lambda f:
                                                                          float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate'])* 24 * 365.25,axis=1)
-    return futures
 
-def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
+    futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
+    futures['carryShort']=-(futures['basis_mid']-futures['quote_borrow']+futures['borrow'])
+    futures['direction_mid']=futures.apply(lambda f: 1 if (f['basis_mid']-f['quote_borrow']+0.5*f['borrow']>0) else -1, axis=1)
+    futures['carry_mid'] = futures.apply(lambda f: f['carryLong'] if (f['direction_mid']>0) else f['carryShort'],axis=1)
+    return futures.drop(columns=['carryLong','carryShort'])
+
+def basis_scanner(exchange, futures, hy_history,
+                  point_in_time='live',
+                  slippage_override=2e-4,  # external slippage override
+                  slippage_scaler=0.25,  # if scaler from order book
+                  slippage_orderbook_depth=0,
                   holding_period=timedelta(days=3),  # to convert slippag into rate
                   signal_horizon=timedelta(days=3),  # historical window for expectations
-                  loss_tolerance=0.1,  # for markovitz
-                  slippage_scaler=0.25,  # if scaler from order book
-                  slippage_override=2e-4,  # external slippage override
                   concentration_limit=0.25,
+                  loss_tolerance=0.1,  # for markovitz
                   marginal_coin_penalty=0.05,
                   params={'override_slippage':True}):             # use external rather than order book
     borrows = fetch_coin_details(exchange)
@@ -56,23 +63,23 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     # Unless slippage override, calculate from orderbook (override Only live is supported).
 
     if params['override_slippage']==True:
-        futures['bid_rate_slippage_in_' + str(depths)]=slippage_override
-        futures['ask_rate_slippage_in_' + str(depths)]=slippage_override
+        futures['bid_rate_slippage_in_' + str(slippage_orderbook_depth)]=slippage_override
+        futures['ask_rate_slippage_in_' + str(slippage_orderbook_depth)]=slippage_override
     else:
         fees=2*(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker'])
         ### relative semi-spreads incl fees, and speed
-        if depths==0:
+        if slippage_orderbook_depth==0:
             futures['spot_ask_in_0'] = fees+futures.apply(lambda f: 0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler
             futures['spot_bid_in_0'] = -futures['spot_ask_in_0']
             futures['future_ask_in_0'] = fees+0.5*(futures['ask'].astype(float)/futures['bid'].astype(float)-1)*slippage_scaler
             futures['future_bid_in_0'] = -futures['future_ask_in_0']
             futures['speed_in_0']=0##*futures['future_ask_in_0'] ### just 0
         else:
-            futures['spot_ask_in_' + str(depths)] = futures['spot_ticker'].apply(lambda x: mkt_depth(exchange,x, 'asks', depths))*slippage_scaler+fees
-            futures['spot_bid_in_' + str(depths)] = futures['spot_ticker'].apply(lambda x: mkt_depth(exchange,x, 'bids', depths))*slippage_scaler - fees
-            futures['future_ask_in_'+str(depths)] = futures['name'].apply(lambda x: mkt_depth(exchange,x,'asks',depths))*slippage_scaler+fees
-            futures['future_bid_in_' + str(depths)] = futures['name'].apply(lambda x: mkt_depth(exchange,x, 'bids', depths))*slippage_scaler - fees
-            futures['speed_in_'+str(depths)]=futures['name'].apply(lambda x:mkt_speed(exchange,x,depths).seconds)
+            futures['spot_ask_in_' + str(slippage_orderbook_depth)] = futures['spot_ticker'].apply(lambda x: mkt_depth(exchange,x, 'asks', slippage_orderbook_depth))*slippage_scaler+fees
+            futures['spot_bid_in_' + str(slippage_orderbook_depth)] = futures['spot_ticker'].apply(lambda x: mkt_depth(exchange,x, 'bids', slippage_orderbook_depth))*slippage_scaler - fees
+            futures['future_ask_in_'+str(slippage_orderbook_depth)] = futures['name'].apply(lambda x: mkt_depth(exchange,x,'asks',slippage_orderbook_depth))*slippage_scaler+fees
+            futures['future_bid_in_' + str(slippage_orderbook_depth)] = futures['name'].apply(lambda x: mkt_depth(exchange,x, 'bids', slippage_orderbook_depth))*slippage_scaler - fees
+            futures['speed_in_'+str(slippage_orderbook_depth)]=futures['name'].apply(lambda x:mkt_speed(exchange,x,slippage_orderbook_depth).seconds)
 
         #### rate slippage assuming perps are rolled every perp_holding_period
         #### use centred bid ask for robustness
@@ -81,11 +88,11 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
                                               else point_in_time + holding_period,
                                               axis=1)  # .replace(tzinfo=timezone.utc)
 
-        futures['bid_rate_slippage_in_' + str(depths)] = futures.apply(lambda f: \
-            (f['future_bid_in_' + str(depths)]-f['spot_ask_in_' + str(depths)]) \
+        futures['bid_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
+            (f['future_bid_in_' + str(slippage_orderbook_depth)]-f['spot_ask_in_' + str(slippage_orderbook_depth)]) \
             / np.max([1, (f['expiryTime'] - point_in_time).seconds* 365.25*24*3600]) ,axis=1)
-        futures['ask_rate_slippage_in_' + str(depths)] = futures.apply(lambda f: \
-            (f['future_ask_in_' + str(depths)] - f['spot_bid_in_' + str(depths)]) \
+        futures['ask_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
+            (f['future_ask_in_' + str(slippage_orderbook_depth)] - f['spot_bid_in_' + str(slippage_orderbook_depth)]) \
             / np.max([1, (f['expiryTime'] - point_in_time).seconds * 365.25*24*3600]),axis=1)
 
     #-------------- max weight under margin constraint--------------
@@ -99,14 +106,14 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     # for perps, compute carry history to estimate moments.
     # for future, funding is deterministic because rate change is compensated by carry change (well, modulo borrow...)
     MaxLongCarry = futures.apply(lambda f:
-        f['MaxLongWeight']*(f['bid_rate_slippage_in_' + str(depths)]- hy_history['USD/rate/borrow']+
+        f['MaxLongWeight']*(f['bid_rate_slippage_in_' + str(slippage_orderbook_depth)]- hy_history['USD/rate/borrow']+
                         hy_history[f['name'] + '/rate/funding'] if f['type']=='perpetual'
                                 else hy_history.loc[point_in_time, f['name'] + '/rate/funding']),
                         axis=1).T
     MaxLongCarry.columns=futures['name'].tolist()
 
     MaxShortCarry = futures.apply(lambda f:
-        f['MaxShortWeight']*(f['ask_rate_slippage_in_' + str(depths)]- hy_history['USD/rate/borrow']+
+        f['MaxShortWeight']*(f['ask_rate_slippage_in_' + str(slippage_orderbook_depth)]- hy_history['USD/rate/borrow']+
                         hy_history[f['name'] + '/rate/funding'] if f['type']=='perpetual'
                                 else hy_history.loc[point_in_time, f['name'] + '/rate/funding']
                         + hy_history[f['underlying'] + '/rate/borrow']),
@@ -151,7 +158,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     objective = lambda x: -(np.dot(x,E_int) - E_USDborrow_int*max([0,1-sum(x)])) # don't receive borrow if usd positive
                           #+ marginal_coin_penalty*sum(np.array([np.min[1,np.abs(i)/0.001] for i in x]))
 
-    objective_jac= lambda x: -(E_int + E_USDborrow_int if 1-sum(x)>0 else np.zeros(len(x)))
+    objective_jac= lambda x: -(E_int + (E_USDborrow_int if 1-sum(x)>0 else np.zeros(len(x))) )
                            #  + marginal_coin_penalty*np.array([np.sign(i)/0.001 if np.abs(i)<0.001 else 0 for i in x])
 
     #subject to weight bounds, margin and loss probability ceiling
@@ -162,11 +169,8 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
                 'fun': lambda x: excessIM(futures,x).sum()}
     ## TODO: implement with shock
     stopout_constraint = {'type': 'ineq',
-                'fun': lambda x: excessMM(futures,x)}
+                'fun': lambda x: excessMM(futures,x).sum()}
 
-    #    margin_constraint = {'type': 'ineq',
-#               'fun': lambda x: 1-sum(x/maxWeight_list),
-#               'jac': lambda x: -np.ones(n)/maxWeight_list}
     bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit for w in futures['direction']]),
                                    ub=np.asarray([0 if w<0 else  concentration_limit for w in futures['direction']]))
 
@@ -174,7 +178,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     x0=np.array(E_int)/sum(E_int)
 
     res = scipy.optimize.minimize(objective, x0, method='SLSQP', jac=objective_jac,
-            constraints = [margin_constraint],bounds = bounds, # loss_tolerance_constraint,
+            constraints = [margin_constraint,stopout_constraint],bounds = bounds, # loss_tolerance_constraint,
             options = {'ftol': 1e-6, 'disp': True})
 
     futures['spotCarry']=Carry_t.loc[point_in_time]
@@ -183,6 +187,7 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     futures['ExpectedCarry'] = res['x'] * E_int
     futures['RealizedCarry'] = res['x'] * integralCarry_t.loc[point_in_time]
     futures['excessIM'] = excessIM(futures, futures['optimalWeight'])
+    futures['excessMM'] = excessMM(futures, futures['optimalWeight'])
 
     futures.loc['USD', 'spotCarry'] = USDborrow_t.loc[point_in_time]
     futures.loc['USD', 'medianCarryInt'] = E_USDborrow_int
@@ -194,8 +199,9 @@ def basis_scanner(exchange, futures, hy_history, point_in_time='live', depths=0,
     futures.loc['total', 'ExpectedCarry'] = futures['ExpectedCarry'].sum()
     futures.loc['total', 'RealizedCarry'] = futures['RealizedCarry'].sum()
     futures.loc['total', 'excessIM'] = excessIM(futures, futures['optimalWeight']).sum()
+    futures.loc['total', 'excessMM'] = excessMM(futures, futures['optimalWeight']).sum()
     futures.loc['total', 'lossProbability'] = loss_tolerance - loss_tolerance_constraint['fun'](res['x'])
-    futures.loc['total', 'MM'] = excessMM(futures,futures['optimalWeight'])
+
 
     temporary=futures
     temporary['absWeight']=futures['optimalWeight'].apply(np.abs,axis=1)
