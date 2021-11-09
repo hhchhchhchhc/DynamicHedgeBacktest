@@ -28,6 +28,37 @@ def mkt_depth(exchange,symbol,side , target_depth=10000):
 
     return interpolator[target_depth]/mid-1.0
 
+def fetch_nearest_trade(exchange, symbol, time, target_depth=1000):
+
+    ### first, find an interval with trades.
+    trade_list=[]
+    span_increment_seconds=1
+    timestamp=time.timestamp()
+    end_time=timestamp+span_increment_seconds
+    cumulative_size=0
+    while cumulative_size<=target_depth:
+        trade_list=pd.DataFrame(exchange.publicGetMarketsMarketNameTrades(
+            {'market_name':symbol,'start_time':timestamp,'end_time':end_time}
+        )['result'],dtype=float)
+        end_time = end_time + span_increment_seconds
+        if not trade_list.empty: cumulative_size=(trade_list['size']*trade_list['price']).sum()
+    trade_list['time'] = trade_list['time'].apply(lambda t: dateutil.parser.isoparse(t).timestamp())
+    trade_list.sort_values('time',inplace=True,ascending=True)
+
+    ## then compute avg over cumsum>depth
+    trade_array=pd.DataFrame()
+    trade_array['time']=(trade_list['time']*trade_list['size']*trade_list['price']).cumsum()
+    trade_array['price']=(trade_list['price']*trade_list['size']*trade_list['price']).cumsum()
+    trade_array['size'] = (trade_list['size']*trade_list['price']).cumsum()
+    interpolator=trade_array.set_index('size')[['price','time']]
+    interpolator.loc[target_depth]=np.NaN
+    interpolator.interpolate(method='index',inplace=True)
+
+    avg_time=interpolator.loc[target_depth,'time'] / target_depth-timestamp
+    avg_price = interpolator.loc[target_depth, 'price'] / target_depth
+
+    return (avg_price,avg_time)
+
 def mkt_speed(exchange, symbol, target_depth=10000):
     # side='bids' or 'asks'
     # returns time taken to trade a certain target_depth (in USD)
@@ -129,10 +160,16 @@ def fetch_funding_rate_history(exchange, perp,start_time,end_time,params={}):
 
     return result
 
-def collateralWeightInitial(future):# TODO: more exhaustive collateralWeight(Initial) table
-    return future['collateralWeight'] if (
-        (future['underlying'] in ['BTC','FTT'])
-        |(future['underlyingType'] !='crypto')) else future['collateralWeight']-0.05
+def collateralWeightInitial(future):# TODO: API call to collateralWeight(Initial)
+    if future['underlying'] in ['BUSD','FTT','HUSD','TUSD','USD','USDC','USDP','WUSDC']:
+        return future['collateralWeight']
+    elif future['underlying'] in ['AUD','BRL','BRZ','CAD','CHF','EUR','GBP','HKD','SGD','TRY','ZAR']:
+        return future['collateralWeight']-0.01
+    elif future['underlying'] in ['BTC','USDT','WBTC','WUSDT']:
+        return future['collateralWeight']-0.025
+    else:
+        return future['collateralWeight']-0.05
+
 def IM(future,size=10000):
     return (future['imfFactor'] * np.sqrt(size / future['mark'])).clip(min=1 / future['account_leverage'])
 def MM(future,size=10000):
