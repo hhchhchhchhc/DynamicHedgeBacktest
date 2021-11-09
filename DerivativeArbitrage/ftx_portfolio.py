@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import pandas as pd
 from ftx_utilities import *
 from ftx_ftx import *
 
@@ -229,4 +230,78 @@ def live_risk():
                     (updated,'MM'): float(account_info['maintenanceMarginRequirement'])})
     return greeks
 
-#live_risk()
+def process_fills(exchange,spot_fills,future_fills):
+    if (spot_fills.empty)|(future_fills.empty): return pd.DataFrame()
+    spot_fills['time']=spot_fills['time'].apply(dateutil.parser.isoparse)
+    future_fills['time']=future_fills['time'].apply(dateutil.parser.isoparse)
+    # TODO: its not that simple if partials, but...
+    fill1 = spot_fills if spot_fills['time'].min()<future_fills['time'].min() else future_fills
+    fill2 = spot_fills if spot_fills['time'].min() >= future_fills['time'].min() else future_fills
+    symbol1 = fill1['market'].iloc[0]
+    symbol2 = fill2['market'].iloc[0]
+
+    ## TODO: more rigorous to see in USD than bps
+    result=pd.Series()
+    result['size'] = np.min([(spot_fills['price'] * spot_fills['size']).sum(),
+                            (future_fills['price'] * future_fills['size']).sum()])
+    result['avg_spot_level']=(spot_fills['size']*spot_fills['price']).sum() / spot_fills['size'].sum()
+    result['avg_future_level']=(future_fills['size']*future_fills['price']).sum() / future_fills['size'].sum()
+    result['realized_premium_bps']=(result['avg_future_level']*future_fills['size'].sum()-\
+                                    result['avg_spot_level']*future_fills['size'].sum())\
+                                    /result['size']*10000
+    result['final_delta']=( spot_fills.loc[spot_fills['side']=='buy','size'].sum() \
+                        -   spot_fills.loc[spot_fills['side'] == 'sell', 'size'].sum() \
+                        +   future_fills.loc[future_fills['side'] == 'buy', 'size'].sum() \
+                        -   future_fills.loc[future_fills['side'] == 'sell', 'size'].sum())\
+                                  *fill2.loc[fill2.index.max(),'price']
+    # premium_mid: we use nearest trades instead of candles
+    s2 = fill1['time'].apply(lambda t: fetch_nearest_trade(exchange,symbol2,t,target_depth=1)[0])
+    premium = (s2-fill1['price'])*fill1['size']* (1 if spot_fills['time'].min()<future_fills['time'].min() else -1)
+    result['premium_nearest_transaction']= premium.sum()/result['size']*10000
+    # delta_pnl: we use nearest trade at the end
+    (result['start_time'],result['end_time'])=\
+        (spot_fills['time'].min().tz_convert(None),future_fills['time'].min().tz_convert(None)) if spot_fills['time'].min()<future_fills['time'].min() \
+            else (future_fills['time'].min().tz_convert(None),spot_fills['time'].min().tz_convert(None))
+   # result['end_time'] = np.max(spot_fills['time'].max(), future_fills['time'].max())
+    final_spot=fetch_nearest_trade(exchange,spot_fills['market'].iloc[0],result['end_time'])[0]
+    final_future = fetch_nearest_trade(exchange,future_fills['market'].iloc[0],result['end_time'])[0]
+    result['delta_pnl'] = \
+        (spot_fills['size']*(final_spot-spot_fills['price']).sum()\
+        +(future_fills['size']*(final_future-future_fills['price']).sum())\
+        )/result['size']*10000
+    result['fee']=(spot_fills['fee']+future_fills['fee']).sum()/result['size']
+
+    return result
+
+def run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(days=1)):
+    exchange=open_exchange('ftx')
+    futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
+
+    fill_analysis = pd.DataFrame()
+    all_fills=pd.DataFrame(exchange.privateGetFills(
+                        {'start_time':int(start.timestamp()),'end_time':int(end.timestamp())}
+                        )['result'],dtype=float)
+    funding_paid = pd.DataFrame(exchange.privateGetFundingPayments(
+                        {'start_time':int(start.timestamp()),'end_time':int(end.timestamp())}
+                        )['result'],dtype=float)
+    for future in set(all_fills['market']).intersection(set(futures['name'])):
+        underlying=future.split('-')[0]
+        spot_fills=all_fills[all_fills['market']==underlying+'/USD']
+        future_fills=all_fills[all_fills['market']==future]
+        if (spot_fills.empty)|(future_fills.empty): continue
+
+        result=process_fills(exchange,spot_fills,future_fills)
+
+        funding_received= -funding_paid.loc[
+            funding_paid['future'].apply(lambda f: f.split('-')[0])==underlying,
+            'payment']
+        result['funding'] = funding_received.sum()
+        fill_analysis[underlying]=result
+
+    return (fill_analysis,all_fills)
+
+if True:
+    (fill_analysis, all_fills)=run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(days=1))
+    fill_analysis.to_excel('fill_analysis.xlsx')
+    all_fills.to_excel('all_fills.xlsx')
+
