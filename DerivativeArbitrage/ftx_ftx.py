@@ -228,7 +228,7 @@ def fetch_futures(exchange,includeExpired=False,params={}):
             'account_leverage': float(account_leverage['leverage']),
             'collateralWeight':coin_details.loc[underlying,'collateralWeight'],
             'underlyingType': getUnderlyingType(coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
-            'spot_ticker': find_spot_ticker(markets, market, 'name'),
+            'spot_ticker': exchange.safe_string(market, 'underlying')+'/USD',
             'spotMargin': coin_details.loc[underlying,'spotMargin'],
             'tokenizedEquity':coin_details.loc[underlying,'tokenizedEquity'],
             'usdFungible':coin_details.loc[underlying,'usdFungible'],
