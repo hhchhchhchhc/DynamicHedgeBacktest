@@ -47,14 +47,16 @@ def fetch_nearest_trade(exchange, symbol, time, target_depth=1000):
 
     ## then compute avg over cumsum>depth
     trade_array=pd.DataFrame()
-    trade_array['time']=(trade_list['time']*trade_list['size']*trade_list['price']).cumsum()
+    trade_array['time']=((trade_list['time']-timestamp)*trade_list['size']*trade_list['price']).cumsum()
     trade_array['price']=(trade_list['price']*trade_list['size']*trade_list['price']).cumsum()
     trade_array['size'] = (trade_list['size']*trade_list['price']).cumsum()
+
     interpolator=trade_array.set_index('size')[['price','time']]
     interpolator.loc[target_depth]=np.NaN
+    interpolator.loc[0]=pd.Series({'time':0,'size':0,'price':trade_array.loc[0,'price']})
     interpolator.interpolate(method='index',inplace=True)
 
-    avg_time=interpolator.loc[target_depth,'time'] / target_depth-timestamp
+    avg_time=interpolator.loc[target_depth,'time'] / target_depth
     avg_price = interpolator.loc[target_depth, 'price'] / target_depth
 
     return (avg_price,avg_time)
