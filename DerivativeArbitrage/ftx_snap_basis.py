@@ -90,10 +90,10 @@ def basis_scanner(exchange, futures, hy_history,
 
         futures['bid_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
             (f['future_bid_in_' + str(slippage_orderbook_depth)]-f['spot_ask_in_' + str(slippage_orderbook_depth)]) \
-            / np.max([1, (f['expiryTime'] - point_in_time).seconds* 365.25*24*3600]) ,axis=1)
+            / np.max([1, (f['expiryTime'] - point_in_time).seconds/(365.25*24*3600)]),axis=1)
         futures['ask_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
             (f['future_ask_in_' + str(slippage_orderbook_depth)] - f['spot_bid_in_' + str(slippage_orderbook_depth)]) \
-            / np.max([1, (f['expiryTime'] - point_in_time).seconds * 365.25*24*3600]),axis=1)
+            / np.max([1, (f['expiryTime'] - point_in_time).seconds/(365.25*24*3600)]),axis=1)
 
     #-------------- max weight under margin constraint--------------
 
@@ -178,8 +178,9 @@ def basis_scanner(exchange, futures, hy_history,
     x0=np.array(E_int)/sum(E_int)
 
     res = scipy.optimize.minimize(objective, x0, method='SLSQP', jac=objective_jac,
-            constraints = [margin_constraint,stopout_constraint],bounds = bounds, # loss_tolerance_constraint,
-            options = {'ftol': 1e-6, 'disp': True})
+                                  constraints = [margin_constraint,stopout_constraint], # ,loss_tolerance_constraint
+                                  bounds = bounds,
+                                  options = {'ftol': 1e-6, 'disp': True})
 
     futures['spotCarry']=Carry_t.loc[point_in_time]
     futures['medianCarryInt']=E_int
@@ -195,13 +196,13 @@ def basis_scanner(exchange, futures, hy_history,
     futures.loc['USD', 'ExpectedCarry'] = E_USDborrow_int * min([0,1-sum(res['x'])])
     futures.loc['USD', 'RealizedCarry'] = USDborrow_int.loc[point_in_time]* min([0,1-sum(res['x'])])
     futures.loc['USD', 'excessIM'] = excessIM(futures, futures['optimalWeight'])['USD']
+    futures.loc['USD', 'excessMM'] = excessMM(futures, futures['optimalWeight'])['USD']
 
     futures.loc['total', 'ExpectedCarry'] = futures['ExpectedCarry'].sum()
     futures.loc['total', 'RealizedCarry'] = futures['RealizedCarry'].sum()
     futures.loc['total', 'excessIM'] = excessIM(futures, futures['optimalWeight']).sum()
     futures.loc['total', 'excessMM'] = excessMM(futures, futures['optimalWeight']).sum()
     futures.loc['total', 'lossProbability'] = loss_tolerance - loss_tolerance_constraint['fun'](res['x'])
-
 
     temporary=futures
     temporary['absWeight']=futures['optimalWeight'].apply(np.abs,axis=1)
@@ -215,7 +216,7 @@ def basis_scanner(exchange, futures, hy_history,
                        axis=1)
         all.columns=['MaxLongCarry', 'MaxShortCarry', 'E_long_t', 'E_short_t', 'Carry_t', 'integralCarry_t']
         all.to_excel(col+'.xlsx',sheet_name=col)
-
+    futures.to_excel('futuresinfo.xlsx')
     return futures
 
 def futures_to_dataframe(futures,size=0,### change wanted greeks if size!=0
