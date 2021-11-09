@@ -23,10 +23,8 @@ def generate_tob_data_from_gzip(symbol: str, input_path: str) -> pd.DataFrame:
                         "ask_price", "ask_qty"]
 
     # convert timestamp to nanos from microseconds
-    df["timestamp"] = df["timestamp"] * 1e3
-    df["timestamp"] = df["timestamp"].astype(int)
-    df["local_timestamp"] = df["local_timestamp"] * 1e3
-    df["local_timestamp"] = df["local_timestamp"].astype(int)
+    df["timestamp"] = df["timestamp"].apply(lambda t: int(1000*t))
+    df["local_timestamp"] = df["local_timestamp"].apply(lambda t: int(1000*t))
     df['instrument_id'] = tools.get_id_from_symbol(symbol)
     df = df[["instrument_id", "local_timestamp", "timestamp", "bid_price", "bid_amount", "ask_price", "ask_amount"]]
     df.columns = new_column_names
@@ -39,10 +37,8 @@ def generate_trade_data_from_gzip(symbol: str, input_path: str) -> pd.DataFrame:
                         "buyer_is_market_maker", "trade_id"]
 
     # convert timestamp to nanos from microseconds
-    df["timestamp"] = df["timestamp"] * 1e3
-    df["timestamp"] = df["timestamp"].astype(int)
-    df["local_timestamp"] = df["local_timestamp"] * 1e3
-    df["local_timestamp"] = df["local_timestamp"].astype(int)
+    df["timestamp"] = df["timestamp"].apply(lambda t: int(1000*t))
+    df["local_timestamp"] = df["local_timestamp"].apply(lambda t: int(1000*t))
     df['instrument_id'] = tools.get_id_from_symbol(symbol)
     df['buyer_is_market_maker'] = df['side'] == 'sell'
     df = df[["instrument_id", "local_timestamp", "timestamp", "price", "amount", "buyer_is_market_maker", "id"]]

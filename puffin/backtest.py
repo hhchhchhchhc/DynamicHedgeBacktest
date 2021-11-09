@@ -70,7 +70,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             tob = pd.read_csv(
-                _config.source_directory + 'inputs/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
+                _config.source_directory + 'data/inputs/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
             tobs = tobs.append(tob)
         return tobs
 
@@ -80,7 +80,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             trade = pd.read_csv(
-                _config.source_directory + 'inputs/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
+                _config.source_directory + 'data/inputs/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
             trades = trades.append(trade)
         return trades
 

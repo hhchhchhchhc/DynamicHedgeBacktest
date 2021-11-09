@@ -58,8 +58,10 @@ def run_nu(nu: float) -> None:
     my_backtest = Backtest('XRPUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
                            number_of_days)
     results, summary = my_backtest.run()
-    results.to_csv(_config.source_directory + 'new_results_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
-    summary.to_csv(_config.source_directory + 'new_summary_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
+    results.to_csv(_config.source_directory + 'data/outputs/new_results_high_low_' + str("{:,.2f}".format(nu)) + '.csv',
+                   index=False)
+    summary.to_csv(_config.source_directory + 'data/outputs/new_summary_high_low_' + str("{:,.2f}".format(nu)) + '.csv',
+                   index=False)
 
 
 def run_nus():
