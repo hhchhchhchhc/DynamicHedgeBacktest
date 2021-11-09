@@ -20,8 +20,24 @@ def excessIM(futures,x,params={'positive_carry_on_balances':False}):
     freeCollateral = collateralValue-spot_im-future_im
     freeCollateral['USD']=1-usd_im
     return freeCollateral
-def excessMM(futures,weights,shocks=[]):
-    return None
+
+def excessMM(futures,x,long_blowup=0.07,short_blowup=0.15,nb_blowups=3):
+    temporary=futures[['collateralWeight','imfFactor','mark','account_leverage']]
+    temporary['x'] = x
+    temporary['w'] = futures.apply(lambda f: collateralWeightInitial(f),axis=1)
+    temporary['mm'] = temporary.apply(lambda f: MM(f, np.abs(f['x'])),axis=1)
+
+    collateralValue = temporary['x'] * (temporary['collateralWeight'] - 1)
+    collateralValue[temporary['x'] < 0] = 0
+    spot_mm = temporary.apply(lambda f:
+            (1.03 / f['w'] - 1) * -f['x'] if f['x'] < 0 else 0.03 * f['x'],axis=1)
+    future_mm = temporary.apply(lambda f: f['mm'] * np.abs(f['x']),axis=1)
+    usd_mm = 0 if temporary['x'].sum()<1 else temporary['x'].sum()-1
+
+    freeCollateral = collateralValue-spot_mm-future_mm
+    blowups = [(long_blowup if x>0 else short_blowup) * np.abs(x) for x in sorted(temporary['x'], key=abs,reverse=True)[:nb_blowups]]
+    freeCollateral['USD']=1-sum(blowups)-usd_mm
+    return freeCollateral
 
 ### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
 ### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
@@ -300,7 +316,7 @@ def run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(da
 
     return (fill_analysis,all_fills)
 
-if True:
+if False:
     (fill_analysis, all_fills)=run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(days=1))
     fill_analysis.to_excel('fill_analysis.xlsx')
     all_fills.to_excel('all_fills.xlsx')
