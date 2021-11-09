@@ -1,5 +1,7 @@
 import os.path
 
+import pandas as pd
+
 from ftx_utilities import *
 from ftx_ftx import *
 from dateutil import rrule
@@ -10,8 +12,8 @@ def build_history(futures,exchange,
         start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                   dirname='temporary_parquets'):
 
-    if futures[futures['type']=='perpetual'].empty: perp_funding_data=[]
-    else:
+    perp_funding_data=pd.DataFrame()
+    if not futures[futures['type']=='perpetual'].empty:
         parquet_filename = dirname+'/allfundings.parquet'
         if os.path.isfile(parquet_filename):
             perp_funding_data=from_parquet(parquet_filename)
@@ -31,6 +33,8 @@ def build_history(futures,exchange,
                                   join='outer', axis=1)
 
     parquet_filename = dirname+'/allborrows.parquet'
+
+    borrow_data=pd.DataFrame()
     if os.path.isfile(parquet_filename):
         borrow_data = from_parquet(parquet_filename)
     else:
@@ -80,11 +84,11 @@ def borrow_history(spot,exchange,
     if len(borrow_data)>0:
         borrow_data = borrow_data.astype(dtype={'time': 'int64'}).set_index(
             'time')[['coin','rate','size']]
-        borrow_data = borrow_data[~borrow_data.index.duplicated()]
         data = pd.DataFrame()
         data[spot+'/rate/borrow'] = borrow_data['rate']
         data[spot+'/rate/size'] = borrow_data['size']
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+        data=data[~data.index.duplicated()].sort_index()
     else: data=pd.DataFrame()
 
     return data
@@ -118,10 +122,10 @@ def funding_history(future,exchange,
     if len(funding_data) > 0:
         funding_data = funding_data.astype(dtype={'time': 'int64'}).set_index(
             'time')[['rate']]
-        funding_data = funding_data[~funding_data.index.duplicated()]
         data = pd.DataFrame()
         data[future['name'] + '/rate/funding'] = funding_data['rate']
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+        data = data[~data.index.duplicated()].sort_index()
     else:
         data = pd.DataFrame()
 
@@ -133,8 +137,9 @@ def rate_history(future,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                  timeframe='1h',
                  dirname='temporary_parquets'):
-    parquet_filename=dirname+'/'+future['symbol']+'_futures.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+    if dirname!='':
+        parquet_filename=dirname+'/'+future['symbol']+'_futures.parquet'
+        if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
 
     max_mark_data = int(1500)
     resolution = exchange.describe()['timeframes'][timeframe]
@@ -197,9 +202,9 @@ def rate_history(future,exchange,
         return
     data.columns = [future['symbol'] + '/' + c for c in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
-    data = data[~data.index.duplicated()]
+    data = data[~data.index.duplicated()].sort_index()
 
-    data.to_parquet(dirname+'/'+future['symbol']+"_futures.parquet")
+    if dirname!='':data.to_parquet(dirname+'/'+future['symbol']+"_futures.parquet")
 
     return data
 
@@ -209,8 +214,9 @@ def price_history(symbol,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                  timeframe='1h',
                   dirname='temporary_parquets'):
-    parquet_filename = dirname +'/' + symbol.replace('/USD','') + '_price.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+    if dirname!='':
+        parquet_filename = dirname +'/' + symbol.replace('/USD','') + '_price.parquet'
+        if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
 
     max_mark_data = int(5000)
     resolution = exchange.describe()['timeframes'][timeframe]
@@ -236,9 +242,9 @@ def price_history(symbol,exchange,
     data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
     data.columns = [symbol.replace('/USD','') + '/price/' + column for column in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
-    data = data[~data.index.duplicated()]
+    data = data[~data.index.duplicated()].sort_index()
 
-    data.to_parquet(dirname+'/'+ symbol.replace('/USD','') + "_price.parquet")
+    if dirname!='': data.to_parquet(dirname+'/'+ symbol.replace('/USD','') + "_price.parquet")
 
     return data
 
