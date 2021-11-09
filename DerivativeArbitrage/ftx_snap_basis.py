@@ -90,16 +90,16 @@ def basis_scanner(exchange, futures, hy_history,
 
         futures['bid_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
             (f['future_bid_in_' + str(slippage_orderbook_depth)]-f['spot_ask_in_' + str(slippage_orderbook_depth)]) \
-            / np.max([1, (f['expiryTime'] - point_in_time).seconds/(365.25*24*3600)]),axis=1)
+            / np.max([1, (f['expiryTime'] - point_in_time).seconds/3600])*365.25*24,axis=1) # no less than 1h
         futures['ask_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
             (f['future_ask_in_' + str(slippage_orderbook_depth)] - f['spot_bid_in_' + str(slippage_orderbook_depth)]) \
-            / np.max([1, (f['expiryTime'] - point_in_time).seconds/(365.25*24*3600)]),axis=1)
+            / np.max([1, (f['expiryTime'] - point_in_time).seconds/3600])*365.25*24,axis=1) # no less than 1h
 
     #-------------- max weight under margin constraint--------------
 
     ##### max weights ---> CHECK formulas, short < long no ??
     future_im=futures.apply(lambda f: IM(f),axis=1) ## default size 10k
-    futures['MaxLongWeight'] = 1 / (1 + (future_im - futures['collateralWeight']) / 1.1)
+    futures['MaxLongWeight'] = 1 / (1.1 + (future_im - futures['collateralWeight']))
     futures['MaxShortWeight'] = -1 / (future_im + 1.1 / (0.05 + futures['collateralWeight']) - 1)
 
     #---------- compute max leveraged \int{carry moments}, long and short. To find direction, not weights.
