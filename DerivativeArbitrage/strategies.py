@@ -77,19 +77,19 @@ def strategy2():
     max_nb_coins = 15
     carry_floor = 0.4
     slippage_override=2e-4  #### this is given by mktmaker
-#    slippage_scaler=0.5
-#    slippage_orderbook_depth=0
+    slippage_scaler=0.5
+    slippage_orderbook_depth=10000
     signal_horizon=timedelta(hours=2)
     backtest_window=timedelta(days=30)
-    holding_period=timedelta(days=2)
+    holding_period=timedelta(days=3)
     concentration_limit = 99 ## no limit...
-    loss_tolerance=.99 ## no limit..
+    loss_tolerance= 0.99 ## no limit..
     marginal_coin_penalty = 0.05 ## TODO: not used
 
     enriched=enricher(exchange, futures)
     pre_filtered = enriched[
         (enriched['expired'] == False)
-        & (enriched['funding_volume'] * enriched['mark'] > funding_threshold)
+        & (enriched['funding_volume'] * enriched['mark'] > funding_threshold) # TODO: screen on avg
         & (enriched['volumeUsd24h'] > volume_threshold)
         & (enriched['tokenizedEquity']!=True)
         & (enriched['type']==type_allowed)]
@@ -114,17 +114,20 @@ def strategy2():
     scanned=basis_scanner(exchange,pre_filtered,hy_history,
                             point_in_time=point_in_time,
                             slippage_override=slippage_override,
+                            slippage_scaler=slippage_scaler,
+                            slippage_orderbook_depth = slippage_orderbook_depth,
                             holding_period = holding_period,
                             signal_horizon=signal_horizon,
                             concentration_limit=concentration_limit,
                             loss_tolerance=loss_tolerance,
-                            marginal_coin_penalty=marginal_coin_penalty).sort_values(by='optimalWeight')
+                            marginal_coin_penalty=marginal_coin_penalty,
+                            params={'override_slippage':False}).sort_values(by='optimalWeight')
 
     floored=scanned[scanned['ExpectedCarry']>carry_floor].tail(max_nb_coins)
 
     scanned[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'spotCarry','medianCarryInt',
              'MaxLongWeight', 'MaxShortWeight', 'direction', 'optimalWeight',
-             'ExpectedCarry','RealizedCarry','lossProbability','excessIM','MM']].\
+             'ExpectedCarry','RealizedCarry','lossProbability','excessIM','excessMM']].\
         to_excel('optimal.xlsx',sheet_name='summary')
 
     return
@@ -135,10 +138,4 @@ def strategy2():
     outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
     outputit(static_backtest.T.describe([.1,.25, .5,.75, .9])*24*365.25,'backtest','ftx',{'excelit':True,'pickleit':False})
 
-
-
 strategy2()
-#strategyOO()
-
-#hy_history = from_parquet("fullhistory.parquet")
-hy_history=[]
