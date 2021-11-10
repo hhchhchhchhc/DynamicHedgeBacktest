@@ -7,6 +7,7 @@ import pickle
 import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
+import xlsxwriter
 
 from datetime import datetime,timezone,timedelta,date
 import dateutil
