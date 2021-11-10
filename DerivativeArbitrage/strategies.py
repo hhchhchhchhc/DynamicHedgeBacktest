@@ -72,14 +72,20 @@ def strategy2():
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
 
-    funding_threshold = 1e4
-    volume_threshold = 1e6
+    # filtering params
+    funding_volume_threshold = 5e5
+    spot_volume_threshold = 5e4
+    borrow_volume_threshold = 5e5
     type_allowed='perpetual'
     max_nb_coins = 15
     carry_floor = 0.4
+
+    # fee estimation params
     slippage_override=2e-4  #### this is given by mktmaker
     slippage_scaler=1
     slippage_orderbook_depth=1000
+
+    # startegy params
     signal_horizon=timedelta(days=7)
     backtest_window=timedelta(days=90)
     holding_period=timedelta(days=7)
@@ -89,21 +95,15 @@ def strategy2():
 
     enriched=enricher(exchange, futures, holding_period,
                     slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
-                    slippage_scaler=slippage_scaler, params={'override_slippage': False})
-    pre_filtered = enriched[
-        (enriched['expired'] == False)&(enriched['enabled'] == True) & (enriched['type'] != "move")
-        & (enriched.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)>0.0)
-        & (enriched['funding_volume'] * enriched['mark'] > funding_threshold) # TODO: screen on avg
-        & (enriched['volumeUsd24h'] > volume_threshold)
-        & (enriched['tokenizedEquity']!=True)
-        & (enriched['type']==type_allowed)]
+                    slippage_scaler=slippage_scaler,
+                    params={'override_slippage': True,'type_allowed':type_allowed,'fee_mode':'retail'})
 
     #### get history ( this is sloooow)
     try:
         hy_history = from_parquet("temporary_parquets/history.parquet")
         asofdate = np.max(hy_history.index)
         existing_futures = [name.split('/')[0] for name in hy_history.columns]
-        new_futures = pre_filtered[pre_filtered['symbol'].isin(existing_futures)==False]
+        new_futures = enriched[enriched['symbol'].isin(existing_futures)==False]
         if new_futures.empty==False:
             hy_history=pd.concat([hy_history,
                     build_history(new_futures,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)],
@@ -111,20 +111,32 @@ def strategy2():
             to_parquet(hy_history, "temporary_parquets/history.parquet")
     except FileNotFoundError:
         asofdate = datetime.today()
-        hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
+        hy_history = build_history(enriched,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
         to_parquet(hy_history,"temporary_parquets/history.parquet")
 
-    enriched['volume_avg'] = (hy_history.loc['funding_volume'] * enriched['mark']).sum()
+    filter_window=hy_history[datetime(2021,6,1):datetime(2021,11,1)].index
+    enriched['borrow_volume_avg'] = enriched.apply(lambda f:
+                            (hy_history.loc[filter_window,f['underlying']+'/rate/size']*hy_history.loc[filter_window,f['name']+'/mark/o']).mean(),axis=1)
+    enriched['spot_volume_avg'] = enriched.apply(lambda f:
+                            (hy_history.loc[filter_window,f['underlying'] + '/price/volume'] ).mean(),axis=1)
+    enriched['future_volume_avg'] = enriched.apply(lambda f:
+                            (hy_history.loc[filter_window,f['name'] + '/price/volume']).mean(),axis=1)
+    pre_filtered=enriched[
+              (enriched['borrow_volume_avg'] >borrow_volume_threshold)
+            & (enriched['spot_volume_avg'] >spot_volume_threshold)
+            & (enriched['spot_volume_avg'] >spot_volume_threshold)]
 
     point_in_time=asofdate-holding_period
     scanned=basis_scanner(exchange,pre_filtered,hy_history,
                             point_in_time=point_in_time,
+                            previous_weights=np.array(0),
                             holding_period = holding_period,
                             signal_horizon=signal_horizon,
                             concentration_limit=concentration_limit,
                             loss_tolerance=loss_tolerance,
                             marginal_coin_penalty=marginal_coin_penalty
                           ).sort_values(by='optimalWeight')
+    return
 
     floored=scanned[scanned['ExpectedCarry']>carry_floor].tail(max_nb_coins)
 
