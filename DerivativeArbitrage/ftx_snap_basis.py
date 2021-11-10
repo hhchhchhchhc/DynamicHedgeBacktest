@@ -8,112 +8,139 @@ from ftx_portfolio import *
 from ftx_history import *
 from ftx_ftx import *
 
-def enricher(exchange,futures):
-    coin_details=pd.DataFrame(exchange.publicGetWalletCoins()['result'],dtype=float).set_index('id')
-    markets = exchange.fetch_markets()
-    ### only if active and  spot trades
-    futures=futures[(futures['enabled']==True)&(futures['type']!="move")]
-    futures=futures[futures.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)>0.0] #### only if spot trades
-
+def enricher(exchange,input_futures,holding_period,
+             slippage_override= -999, slippage_orderbook_depth= 0,
+             slippage_scaler= 1.0, params={'override_slippage': True}):
+    futures=pd.DataFrame(input_futures)
     ########### add borrows
+    coin_details = pd.DataFrame(exchange.publicGetWalletCoins()['result'], dtype=float).set_index('id')
     borrows = fetch_coin_details(exchange)
-    futures = pd.merge(futures, borrows[['borrow','lend','funding_volume']], how='left', left_on='underlying', right_index=True)
+    futures = pd.merge(futures, borrows[['borrow', 'lend', 'funding_volume']], how='left', left_on='underlying',
+                       right_index=True)
     futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
     futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
+    ########### naive basis for all futures
+    futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
+        lambda f:float(fetch_funding_rates(exchange, f['name'])['result']['nextFundingRate']) * 24 * 365.25, axis=1)
+    futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
+        lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
+
     #### need borrow to be present
     futures = futures[futures['borrow']>=-999]
 
-    ########### naive basis for all futures
-    futures.loc[futures['type']=='future','basis_mid'] = futures[futures['type']=='future'].apply(lambda f: calc_basis(f['mark'],f['index'],f['expiryTime'],datetime.now()),axis=1)
-    futures.loc[futures['type'] == 'perpetual','basis_mid'] = futures[futures['type'] == 'perpetual'].apply(lambda f:
-                                                                         float(fetch_funding_rates(exchange,f['name'])['result']['nextFundingRate'])* 24 * 365.25,axis=1)
-
+    # spot carries
     futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
     futures['carryShort']=-(futures['basis_mid']-futures['quote_borrow']+futures['borrow'])
     futures['direction_mid']=futures.apply(lambda f: 1 if (f['basis_mid']-f['quote_borrow']+0.5*f['borrow']>0) else -1, axis=1)
     futures['carry_mid'] = futures.apply(lambda f: f['carryLong'] if (f['direction_mid']>0) else f['carryShort'],axis=1)
+
+    # transaction costs
+    costs=fetch_rate_slippage(futures, exchange, holding_period,
+        slippage_override, slippage_orderbook_depth, slippage_scaler,
+        params)
+    futures = futures.join(costs, how = 'outer')
+
+    ##### max weights ---> TODO CHECK formulas, short < long no ??
+    future_im=futures.apply(lambda f: IM(f),axis=1) ## default size 10k
+    futures['MaxLongWeight'] = 1 / (1.1 + (future_im - futures['collateralWeight']))
+    futures['MaxShortWeight'] = -1 / (future_im + 1.1 / futures.apply(lambda f:collateralWeightInitial(f),axis=1) - 1)
+
     return futures.drop(columns=['carryLong','carryShort'])
 
-def basis_scanner(exchange, futures, hy_history,
+def update(input_futures,point_in_time=datetime.now()+timedelta(weeks=1),history=pd.DataFrame()):
+    futures=pd.DataFrame(input_futures)
+    ########### add borrows
+    futures['borrow']=futures['underlying'].apply(lambda f:history.loc[point_in_time,f+'/rate/borrow'])
+    futures['borrow'] = futures['underlying'].apply(lambda f: history.loc[point_in_time, f + '/rate/borrow'])
+    futures['lend'] = futures['underlying'].apply(lambda f:history.loc[point_in_time, f + '/rate/borrow'])*.9 # TODO:lending rate
+    futures['quote_borrow'] = history.loc[point_in_time, 'USD/rate/borrow']
+    futures['quote_lend'] = history.loc[point_in_time, 'USD/rate/borrow'] * .9  # TODO:lending rate
+    ########### naive basis for all futures
+    futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures.loc[futures['type'] == 'perpetual','name'].apply(
+        lambda f: history.loc[point_in_time, f + '/rate/funding'],axis=1)
+    futures['mark']=futures['underlying'].apply(lambda f:history.loc[point_in_time,f+'/mark/o'])
+    futures['index'] = futures['underlying'].apply(lambda f: history.loc[point_in_time, f + '/index/o'])
+    futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future','underlying'].apply(
+        lambda f: history.loc[point_in_time, f + '/rate/T'],axis=1)
+    futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
+        lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
+
+    # spot carries
+    futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
+    futures['carryShort']=-(futures['basis_mid']-futures['quote_borrow']+futures['borrow'])
+    futures['direction_mid']=futures.apply(lambda f: 1 if (f['basis_mid']-f['quote_borrow']+0.5*f['borrow']>0) else -1, axis=1)
+    futures['carry_mid'] = futures.apply(lambda f: f['carryLong'] if (f['direction_mid']>0) else f['carryShort'],axis=1)
+
+    return futures.drop(columns=['carryLong','carryShort'])
+
+#-------------------- transaction costs---------------
+# add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
+# Unless slippage override, calculate from orderbook (override Only live is supported).
+def fetch_rate_slippage(input_futures, exchange: Exchange,holding_period,
+                            slippage_override: int = -999, slippage_orderbook_depth: float = 0,
+                            slippage_scaler: float = 1.0,params={'override_slippage':True}) -> None:
+    futures=pd.DataFrame(input_futures)
+    point_in_time=datetime.now()
+    markets=exchange.fetch_markets()
+    if params['override_slippage']==True:
+        futures['bid_rate_slippage']=slippage_override
+        futures['ask_rate_slippage']=slippage_override
+    else: ## rubble calc:
+        fees=(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker']*0)#maker fees 0 with 26 FTT staked
+        ### relative semi-spreads incl fees, and speed
+        if slippage_orderbook_depth==0:
+            futures['spot_ask'] = fees+futures.apply(lambda f: 0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler
+            futures['spot_bid'] = -futures['spot_ask']
+            futures['future_ask'] = fees+0.5*(futures['ask'].astype(float)/futures['bid'].astype(float)-1)*slippage_scaler
+            futures['future_bid'] = -futures['future_ask']
+            #futures['speed']=0##*futures['future_ask'] ### just 0
+        else:
+            futures['spot_ask'] = futures['spot_ticker'].apply(lambda x: mkt_depth(exchange,x, 'asks', slippage_orderbook_depth))*slippage_scaler+fees
+            futures['spot_bid'] = futures['spot_ticker'].apply(lambda x: mkt_depth(exchange,x, 'bids', slippage_orderbook_depth))*slippage_scaler - fees
+            futures['future_ask'] = futures['name'].apply(lambda x: mkt_depth(exchange,x,'asks',slippage_orderbook_depth))*slippage_scaler+fees
+            futures['future_bid'] = futures['name'].apply(lambda x: mkt_depth(exchange,x, 'bids', slippage_orderbook_depth))*slippage_scaler - fees
+            #futures['speed_in_'+str(slippage_orderbook_depth)]=futures['name'].apply(lambda x:mkt_speed(exchange,x,slippage_orderbook_depth).seconds)
+
+        #### rate slippage assuming perps are rolled every perp_holding_period
+        #### use both bid and ask for robustness, but don't x2 for entry+exit
+        futures['expiryTime'] = futures.apply(lambda x:
+                                              x['expiryTime'] if x['type'] == 'future'
+                                              else point_in_time + holding_period,
+                                              axis=1)  # .replace(tzinfo=timezone.utc)
+
+        futures['bid_rate_slippage'] = futures.apply(lambda f: \
+            (f['future_bid']- f['spot_ask']) \
+            / np.max([1, (f['expiryTime'] - point_in_time).total_seconds()/3600])*365.25*24,axis=1) # no less than 1h
+        futures['ask_rate_slippage'] = futures.apply(lambda f: \
+            (f['future_ask'] - f['spot_bid']) \
+            / np.max([1, (f['expiryTime'] - point_in_time).total_seconds()/3600])*365.25*24,axis=1) # no less than 1h
+
+    return futures[['bid_rate_slippage','ask_rate_slippage']]
+
+def basis_scanner(exchange, input_futures, hy_history,
                   point_in_time='live',
-                  slippage_override=2e-4,  # external slippage override
-                  slippage_scaler=0.25,  # if scaler from order book
-                  slippage_orderbook_depth=0,
                   holding_period=timedelta(days=3),  # to convert slippag into rate
                   signal_horizon=timedelta(days=3),  # historical window for expectations
                   concentration_limit=0.25,
                   loss_tolerance=0.1,  # for markovitz
-                  marginal_coin_penalty=0.05,
-                  params={'override_slippage':True}):             # use external rather than order book
-    borrows = fetch_coin_details(exchange)
-    markets = exchange.fetch_markets()
+                  marginal_coin_penalty=0.05):             # use external rather than order book
+    futures=pd.DataFrame(input_futures)
     ### remove blanks for this
     hy_history = hy_history.fillna(method='ffill',limit=2,inplace=False)
     # TODO: check hy_history is hourly
-
-    #-----------------  screening --------------
-    ### only if active and  spot trades
-    futures=futures[(futures['enabled']==True)&(futures['type']!="move")]
-    futures=futures[futures.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)>0.0] #### only if spot trades
-    #### need borrow to be present
-    futures = futures[futures['borrow']>=-999]
-
-    #-------------------- transaction costs---------------
-    # add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
-    # Unless slippage override, calculate from orderbook (override Only live is supported).
-
-    if params['override_slippage']==True:
-        futures['bid_rate_slippage_in_' + str(slippage_orderbook_depth)]=slippage_override
-        futures['ask_rate_slippage_in_' + str(slippage_orderbook_depth)]=slippage_override
-    else:
-        fees=2*(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker'])
-        ### relative semi-spreads incl fees, and speed
-        if slippage_orderbook_depth==0:
-            futures['spot_ask_in_0'] = fees+futures.apply(lambda f: 0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler
-            futures['spot_bid_in_0'] = -futures['spot_ask_in_0']
-            futures['future_ask_in_0'] = fees+0.5*(futures['ask'].astype(float)/futures['bid'].astype(float)-1)*slippage_scaler
-            futures['future_bid_in_0'] = -futures['future_ask_in_0']
-            futures['speed_in_0']=0##*futures['future_ask_in_0'] ### just 0
-        else:
-            futures['spot_ask_in_' + str(slippage_orderbook_depth)] = futures['spot_ticker'].apply(lambda x: mkt_depth(exchange,x, 'asks', slippage_orderbook_depth))*slippage_scaler+fees
-            futures['spot_bid_in_' + str(slippage_orderbook_depth)] = futures['spot_ticker'].apply(lambda x: mkt_depth(exchange,x, 'bids', slippage_orderbook_depth))*slippage_scaler - fees
-            futures['future_ask_in_'+str(slippage_orderbook_depth)] = futures['name'].apply(lambda x: mkt_depth(exchange,x,'asks',slippage_orderbook_depth))*slippage_scaler+fees
-            futures['future_bid_in_' + str(slippage_orderbook_depth)] = futures['name'].apply(lambda x: mkt_depth(exchange,x, 'bids', slippage_orderbook_depth))*slippage_scaler - fees
-            futures['speed_in_'+str(slippage_orderbook_depth)]=futures['name'].apply(lambda x:mkt_speed(exchange,x,slippage_orderbook_depth).seconds)
-
-        #### rate slippage assuming perps are rolled every perp_holding_period
-        #### use centred bid ask for robustness
-        futures['expiryTime'] = futures.apply(lambda x:
-                                              futures['expiryTime'] if x['type'] == 'future'
-                                              else point_in_time + holding_period,
-                                              axis=1)  # .replace(tzinfo=timezone.utc)
-
-        futures['bid_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
-            (f['future_bid_in_' + str(slippage_orderbook_depth)]-f['spot_ask_in_' + str(slippage_orderbook_depth)]) \
-            / np.max([1, (f['expiryTime'] - point_in_time).seconds/3600])*365.25*24,axis=1) # no less than 1h
-        futures['ask_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
-            (f['future_ask_in_' + str(slippage_orderbook_depth)] - f['spot_bid_in_' + str(slippage_orderbook_depth)]) \
-            / np.max([1, (f['expiryTime'] - point_in_time).seconds/3600])*365.25*24,axis=1) # no less than 1h
-
-    #-------------- max weight under margin constraint--------------
-
-    ##### max weights ---> CHECK formulas, short < long no ??
-    future_im=futures.apply(lambda f: IM(f),axis=1) ## default size 10k
-    futures['MaxLongWeight'] = 1 / (1.1 + (future_im - futures['collateralWeight']))
-    futures['MaxShortWeight'] = -1 / (future_im + 1.1 / (0.05 + futures['collateralWeight']) - 1)
 
     #---------- compute max leveraged \int{carry moments}, long and short. To find direction, not weights.
     # for perps, compute carry history to estimate moments.
     # for future, funding is deterministic because rate change is compensated by carry change (well, modulo borrow...)
     MaxLongCarry = futures.apply(lambda f:
-        f['MaxLongWeight']*(f['bid_rate_slippage_in_' + str(slippage_orderbook_depth)]- hy_history['USD/rate/borrow']+
+        f['MaxLongWeight']*(f['bid_rate_slippage']- hy_history['USD/rate/borrow']+
                         hy_history[f['name'] + '/rate/funding'] if f['type']=='perpetual'
                                 else hy_history.loc[point_in_time, f['name'] + '/rate/funding']),
                         axis=1).T
     MaxLongCarry.columns=futures['name'].tolist()
 
     MaxShortCarry = futures.apply(lambda f:
-        f['MaxShortWeight']*(f['ask_rate_slippage_in_' + str(slippage_orderbook_depth)]- hy_history['USD/rate/borrow']+
+        f['MaxShortWeight']*(f['ask_rate_slippage']- hy_history['USD/rate/borrow']+
                         hy_history[f['name'] + '/rate/funding'] if f['type']=='perpetual'
                                 else hy_history.loc[point_in_time, f['name'] + '/rate/funding']
                         + hy_history[f['underlying'] + '/rate/borrow']),
@@ -167,10 +194,8 @@ def basis_scanner(exchange, futures, hy_history,
                 'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
     margin_constraint = {'type': 'ineq',
                 'fun': lambda x: excessIM(futures,x).sum()}
-    ## TODO: implement with shock
     stopout_constraint = {'type': 'ineq',
                 'fun': lambda x: excessMM(futures,x).sum()}
-
     bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit for w in futures['direction']]),
                                    ub=np.asarray([0 if w<0 else  concentration_limit for w in futures['direction']]))
 
@@ -206,16 +231,17 @@ def basis_scanner(exchange, futures, hy_history,
 
     temporary=futures
     temporary['absWeight']=futures['optimalWeight'].apply(np.abs,axis=1)
-    for col in temporary.sort_values(by='absWeight',ascending=False).drop(index=['USD','total']).head(5).index:
-        all=pd.concat([MaxLongCarry[col],
-                       MaxShortCarry[col],
-                       E_long_t[col],
-                       E_short_t[col],
-                       Carry_t[col],
-                       integralCarry_t[col]],
-                       axis=1)
-        all.columns=['MaxLongCarry', 'MaxShortCarry', 'E_long_t', 'E_short_t', 'Carry_t', 'integralCarry_t']
-        all.to_excel(col+'.xlsx',sheet_name=col)
+    with pd.ExcelWriter('paths.xlsx', engine='xlsxwriter') as writer:
+        for col in temporary.sort_values(by='absWeight',ascending=False).drop(index=['USD','total']).head(5).index:
+            all=pd.concat([MaxLongCarry[col],
+                           MaxShortCarry[col],
+                           E_long_t[col],
+                           E_short_t[col],
+                           Carry_t[col],
+                           integralCarry_t[col]],
+                           axis=1)
+            all.columns=['MaxLongCarry', 'MaxShortCarry', 'E_long_t', 'E_short_t', 'Carry_t', 'integralCarry_t']
+            all.to_excel(writer,sheet_name=col)
     futures.to_excel('futuresinfo.xlsx')
     return futures
 

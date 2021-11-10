@@ -69,6 +69,7 @@ def strategy1(nb_pos=1,account_equity=10000,params={'type':'perpetual','excelit'
 
 def strategy2():
     exchange=open_exchange('ftx')
+    markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
 
     funding_threshold = 1e4
@@ -77,18 +78,21 @@ def strategy2():
     max_nb_coins = 15
     carry_floor = 0.4
     slippage_override=2e-4  #### this is given by mktmaker
-    slippage_scaler=0.5
-    slippage_orderbook_depth=10000
-    signal_horizon=timedelta(hours=2)
-    backtest_window=timedelta(days=30)
-    holding_period=timedelta(days=3)
+    slippage_scaler=1
+    slippage_orderbook_depth=1000
+    signal_horizon=timedelta(days=7)
+    backtest_window=timedelta(days=90)
+    holding_period=timedelta(days=7)
     concentration_limit = 99 ## no limit...
     loss_tolerance= 0.99 ## no limit..
     marginal_coin_penalty = 0.05 ## TODO: not used
 
-    enriched=enricher(exchange, futures)
+    enriched=enricher(exchange, futures, holding_period,
+                    slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
+                    slippage_scaler=slippage_scaler, params={'override_slippage': False})
     pre_filtered = enriched[
-        (enriched['expired'] == False)
+        (enriched['expired'] == False)&(enriched['enabled'] == True) & (enriched['type'] != "move")
+        & (enriched.apply(lambda f: float(find_spot_ticker(markets,f,'ask')),axis=1)>0.0)
         & (enriched['funding_volume'] * enriched['mark'] > funding_threshold) # TODO: screen on avg
         & (enriched['volumeUsd24h'] > volume_threshold)
         & (enriched['tokenizedEquity']!=True)
@@ -110,25 +114,35 @@ def strategy2():
         hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
         to_parquet(hy_history,"temporary_parquets/history.parquet")
 
+    enriched['volume_avg'] = (hy_history.loc['funding_volume'] * enriched['mark']).sum()
+
     point_in_time=asofdate-holding_period
     scanned=basis_scanner(exchange,pre_filtered,hy_history,
                             point_in_time=point_in_time,
-                            slippage_override=slippage_override,
-                            slippage_scaler=slippage_scaler,
-                            slippage_orderbook_depth = slippage_orderbook_depth,
                             holding_period = holding_period,
                             signal_horizon=signal_horizon,
                             concentration_limit=concentration_limit,
                             loss_tolerance=loss_tolerance,
-                            marginal_coin_penalty=marginal_coin_penalty,
-                            params={'override_slippage':False}).sort_values(by='optimalWeight')
+                            marginal_coin_penalty=marginal_coin_penalty
+                          ).sort_values(by='optimalWeight')
 
     floored=scanned[scanned['ExpectedCarry']>carry_floor].tail(max_nb_coins)
 
-    scanned[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'spotCarry','medianCarryInt',
+    ladder = pd.Series(np.linspace(0.1, 1, 5))
+    with pd.ExcelWriter('optimal.xlsx', engine='xlsxwriter') as writer:
+        for c in ladder:
+            futures = basis_scanner(exchange,pre_filtered,hy_history,
+                            point_in_time=point_in_time,
+                            holding_period = holding_period,
+                            signal_horizon=signal_horizon,
+                            concentration_limit=c,
+                            loss_tolerance=loss_tolerance,
+                            marginal_coin_penalty=marginal_coin_penalty
+                          ).sort_values(by='optimalWeight')
+            futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'spotCarry','medianCarryInt',
              'MaxLongWeight', 'MaxShortWeight', 'direction', 'optimalWeight',
-             'ExpectedCarry','RealizedCarry','lossProbability','excessIM','excessMM']].\
-        to_excel('optimal.xlsx',sheet_name='summary')
+             'ExpectedCarry','RealizedCarry','lossProbability','excessIM','excessMM']]\
+                .to_excel(writer,sheet_name='concentration' + str(int(c * 100)))
 
     return
 
