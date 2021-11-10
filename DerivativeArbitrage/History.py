@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 from ftx_snap_basis import *
@@ -108,6 +109,7 @@ class RawHistory:
             data[spot+'/rate/borrow'] = borrow_data['rate']
             data[spot+'/rate/size'] = borrow_data['size']
             data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+            data = data[~data.index.duplicated()].sort_index()
         else: data=pd.DataFrame()
 
         return data
@@ -143,6 +145,7 @@ class RawHistory:
             data = pd.DataFrame()
             data[future['name'] + '/rate/funding'] = funding_data['rate']
             data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+            data = data[~data.index.duplicated()].sort_index()
         else:
             data = pd.DataFrame()
 
@@ -215,6 +218,7 @@ class RawHistory:
             return
         data.columns = [future['symbol'] + '/' + c for c in data.columns]
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+        data = data[~data.index.duplicated()].sort_index()
 
         return data
 
@@ -247,6 +251,7 @@ class RawHistory:
         data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
         data.columns = [symbol.replace('USD/','') + '/price/' + column for column in data.columns]
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+        data = data[~data.index.duplicated()].sort_index()
 
         return data
 
@@ -255,25 +260,32 @@ class EstimationModel:
     def __init__(self,signal_horizon: timedelta) ->None:
         self._signal_horizon=signal_horizon
 ### AssetDefinition describes atomic positions. Currently only \int{perp-cash} per (name,direction)
-class AssetDefinition:
-    def __init__(self,holding_period: timedelta) ->None:
-        self._holding_period=holding_period
-
+class Asset:
+    def __init__(self,holding_period: timedelta,direction: int,future: pd.Series) ->None:
+        self._holding_period=holding_period ## TODO this rather belongs to Strategy
+        self._direction=direction
+        self._future=future
+    def carry(self,start,end) ->float:
+        return 0 # TODO carry
+    def transactionCost(self) ->float:
+        return 0  # TODO transactionCost
 ### ModelledAssets holds risk/reward of atomic positions, whose weights will then be optimized by PortfolioBuilder.
-### Needs RawHistory, EstimationParameters (eg: ewm window), AssetDefinition (eg: integral over holding period)
+### Needs RawHistory, EstimationParameters (eg: ewm window), Asset (eg: integral over holding period)
 class ModelledAssets:
-    def __init__(self, raw_history: RawHistory, signal_horizon: timedelta, holding_period: timedelta) -> None:
+    def __init__(self, signal_horizon: timedelta, holding_period: timedelta) -> None:
         self._futures = raw_history._futures
-        self._asset_definition = AssetDefinition(holding_period)
-        self._history= raw_history._history
-        self._estimation_parameter = EstimationModel(signal_horizon)
+        self._assets = [Asset(holding_period, direction, future)
+                        for future in raw_history._futures for direction in [-1,1]]
+        self._estimator = EstimationModel(signal_horizon)
 
     ### Constant rate slippage calculation. Reads order book, or applies override.
     def fetch_rate_slippage(self,exchange: Exchange,
-                      slippage_override: int=-999, depths: float=0, slippage_scaler: float=1.0) -> None:
+                        slippage_override: int=-999, slippage_orderbook_depth: float=0, slippage_scaler: float=1.0,
+                        params: dict={'override_slippage':True}) -> None:
         # -------------------- transaction costs---------------
         # add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
         # Unless slippage override, calculate from orderbook (override Only live is supported).
+        holding_period=self._assets._holding_period
         point_in_time=datetime.now()
         markets=exchange.fetch_markets()
         futures = self._futures
@@ -281,9 +293,9 @@ class ModelledAssets:
             futures['bid_rate_slippage'] = slippage_override
             futures['ask_rate_slippage'] = slippage_override
         else:
-            fees = 2 * (exchange.fetch_trading_fees()['taker'] + exchange.fetch_trading_fees()['maker'])
+            fees=(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker']*0)#maker fees 0 with 26 FTT staked
             ### relative semi-spreads incl fees, and speed
-            if depths == 0.0:
+            if slippage_orderbook_depth == 0.0:
                 futures['spot_ask'] = fees + futures.apply(lambda f: 0.5 * (
                             float(find_spot_ticker(markets, f, 'ask')) / float(
                         find_spot_ticker(markets, f, 'bid')) - 1), axis=1) * slippage_scaler
@@ -295,13 +307,13 @@ class ModelledAssets:
                 # futures['speed'] = 0  ##*futures['future_ask'] ### just 0
             else:
                 futures['spot_ask'] = futures['spot_ticker'].apply(
-                    lambda x: mkt_depth(exchange, x, 'asks', depths)) * slippage_scaler + fees
+                    lambda x: mkt_depth(exchange, x, 'asks', slippage_orderbook_depth)) * slippage_scaler + fees
                 futures['spot_bid'] = futures['spot_ticker'].apply(
-                    lambda x: mkt_depth(exchange, x, 'bids', depths)) * slippage_scaler - fees
+                    lambda x: mkt_depth(exchange, x, 'bids', slippage_orderbook_depth)) * slippage_scaler - fees
                 futures['future_ask'] = futures['name'].apply(
-                    lambda x: mkt_depth(exchange, x, 'asks', depths)) * slippage_scaler + fees
+                    lambda x: mkt_depth(exchange, x, 'asks', slippage_orderbook_depth)) * slippage_scaler + fees
                 futures['future_bid'] = futures['name'].apply(
-                    lambda x: mkt_depth(exchange, x, 'bids', depths)) * slippage_scaler - fees
+                    lambda x: mkt_depth(exchange, x, 'bids', slippage_orderbook_depth)) * slippage_scaler - fees
                 ### forget speed for now..
                 # futures['speed'] = futures['name'].apply(
                 #    lambda x: mkt_speed(exchange, x, depths).seconds)
@@ -309,30 +321,26 @@ class ModelledAssets:
             #### rate slippage assuming perps are rolled every perp_holding_period
             #### use centred bid ask for robustness
             futures['expiryTime'] = futures.apply(lambda x:
-                                                  dateutil.parser.isoparse(x['expiry']).replace(tzinfo=None) if x[
-                                                                                                                    'type'] == 'future'
+                                                  x['expiryTime'] if x['type'] == 'future'
                                                   else point_in_time + holding_period,
                                                   axis=1)  # .replace(tzinfo=timezone.utc)
 
-            futures['bid_rate_slippage_in_' + str(size)] = futures.apply(lambda f: \
-                                                                             (f['future_bid_in_' + str(size)] - f[
-                                                                                 'spot_ask_in_' + str(size)]) \
-                                                                             / np.max([1, (f[
-                                                                                               'expiryTime'] - point_in_time).seconds * 365.25 * 24 * 3600]),
-                                                                         axis=1)
-            futures['ask_rate_slippage_in_' + str(size)] = futures.apply(lambda f: \
-                                                                             (f['future_ask_in_' + str(size)] - f[
-                                                                                 'spot_bid_in_' + str(size)]) \
-                                                                             / np.max([1, (f[
-                                                                                               'expiryTime'] - point_in_time).seconds * 365.25 * 24 * 3600]),
-                                                                         axis=1)
-            ### not very parcimonious...
-            self._futures['expiryTime']=futures['expiryTime']
-            self._futures['bid_rate_slippage']=futures['bid_rate_slippage']
-            self._futures['ask_rate_slippage'] = futures['ask_rate_slippage']
+            futures['bid_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
+                         (f['future_bid_in_' + str(slippage_orderbook_depth)] - f['spot_ask_in_' + str(slippage_orderbook_depth)]) \
+                         / np.max([1, (f['expiryTime'] - point_in_time).seconds/3600])
+                                  *365.25*24,axis=1) # no less than 1h
+            futures['ask_rate_slippage_in_' + str(slippage_orderbook_depth)] = futures.apply(lambda f: \
+                         (f['future_ask_in_' + str(slippage_orderbook_depth)] - f['spot_bid_in_' + str(slippage_orderbook_depth)]) \
+                         / np.max([1, (f['expiryTime'] - point_in_time).seconds/3600])
+                                  *365.25*24,axis=1) # no less than 1h
+        ### not very parcimonious...
+            self._futures['bid_rate_slippage']=futures['bid_rate_slippage_in_' + str(slippage_orderbook_depth)]
+            self._futures['ask_rate_slippage']=futures['ask_rate_slippage_in_' + str(slippage_orderbook_depth)]
 
-    def build_assets_history(self,raw_history: RawHistory, exchange: Exchange, point_in_time: datetime = datetime.now()) -> None:
-        self.fetch_rate_slippage(exchange,slippage_override= 0.0002)
+    def build_assets_history(self,raw_history: RawHistory) -> None:
+        self.fetch_rate_slippage(futures, exchange, holding_period,
+                                             slippage_override,slippage_orderbook_depth,slippage_scaler,
+                                             params)
         ### remove blanks for this
         history = raw_history._history.fillna(method='ffill', limit=2, inplace=False)
 
@@ -342,29 +350,35 @@ class ModelledAssets:
         LongCarry = self._futures.apply(lambda f:
                                       f['bid_rate_slippage'] - history['USD/rate/borrow'] +
                                       history[f['name'] + '/rate/funding'] if f['type'] == 'perpetual'
-                                      else history.loc[point_in_time, f['name'] + '/rate/funding'],
+                                      else np.NaN,
                                   axis=1).T
         LongCarry.columns = ('long/'+self._futures['name']).tolist()
 
         ShortCarry = self._futures.apply(lambda f:
                                        f['ask_rate_slippage'] - history['USD/rate/borrow'] +
                                        history[f['name'] + '/rate/funding'] if f['type'] == 'perpetual'
-                                       else history.loc[point_in_time, f['name'] + '/rate/funding']
-                                            + history[f['underlying'] + '/rate/borrow'],
+                                       else np.NaN
+                                        + history[f['underlying'] + '/rate/borrow'],
                                    axis=1).T
         ShortCarry.columns = ('short/'+self._futures['name']).tolist()
 
         ### not sure how to define window as a timedelta :(
-        intLongCarry = LongCarry.rolling(int(self._asset_definition._holding_period.total_seconds() / 3600)).mean()
-        intShortCarry = ShortCarry.rolling(int(self._asset_definition._holding_period.total_seconds() / 3600)).mean()
-        intUSDborrow = history['USD/rate/borrow'].rolling(int(self._asset_definition._holding_period.total_seconds() / 3600)).mean()
+        hours=int(self._assets._holding_period.total_seconds() / 3600)
+        intLongCarry = LongCarry.rolling(hours).mean().shift(periods=-hours)
+        intShortCarry = ShortCarry.rolling(hours).mean().shift(periods=-hours)
+        intUSDborrow = history['USD/rate/borrow'].rolling(hours).mean().shift(periods=-hours)
         self._history=pd.concat([intLongCarry,intShortCarry,intUSDborrow],axis=1)
 
-    def build_assets_processes(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def build_assets_estimates(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        hours=int(self._assets._holding_period.total_seconds() / 3600)
         ### E_int and C_int are moments of the integral of annualized carry.
-        Expectation = self._history.ewm(times=self._history.index, halflife=self._estimation_parameter._signal_horizon, axis=0).mean()
-        Covariance = self._history.ewm(times=self._history.index, halflife=self._estimation_parameter._signal_horizon, axis=0).cov()
+        Expectation = self._history.rolling(hours).median()
+        Covariance = self._history.rolling(hours).cov()
         return Expectation,Covariance
+
+class Strategy:
+    def __init__(self,holding_period: timedelta) ->None:
+        _holding_period=holding_period
 
 def strategyOO():
     exchange = open_exchange('ftx')
