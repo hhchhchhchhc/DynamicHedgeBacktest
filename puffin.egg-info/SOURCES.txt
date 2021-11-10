@@ -1,0 +1,6 @@
+setup.py
+puffin.egg-info/PKG-INFO
+puffin.egg-info/SOURCES.txt
+puffin.egg-info/dependency_links.txt
+puffin.egg-info/requires.txt
+puffin.egg-info/top_level.txt
