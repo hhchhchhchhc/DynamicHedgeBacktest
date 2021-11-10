@@ -118,15 +118,6 @@ def fetch_coin_details(exchange):
 
     return all
 
-def fetch_funding_rates(exchange, symbol,params={}):
-    exchange.load_markets()
-    market, marketId = exchange.get_market_params(symbol, 'market_name', params)
-    request = {
-        'future_name': marketId,
-    }
-    response = exchange.publicGetFuturesFutureNameStats(exchange.extend(request, params))
-    return response
-
 def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}):
     request = {
         'coin': coin,
