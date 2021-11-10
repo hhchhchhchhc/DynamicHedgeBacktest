@@ -21,7 +21,7 @@ def excessIM(futures,x,params={'positive_carry_on_balances':False}):
     freeCollateral['USD']=1-usd_im
     return freeCollateral
 
-def excessMM(futures,x,long_blowup=0.07,short_blowup=0.15,nb_blowups=3):
+def excessMM(futures,x,long_blowup=0.1,short_blowup=0.2,nb_blowups=3):
     temporary=futures[['collateralWeight','imfFactor','mark','account_leverage']]
     temporary['x'] = x
     temporary['w'] = futures.apply(lambda f: collateralWeightInitial(f),axis=1)
@@ -58,7 +58,7 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
             future_item=next(item for item in futures if item['name'] == x['future'])
             coin = future_item['underlying']
             underlyingType=getUnderlyingType(coin_details.loc[coin]) if coin in coin_details.index else 'index'
-            funding_stats =fetch_funding_rates(exchange,future_item['name'])['result']
+            funding_stats =exchange.publicGetFuturesFutureNameStats({'future_name': future_item['name']})['result']
 
             size = float(x['netSize'])
             chg = float(future_item['change24h'])
