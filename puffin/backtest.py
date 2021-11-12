@@ -190,6 +190,10 @@ class Backtest:
         return backtest_results, summary_stats
 
     def _trade_event(self, trade: pd.Series) -> None:
+        if self.bid is not None and trade.given and trade.price <= self.bid:
+            self._passive_buy()
+        if self.ask is not None and not trade.given and trade.price >= self.ask:
+            self._passive_sell()
         self._check_for_end_of_bar(trade.timestamp_millis)
         self.price_buffer.append(trade.price)
         self.size_buffer.append(trade.size)
@@ -289,7 +293,8 @@ class Backtest:
                 delta_vwaps = np.array(delta_vwaps)
                 x = delta_vwaps[~np.isnan(delta_vwaps)]
                 autocovariance = _get_autocovariance(x, 1)
-                trend = self.vwap_buffer[-1] - self.vwap_buffer[0]
+                if self.strategy_parameters['trade_on_trend']:
+                    trend = self.vwap_buffer[-1] - self.vwap_buffer[0]
                 self.sigma = delta_vwaps.std()
             self.bid = None
             self.ask = None

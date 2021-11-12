@@ -33,8 +33,8 @@ def generate_tob_data_from_gzip(symbol: str, input_path: str) -> pd.DataFrame:
 
 def generate_trade_data_from_gzip(symbol: str, input_path: str) -> pd.DataFrame:
     df = pd.read_csv(input_path, compression='gzip')
-    new_column_names = ["instrument_id", "receive_timestamp_nanos", "exchange_timestamp_nanos", "price", "qty",
-                        "buyer_is_market_maker", "trade_id"]
+    new_column_names = ["instrument_id", "receive_timestamp_nanos", "exchange_timestamp_nanos", "price", "size",
+                        "given", "trade_id"]
 
     # convert timestamp to nanos from microseconds
     df["timestamp"] = df["timestamp"].apply(lambda t: int(1000*t))
