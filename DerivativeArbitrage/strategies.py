@@ -86,7 +86,8 @@ def perp_vs_cash_backtest(  equity=1,
             /(pre_filtered['carry_mid'].sum() if np.abs(pre_filtered['carry_mid'].sum())>0.1 else 0.1)
 
     i = 0
-    trajectory_list=[]
+    time_list=[]
+    summary_list=[]
     while point_in_time<backtest_end:
         updated,excess_margin=update(pre_filtered,point_in_time,hy_history,equity,
                        intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
@@ -100,37 +101,47 @@ def perp_vs_cash_backtest(  equity=1,
                                 verbose=True
                               )
 
-        previous_weights=summary['optimalWeight']
+        previous_weights=summary['optimalWeight'].drop(['USD','total'])
         point_in_time+=holding_period
         i+=1
-        trajectory_list+=[summary]
+        time_list += [point_in_time]
+        summary_list+=[summary]
 
-        trajectory = pd.DataFrame(columns=pd.MultiIndex.from_product(
-            [list(range(i)), summary.columns.to_list()],
-            names=['time', 'field']))
-        for j in range(i): trajectory[(j,)] = trajectory_list[j]
-        #trajectory.xs('ask',level='field',axis=1)
+    summary = pd.DataFrame(columns=pd.MultiIndex.from_product(
+        [time_list, summary.columns.to_list()],
+        names=['time', 'field']))
+    for j in range(i): summary[(time_list[j],)] = summary_list[j]
+    #trajectory.xs('ask',level='field',axis=1)
 
-        with pd.ExcelWriter('trajectory'+run_name+'.xlsx', engine='xlsxwriter') as writer:
-            trajectory.reorder_levels(['field','time'],axis='columns').to_excel(writer,'trajectory.xlsx')
+    with pd.ExcelWriter('summary_'+run_name+'.xlsx', engine='xlsxwriter') as writer:
+        summary.reorder_levels(['field','time'],axis='columns').to_excel(writer,'summary.xlsx')
 
-    return trajectory
+    return summary
 
+def timedeltatostring(dt):
+    return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
 def run_ladder():
     holding_period = [timedelta(days=d) for d in [1,2,3,4,5,6,7]]+[timedelta(hours=h) for h in [1,3,6,12]]
     signal_horizon = [timedelta(days=d) for d in [1, 2, 3, 4, 5, 6, 7]] + [timedelta(hours=h) for h in [1, 3, 6, 12]]
-    i=0
-    j=0
+    run_list =[]
+    summary_list =[]
     for hp in holding_period:
-        j+=1
         for sh in signal_horizon:
-            perp_vs_cash_backtest(equity=1,
+            run_name = 'hold' + timedeltatostring(hp) + 'signal' + timedeltatostring(sh)
+            summary=perp_vs_cash_backtest(equity=1,
                               signal_horizon=sh,
                               holding_period=hp,
-                              concentration_limit=99,
+                              concentration_limit=.25,
                               loss_tolerance=0.05,
                               marginal_coin_penalty=0.05,
-                              run_name='hp'+str(i)+'_sh'+str(j)+'_')
-            i+=1
+                              run_name=run_name)
+            run_list+=[run_name]
+            summary_list+=[summary]
+
+    i=0
+    for i in range(len(summary_list)):
+        with pd.ExcelWriter('summary.xlsx', engine='xlsxwriter') as writer:
+            summary_list[i].reorder_levels(['field','time'],axis='columns').\
+                to_excel(writer,sheet_name=run_list[i])
 
 run_ladder()
