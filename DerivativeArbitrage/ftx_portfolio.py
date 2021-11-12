@@ -1,43 +1,72 @@
 # -*- coding: utf-8 -*-
+import numpy as np
 import pandas as pd
 from ftx_utilities import *
 from ftx_ftx import *
 
 ## calc various margins for a cash and carry.
-def excessIM(futures,x,params={'positive_carry_on_balances':False}):
-    temporary=futures[['collateralWeight','imfFactor','mark','account_leverage']]
-    temporary['x'] = x
-    temporary['w'] = futures.apply(lambda f: collateralWeightInitial(f),axis=1)
-    temporary['im'] = temporary.apply(lambda f: IM(f, np.abs(f['x'])),axis=1)
+# weights is in %of equity
+# note: weight.shape = futures.shape, but returns a shape = futures.shape+1 !
+# TODO: speed up with nd.array
+class ExcessMargin:
+    def __init__(self,futures,equity,
+                    long_blowup=0.1,short_blowup=0.2,nb_blowups=3,params={'positive_carry_on_balances': False}):
+        ## inputs
+        self._account_leverage=futures['account_leverage'].values[0]
+        self._collateralWeight=futures['collateralWeight'].values
+        self._imfFactor = futures['imfFactor'].values
+        self._mark = futures['mark'].values
+        self._collateralWeightInitial = futures.apply(collateralWeightInitial,axis=1).values
+        self._equity=equity
+        self._long_blowup=long_blowup
+        self._short_blowup = short_blowup
+        self._nb_blowups = nb_blowups
+        self._params=params
 
-    collateralValue = temporary['x'] * (temporary['collateralWeight'] - 1)
-    collateralValue[temporary['x'] < 0] = 0
-    spot_im = temporary.apply(lambda f:
-            (1.1 / f['w'] - 1) * -f['x'] if f['x'] < 0 else 0.1 * f['x'],axis=1)
-    future_im = temporary.apply(lambda f: f['im'] * np.abs(f['x']),axis=1)
-    usd_im = 0 if temporary['x'].sum()<1 else temporary['x'].sum()-1
+    def call(self,weights):
+        n=len(weights)
+        x = self._equity * weights
 
-    freeCollateral = collateralValue-spot_im-future_im
-    freeCollateral['USD']=1-usd_im
-    return freeCollateral
+        # TODO: staked counts towards MM not IM
+        collateral = np.array([
+            x[i] if x[i]<0
+            else x[i]*min(self._collateralWeight[i],1.1 / (1 + self._imfFactor[i] * np.sqrt(abs(x[i]))))
+                        for i in range(n)])
+        im_short = np.array([
+            0 if x[i] > 0
+            else -x[i]*(1.1/self._collateralWeightInitial[i]-1)
+                        for i in range(n)])
+        mm_short = np.array([
+            0 if x[i] > 0
+            else -x[i] *(1.03/self._collateralWeightInitial[i]-1)
+                        for i in range(n)])
+        im_fut = np.array([
+            abs(x[i])*max(1.0 / self._account_leverage,self._imfFactor[i] * np.sqrt(abs(x[i]) / self._mark[i]))
+                        for i in range(n)])
+        mm_fut= np.array([
+            max([0.03*x[i], 0.6 * im_fut[i]])
+                        for i in range(n)])
 
-def excessMM(futures,x,long_blowup=0.1,short_blowup=0.2,nb_blowups=3):
-    temporary=futures[['collateralWeight','imfFactor','mark','account_leverage']]
-    temporary['x'] = x
-    temporary['w'] = futures.apply(lambda f: collateralWeightInitial(f),axis=1)
-    temporary['mm'] = temporary.apply(lambda f: MM(f, np.abs(f['x'])),axis=1)
+        # long: new freeColl = (1+ds)w-(ds+blow)-fut_mm(1+ds+blow)
+        # freeColl move = w ds-(ds+blow)-mm(ds+blow) = blow(1-mm) -ds(1-w+mm) ---> ~blow
+        # short: new freeColl = -(1+ds)+(ds+blow)-fut_mm(1+ds+blow)-spot_mm(1+ds)
+        # freeColl move = blow - fut_mm(ds+blow)-spot_mm ds = blow(1-fut_mm)-ds(fut_mm+spot_mm) ---> ~blow
+        blowup_idx=np.argpartition(np.apply_along_axis(abs,0,x), -self._nb_blowups)[-self._nb_blowups:]
+        blowups=np.zeros(n)
+        for i in range(n): 
+            for j in range(len(blowup_idx)):
+                i=blowup_idx[j]
+                blowups[i] = x[i]*self._long_blowup if x[i]>0 else -x[i]*self._short_blowup
+    
+        excessIM = collateral - im_fut - im_short
+        excessMM = collateral - mm_fut - mm_short - blowups
+        totalIM = self._equity -sum(x) - 0.1* max([0,sum(x)-self._equity]) + sum(excessIM)
+        totalMM = self._equity -sum(x) - 0.03 * max([0, sum(x) - self._equity]) + sum(excessMM)
 
-    collateralValue = temporary['x'] * (temporary['collateralWeight'] - 1)
-    collateralValue[temporary['x'] < 0] = 0
-    spot_mm = temporary.apply(lambda f:
-            (1.03 / f['w'] - 1) * -f['x'] if f['x'] < 0 else 0.03 * f['x'],axis=1)
-    future_mm = temporary.apply(lambda f: f['mm'] * np.abs(f['x']),axis=1)
-    usd_mm = 0 if temporary['x'].sum()<1 else temporary['x'].sum()-1
-
-    freeCollateral = collateralValue-spot_mm-future_mm
-    blowups = [(long_blowup if x>0 else short_blowup) * np.abs(x) for x in sorted(temporary['x'], key=abs,reverse=True)[:nb_blowups]]
-    freeCollateral['USD']=1-sum(blowups)-usd_mm
-    return freeCollateral
+        return {'totalIM':totalIM,
+                'totalMM':totalMM,
+                'IM':excessIM,
+                'MM':excessMM}
 
 ### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
 ### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
@@ -189,29 +218,10 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
             None)] = greeks.sum(axis=1)
     return greeks
 
-### account starts with usdcash and enters positions X, incurring X*slippage
-### X are cash delta, -X*hedgeratio are futures deltas
-### usd cash is then usdcash-sum(X)-txCost, incurring usdborrow
-def carry_vs_excesscollateral(X,collateral_weights,shortIM,futIM,slippage,basis,borrow,lend,usdcash,usdborrow,hedgeRatio=[]):
-    X_plus = X.apply(lambda x: np.max(0,x))
-    X_minus = X.apply(lambda x: np.max(0,-x))
-
-    txCost=X_plus*slippage['spot']['ask']+X_minus*slippage['spot']['bid']+\
-           X_plus * hedgeRatio * slippage['future']['bid'] + X_minus * hedgeRatio * slippage['spot']['ask']
-
-    cash = usdcash - sum(X) - txCost
-
-    excessCollateral = cash + sum(X_plus * collateral_weights - X_minus)-\
-                       sum( X_minus*shortIM - (X_plus + X_minus) * futIM)
-
-    carry = min(0,cash) * usdborrow + sum( -X_minus*borrow + X_plus*lend + X*basis)
-
-    return [carry,excessCollateral,txCost]
-
 ### optimizer using https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
 #eq_cons = {'type': 'eq',
-#           'fun' : lambda x: np.array([2*x[0] + x[1] - 1]),
-#           'jac' : lambda x: np.array([2.0, 1.0])}
+#           'fun' : lambda x: array([2*x[0] + x[1] - 1]),
+#           'jac' : lambda x: array([2.0, 1.0])}
 #res = minimize(rosen, x0, method='SLSQP', jac=rosen_der,
 #               constraints=[eq_cons, ineq_cons], options={'ftol': 1e-9, 'disp': True},
 #               bounds=bounds)
@@ -258,7 +268,7 @@ def process_fills(exchange,spot_fills,future_fills):
 
     ## TODO: more rigorous to see in USD than bps
     result=pd.Series()
-    result['size'] = np.min([(spot_fills['price'] * spot_fills['size']).sum(),
+    result['size'] = min([(spot_fills['price'] * spot_fills['size']).sum(),
                             (future_fills['price'] * future_fills['size']).sum()])
     result['avg_spot_level']=(spot_fills['size']*spot_fills['price']).sum() / spot_fills['size'].sum()
     result['avg_future_level']=(future_fills['size']*future_fills['price']).sum() / future_fills['size'].sum()
@@ -278,7 +288,7 @@ def process_fills(exchange,spot_fills,future_fills):
     (result['start_time'],result['end_time'])=\
         (spot_fills['time'].min().tz_convert(None),future_fills['time'].min().tz_convert(None)) if spot_fills['time'].min()<future_fills['time'].min() \
             else (future_fills['time'].min().tz_convert(None),spot_fills['time'].min().tz_convert(None))
-   # result['end_time'] = np.max(spot_fills['time'].max(), future_fills['time'].max())
+   # result['end_time'] = max(spot_fills['time'].max(), future_fills['time'].max())
     final_spot=fetch_nearest_trade(exchange,spot_fills['market'].iloc[0],result['end_time'])[0]
     final_future = fetch_nearest_trade(exchange,future_fills['market'].iloc[0],result['end_time'])[0]
     result['delta_pnl'] = \
