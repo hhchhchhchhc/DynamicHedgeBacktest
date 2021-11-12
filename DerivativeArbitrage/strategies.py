@@ -7,135 +7,141 @@ import seaborn as sns
 import ccxt
 #from sklearn import *
 
-### screening: dated futures on borrowable
-### weight: linear on nb_pos biggest abs(basis)
-### future deltas = target_leverage*1
-### assumes account contains 1 usd to start with
-def strategy1(nb_pos=1,account_equity=10000,params={'type':'perpetual','excelit':False,'pickleit':False}):
-    exchange = open_exchange('ftx')
-
-    #### screening
-    futures = pd.DataFrame(fetch_futures(exchange))
-    coin_details = fetch_coin_details(exchange)
-    futures = pd.merge(futures, coin_details, how='left', left_on='underlying', right_index=True)
-    futures['quote_borrow'] = coin_details.loc['USD','borrow']
-    futures['quote_lend'] = coin_details.loc['USD', 'lend']
-    futures = futures[futures['type'] == params['type']]
-    futures = futures[futures['funding_volume'] > 1000]
-
-    ### enrich with rates and slippages
-    account_equity=max(1,account_equity)
-    size = int(account_equity / nb_pos)  ## assume equidistributed for tx costs and 5 leverage (initial)
-    scanner,history=basis_scanner(exchange,futures,[size])
-    if scanner.shape[0] == 0: return pd.DataFrame()
-
-    ####scoring
-    futures=scanner.sort_values(by='adjBasis',axis=0,ascending=False,key=np.abs).head(nb_pos)
-
-    #### convert to size and rescale to target leverage
-    #target = .05 ## keep a buffer
-    #collateral=1
-    #IM=0
-    futures['weights'] = max(size,1) * futures['adjBasis'] / futures['adjBasis'].apply(np.abs).sum()
-    target_excess_collateral = 0.1  ## to solve later
-    i = 0
-    while i<3:### disgusting and stupid fixed point method.
-        futures = futures.astype({'index': float, 'mark': float})
-        positions=[{'netSize':-f['weights']/f['mark'],
-                   'future':f['name'],
-                   'initialMarginRequirement':0.05,
-                   'maintenanceMarginRequirement':0.03,
-                   'realizedPnl':f['weights']*(f['future_bid_in_'+str(size)] if f['weights']>0 else -f['future_ask_in_'+str(size)]),
-                   'unrealizedPnl':0} for (i,f) in futures.iterrows()]
-
-        ##### cash and funding leg
-        #cash_balances=futures.apply(lambda f: f['weights']/f['mark']*f['index'],axis=1)
-        balances=[{'total':f['weights']/f['index'],
-                   'coin':f['underlying']} for (i,f) in futures.iterrows()]
-        balances.append({'total': account_equity-futures.apply(lambda f: f['weights']*
-            (1+f['spot_'+ ('ask' if f['weights']>0 else 'bid') +'_in_'+str(size)]),axis=1).sum(),
-                   'coin': 'USD'})
-
-        #### margin calc->scale again
-        greeks=portfolio_greeks(exchange,positions,balances)
-        excess_collateral=greeks.loc[(slice(None),'collateralValue'),('sum')].iloc[0,0]-greeks.loc[(slice(None),'IM'),('sum')].iloc[0,0]
-        futures['weights'] = (1 - target_excess_collateral) / (1 - excess_collateral / account_equity) * futures['weights']
-        i+=1
-
-    outputit(greeks,"trade","ftx",params=params)
-    outputit(scanner, "basis", "ftx", params=params)
-    #outputit(scanner[1], "smallhistory", "ftx", params=params)
-    return greeks
-
-def strategy2():
+def perp_vs_cash_backtest(  equity=1,
+                signal_horizon = timedelta(days=7),
+                holding_period = timedelta(days=7),
+                concentration_limit = 99,
+                loss_tolerance = 0.05,
+                marginal_coin_penalty = 0.05,
+                run_name=''):  ## TODO: not used
     exchange=open_exchange('ftx')
-    futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
+    markets = exchange.fetch_markets()
+    futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
 
-    funding_threshold = 1e4
-    volume_threshold = 1e6
+    # filtering params
+    funding_volume_threshold = 5e5
+    spot_volume_threshold = 5e4
+    borrow_volume_threshold = 5e5
     type_allowed='perpetual'
     max_nb_coins = 15
     carry_floor = 0.4
-    slippage_override=2e-4  #### this is given by mktmaker
-#    slippage_scaler=0.5
-#    slippage_orderbook_depth=0
-    signal_horizon=timedelta(hours=1)
-    backtest_window=timedelta(days=30)
-    holding_period=timedelta(days=2)
-    concentration_limit = 0.1
-    loss_tolerance=0.01
-    marginal_coin_penalty = 0.05
 
-    enriched=enricher(exchange, futures)
-    pre_filtered = enriched[
-        (enriched['expired'] == False)
-        & (enriched['funding_volume'] * enriched['mark'] > funding_threshold)
-        & (enriched['volumeUsd24h'] > volume_threshold)
-        & (enriched['tokenizedEquity']!=True)
-        & (enriched['type']==type_allowed)]
+    # fee estimation params
+    slippage_override=2e-4  #### this is given by mktmaker
+    slippage_scaler=1
+    slippage_orderbook_depth=1000
+
+    # backtest params
+    backtest_start = datetime(2021, 7, 1)
+    backtest_end = datetime(2021, 10, 1)
+
+    ## ----------- enrich, get history, filter
+    enriched=enricher(exchange, futures, holding_period,equity=equity,
+                    slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
+                    slippage_scaler=slippage_scaler,
+                    params={'override_slippage': True,'type_allowed':type_allowed,'fee_mode':'retail'})
 
     #### get history ( this is sloooow)
     try:
-        hy_history = from_parquet("history.parquet")
-        asofdate = np.max(hy_history.index)
+        hy_history = from_parquet("temporary_parquets/history.parquet")
         existing_futures = [name.split('/')[0] for name in hy_history.columns]
-        new_futures = pre_filtered[pre_filtered['symbol'].isin(existing_futures)==False]
+        new_futures = enriched[enriched['symbol'].isin(existing_futures)==False]
         if new_futures.empty==False:
             hy_history=pd.concat([hy_history,
-                    build_history(new_futures,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)],
+                    build_history(new_futures,exchange,timeframe='1h',end=backtest_end,start=backtest_start)],
                     join='outer',axis=1)
-            to_parquet(hy_history, "history.parquet")
+            to_parquet(hy_history, "temporary_parquets/history.parquet")
     except FileNotFoundError:
-        asofdate = datetime.today()
-        hy_history = build_history(pre_filtered,exchange,timeframe='1h',end=asofdate,start=asofdate-backtest_window)
-        to_parquet(hy_history,"history.parquet")
+        hy_history = build_history(enriched,exchange,timeframe='1h',end=backtest_end,start=backtest_start)
+        to_parquet(hy_history,"temporary_parquets/history.parquet")
 
-    point_in_time=asofdate-holding_period
+    universe_filter_window=hy_history[datetime(2021,6,1):datetime(2021,11,1)].index
+    enriched['borrow_volume_avg'] = enriched.apply(lambda f:
+                            (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']*hy_history.loc[universe_filter_window,f.name+'/mark/o']).mean(),axis=1)
+    enriched['spot_volume_avg'] = enriched.apply(lambda f:
+                            (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean(),axis=1)
+    enriched['future_volume_avg'] = enriched.apply(lambda f:
+                            (hy_history.loc[universe_filter_window,f.name + '/price/volume']).mean(),axis=1)
 
-    ladder=pd.Series(np.linspace(0.1,0.5,5))
-    with pd.ExcelWriter('optimal.xlsx',engine='xlsxwriter') as writer:
-        for c in ladder:
-            futures=basis_scanner(exchange,pre_filtered,hy_history,point_in_time=point_in_time,
-                            slippage_override=slippage_override,
-                            holding_period = holding_period,signal_horizon=signal_horizon,concentration_limit=c,
-                            loss_tolerance=loss_tolerance,marginal_coin_penalty=marginal_coin_penalty).sort_values(by='optimalWeight')
-            futures[['symbol', 'borrow', 'quote_borrow', 'basis_mid', 'E_int', 'longWeight', 'shortWeight', 'direction',
-                 'optimalWeight', 'ExpectedCarry', 'RealizedCarry', 'collateralValue', 'IM', 'MM']].to_excel(writer,sheet_name='concentration'+str(int(c*100)))
+    # ------- build derived data history
+    (intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)=build_derived_history(
+        exchange, enriched, hy_history,
+        holding_period,  # to convert slippage into rate
+        signal_horizon)  # historical window for expectations)
+    updated,marginFunc = update(enriched, backtest_start+signal_horizon+holding_period, hy_history,equity,
+                     intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
 
-    #floored=scanned[scanned['ExpectedCarry']>carry_floor].tail(max_nb_coins)
+    # final filter, need history and good avg volumes
+    pre_filtered=updated[
+              (~np.isnan(updated['E_long']))
+            & (~np.isnan(updated['E_short']))
+            & (enriched['borrow_volume_avg'] >borrow_volume_threshold)
+            & (enriched['spot_volume_avg'] >spot_volume_threshold)
+            & (enriched['spot_volume_avg'] >spot_volume_threshold)]
 
-    return
+    # run a trajectory
+    optimized=pre_filtered
+    point_in_time=backtest_start+signal_horizon+holding_period # integrals not defined before that
+    previous_weights=pre_filtered['carry_mid'] \
+            /(pre_filtered['carry_mid'].sum() if np.abs(pre_filtered['carry_mid'].sum())>0.1 else 0.1)
 
-    static_backtest = max_leverage_carry(floored,hy_history,end=point_in_time,start=asofdate-backtest_window)
+    i = 0
+    time_list=[]
+    summary_list=[]
+    while point_in_time<backtest_end:
+        updated,excess_margin=update(pre_filtered,point_in_time,hy_history,equity,
+                       intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
+        summary=cash_carry_optimizer(exchange,updated,excess_margin,
+                                previous_weights=previous_weights,
+                                holding_period = holding_period,
+                                signal_horizon=signal_horizon,
+                                concentration_limit=concentration_limit,
+                                loss_tolerance=loss_tolerance,
+                                equity=equity,
+                                verbose=True
+                              )
 
-    #    sns.histplot(data=pd.DataFrame([(a.loc[1:,'BTC-PERP/mark/c']-a.loc[:-2,'BTC-PERP/mark/c']),a['BTC-PERP/rate/c'],a['BTC-PERP/rate/h']-a['BTC-PERP/rate/c'],a['BTC-PERP/rate/l']-a['BTC-PERP/rate/c']]))
-    outputit(scanned,'maxCarry','ftx',{'excelit':True,'pickleit':False})
-    outputit(static_backtest.T.describe([.1,.25, .5,.75, .9])*24*365.25,'backtest','ftx',{'excelit':True,'pickleit':False})
+        previous_weights=summary['optimalWeight'].drop(['USD','total'])
+        point_in_time+=holding_period
+        i+=1
+        time_list += [point_in_time]
+        summary_list+=[summary]
 
+    summary = pd.DataFrame(columns=pd.MultiIndex.from_product(
+        [time_list, summary.columns.to_list()],
+        names=['time', 'field']))
+    for j in range(i): summary[(time_list[j],)] = summary_list[j]
+    #trajectory.xs('ask',level='field',axis=1)
 
+    with pd.ExcelWriter('summary_'+run_name+'.xlsx', engine='xlsxwriter') as writer:
+        summary.reorder_levels(['field','time'],axis='columns').to_excel(writer,'summary.xlsx')
 
-strategy2()
-#strategyOO()
+    return summary
 
-#hy_history = from_parquet("fullhistory.parquet")
-hy_history=[]
+def timedeltatostring(dt):
+    return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
+def run_ladder():
+    holding_period = [timedelta(days=d) for d in [1,2,3,4,5,6,7]]+[timedelta(hours=h) for h in [1,3,6,12]]
+    signal_horizon = [timedelta(days=d) for d in [1, 2, 3, 4, 5, 6, 7]] + [timedelta(hours=h) for h in [1, 3, 6, 12]]
+    run_list =[]
+    summary_list =[]
+    for hp in holding_period:
+        for sh in signal_horizon:
+            run_name = 'hold' + timedeltatostring(hp) + 'signal' + timedeltatostring(sh)
+            summary=perp_vs_cash_backtest(equity=1,
+                              signal_horizon=sh,
+                              holding_period=hp,
+                              concentration_limit=.25,
+                              loss_tolerance=0.05,
+                              marginal_coin_penalty=0.05,
+                              run_name=run_name)
+            run_list+=[run_name]
+            summary_list+=[summary]
+
+    i=0
+    for i in range(len(summary_list)):
+        with pd.ExcelWriter('summary.xlsx', engine='xlsxwriter') as writer:
+            summary_list[i].reorder_levels(['field','time'],axis='columns').\
+                to_excel(writer,sheet_name=run_list[i])
+
+run_ladder()

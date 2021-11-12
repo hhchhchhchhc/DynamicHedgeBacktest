@@ -24,8 +24,6 @@ def build_fine_history():
     #### get history ( this is sloooow)
     history = build_history(pre_filtered, exchange, timeframe='15s', end=datetime.today(),
                   start=datetime.today() - backtest_window,dirname='archived data/ftx').to_parquet("15shistory.parquet")
-    s3_upload_file('15shistory.parquet',
-                   'gof.crypto.shared', 'ftx_fine_history')
     return None
 
 i=0
