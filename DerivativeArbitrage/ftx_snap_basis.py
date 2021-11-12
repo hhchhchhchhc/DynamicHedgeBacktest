@@ -367,24 +367,4 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
             summary.to_excel(writer, sheet_name='futureinfo')
             pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
 
-    return summary.drop(index=['USD','total'])
-
-def futures_to_dataframe(futures,size=0,### change wanted greeks if size!=0
-                         wanted_greeks=['avgBasis','stdevBasis','avgBasis_with_slippage','spot_ticker','borrow','quote_borrow','lend','quote_lend']):
-### only one size for now
-    data = pd.DataFrame(columns=pd.MultiIndex.from_tuples(list(zip(*map(futures.get, ['underlyingType', 'underlying', 'margining','expiry','name','type']))),
-                                                              # (None,None,None,None,None)
-                                                              names=['underlyingType', "underlying", "margining",
-                                                                     "expiry", "name", "contractType"]),
-                        index=wanted_greeks)
-                        #index = list(zip([nowtime] * len(wanted_greeks), wanted_greeks)))
-
-    for i,f in futures.iterrows():
-        data[(f['underlyingType'], f['underlying'], f['margining'],f['expiry'],f.name,f['type'])]=f[wanted_greeks]
-
-    #data[('usdFungible','USD','USD',None,'USD','spot')] = [float(borrows.loc['USD','estimate'])]*len(wanted_greeks)
-
-    data['updated']=datetime.now()
-    data.set_index('updated',append=True,inplace=True)
-
-    return data ### not using multiindex for now...
+    return summary
