@@ -114,7 +114,7 @@ def fetch_coin_details(exchange):
     all= pd.concat([coin_details,borrow_rates,lending_rates,borrow_volumes],join='outer',axis=1)
     all.loc[coin_details['spotMargin'] == False,'borrow']= None ### hope this throws an error...
     all.loc[coin_details['spotMargin'] == False, 'lend'] = 0
-    all.drop(['name'],axis=1,inplace=True)### because future has name too
+    #all.drop(['name'],axis=1,inplace=True)### because future has name too
 
     return all
 
@@ -141,7 +141,7 @@ def fetch_funding_rate_history(exchange, perp,start_time,end_time,params={}):
     request = {
         'start_time': start_time,
         'end_time': end_time,
-        'future': perp['name'],
+        'future': perp.name,
         'resolution': exchange.describe()['timeframes']['1h']}
 
     response = exchange.publicGetFundingRates(exchange.extend(request, params))
@@ -163,10 +163,6 @@ def collateralWeightInitial(future):# TODO: API call to collateralWeight(Initial
     else:
         return future['collateralWeight']-0.05
 
-def IM(future,size=10000):
-    return (future['imfFactor'] * np.sqrt(size / future['mark'])).clip(min=1 / future['account_leverage'])
-def MM(future,size=10000):
-    return np.max([0.03, 0.6 * IM(future,size)])
 ### get all static fields
 def fetch_futures(exchange,includeExpired=False,params={}):
     response = exchange.publicGetFutures(params)
