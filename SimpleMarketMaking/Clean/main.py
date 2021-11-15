@@ -20,14 +20,14 @@ def run_roll_model() -> None:
     number_of_days = 1
     bar = _config.Bar.TEN_TICKS
     strategy = _config.Strategy.ROLL_MODEL
-    strategy_parameters = {}
+    strategy_parameters = {'trade_on_trend': False}
     alpha = _config.AlphaModel.NONE
     alpha_parameters = {}
     my_backtest = Backtest('XRPUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
                            number_of_days)
     results, summary = my_backtest.run()
-    results.to_csv(_config.source_directory + 'new_results_roll_ticks.csv', index=False)
-    summary.to_csv(_config.source_directory + 'new_summary_roll_ticks.csv', index=False)
+    results.to_csv(_config.source_directory + '/data/outputs/new_results_roll_ticks.csv', index=False)
+    summary.to_csv(_config.source_directory + '/data/outputs/new_summary_roll_ticks.csv', index=False)
 
 
 def run_phi(phi: float) -> None:
@@ -58,8 +58,10 @@ def run_nu(nu: float) -> None:
     my_backtest = Backtest('XRPUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
                            number_of_days)
     results, summary = my_backtest.run()
-    results.to_csv(_config.source_directory + 'new_results_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
-    summary.to_csv(_config.source_directory + 'new_summary_high_low_' + str("{:,.2f}".format(nu)) + '.csv', index=False)
+    results.to_csv(_config.source_directory + 'data/outputs/new_results_high_low_' + str("{:,.2f}".format(nu)) + '.csv',
+                   index=False)
+    summary.to_csv(_config.source_directory + 'data/outputs/new_summary_high_low_' + str("{:,.2f}".format(nu)) + '.csv',
+                   index=False)
 
 
 def run_nus():
@@ -226,7 +228,7 @@ def create_all_sorts_of_bars(my_market_data: MarketData):
 
 
 def main():
-    run_nu(nu=10)
+    run_roll_model()
 
 
 if __name__ == '__main__':

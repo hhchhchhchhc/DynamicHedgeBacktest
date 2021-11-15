@@ -1,64 +1,72 @@
 # -*- coding: utf-8 -*-
+import numpy as np
+import pandas as pd
 from ftx_utilities import *
 from ftx_ftx import *
 
-### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
-### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
-### balances need coin, total
-### careful: carry on balances cannot be overal positive.
-def portfolio_greeks(exchange,futures,params={'positive_carry_on_balances':False}):
-    markets = exchange.fetch_markets()
-    coin_details = fetch_coin_details(exchange)  ### * (1+500*taker fee)
+## calc various margins for a cash and carry.
+# weights is in %of equity
+# note: weight.shape = futures.shape, but returns a shape = futures.shape+1 !
+# TODO: speed up with nd.array
+class ExcessMargin:
+    def __init__(self,futures,equity,
+                    long_blowup=0.1,short_blowup=0.2,nb_blowups=3,params={'positive_carry_on_balances': False}):
+        ## inputs
+        self._account_leverage=futures['account_leverage'].values[0]
+        self._collateralWeight=futures['collateralWeight'].values
+        self._imfFactor = futures['imfFactor'].values
+        self._mark = futures['mark'].values
+        self._collateralWeightInitial = futures.apply(collateralWeightInitial,axis=1).values
+        self._equity=equity
+        self._long_blowup=long_blowup
+        self._short_blowup = short_blowup
+        self._nb_blowups = nb_blowups
+        self._params=params
 
-    greeks = pd.DataFrame()
-    updated=str(datetime.now())
-    rho=0.4
+    def call(self,weights):
+        n=len(weights)
+        x = self._equity * weights
 
-    for (i,x) in futures.iterrows():
-        ## size>0 --> short future
-        ## spot position = size/s and future position = -size/f
-        size = x['optimalWeight']
-        if np.abs(size)> 0.001:
-            coin = x['underlying']
-            underlyingType=getUnderlyingType(coin_details.loc[coin]) if coin in coin_details.index else 'index'
-            funding_stats =fetch_funding_rates(exchange,x['symbol'])['result']
+        # TODO: staked counts towards MM not IM
+        collateral = np.array([
+            x[i] if x[i]<0
+            else x[i]*min(self._collateralWeight[i],1.1 / (1 + self._imfFactor[i] * np.sqrt(abs(x[i]))))
+                        for i in range(n)])
+        im_short = np.array([
+            0 if x[i] > 0
+            else -x[i]*(1.1/self._collateralWeightInitial[i]-1)
+                        for i in range(n)])
+        mm_short = np.array([
+            0 if x[i] > 0
+            else -x[i] *(1.03/self._collateralWeightInitial[i]-1)
+                        for i in range(n)])
+        im_fut = np.array([
+            abs(x[i])*max(1.0 / self._account_leverage,self._imfFactor[i] * np.sqrt(abs(x[i]) / self._mark[i]))
+                        for i in range(n)])
+        mm_fut= np.array([
+            max([0.03*x[i], 0.6 * im_fut[i]])
+                        for i in range(n)])
 
-            chg = float(x['change24h'])
-            f=float(x['mark'])
-            s = float(x['index'])
-            if x['type']=='perpetual':
-                t=1/365
-                future_carry= size*float(funding_stats['nextFundingRate'])*24*365.25
-            else:
-                days_diff = (dateutil.parser.isoparse(x['expiry']) - datetime.now(tz=timezone.utc))
-                t=days_diff.days/365.25
-                future_carry = size * np.log(f / s) / t
-            spot_carry=size  * float(coin_details.loc[coin if (size < 0) else 'USD', 'borrow'])
+        # long: new freeColl = (1+ds)w-(ds+blow)-fut_mm(1+ds+blow)
+        # freeColl move = w ds-(ds+blow)-mm(ds+blow) = blow(1-mm) -ds(1-w+mm) ---> ~blow
+        # short: new freeColl = -(1+ds)+(ds+blow)-fut_mm(1+ds+blow)-spot_mm(1+ds)
+        # freeColl move = blow - fut_mm(ds+blow)-spot_mm ds = blow(1-fut_mm)-ds(fut_mm+spot_mm) ---> ~blow
+        blowup_idx=np.argpartition(np.apply_along_axis(abs,0,x), -self._nb_blowups)[-self._nb_blowups:]
+        blowups=np.zeros(n)
+        for i in range(n): 
+            for j in range(len(blowup_idx)):
+                i=blowup_idx[j]
+                blowups[i] = x[i]*self._long_blowup if x[i]>0 else -x[i]*self._short_blowup
+    
+        excessIM = collateral - im_fut - im_short
+        excessMM = collateral - mm_fut - mm_short - blowups
+        totalIM = self._equity -sum(x) - 0.1* max([0,sum(x)-self._equity]) + sum(excessIM)
+        totalMM = self._equity -sum(x) - 0.03 * max([0, sum(x) - self._equity]) + sum(excessMM)
 
-            collateralValue=size*(coin_details.loc[coin,'collateralWeight']-1 if size>0 else 0)
-            ### weight(initial)=weight(total)-5% for all but stablecoins/ftt(0) and BTC (2.5)
-            spot_im= ((1.1 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
-            spot_mm=((1.03 / (coin_details.loc[coin,'collateralWeight']-0.05) - 1)*-size if size<0 else 0.1*size)
-            future_im=float(x['initialMarginRequirement']) * np.abs(size)
-            future_mm=float(x['maintenanceMarginRequirement']) * np.abs(size)
-
-            greeks[x['symbol']] = pd.Series({
-                    'PV':0,
-                    'spot': s,
-                    'mark': f,
-                    'Delta':0,
-                    'ShadowDelta':size*(1-(1+rho*t)),
-                    'Gamma':-size*rho*t*(1+rho*t),
-                    'IR01':size*t/10000,
-                    'Carry':spot_carry+future_carry,
-                    'collateralValue':collateralValue,
-                    'IM': future_im+spot_im,
-                    'MM': future_mm+spot_mm,
-                        })
-    ## add a sum column
-    greeks.sort_index(axis=1, ascending=True,inplace=True)
-    greeks['sum'] = greeks.sum(axis=1)
-    return greeks
+        return {'totalIM':totalIM,
+                'totalMM':totalMM,
+                'IM':excessIM,
+                'MM':excessMM}
 
 ### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
 ### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
@@ -79,7 +87,7 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
             future_item=next(item for item in futures if item['name'] == x['future'])
             coin = future_item['underlying']
             underlyingType=getUnderlyingType(coin_details.loc[coin]) if coin in coin_details.index else 'index'
-            funding_stats =fetch_funding_rates(exchange,future_item['name'])['result']
+            funding_stats =exchange.publicGetFuturesFutureNameStats({'future_name': future_item['name']})['result']
 
             size = float(x['netSize'])
             chg = float(future_item['change24h'])
@@ -210,29 +218,10 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
             None)] = greeks.sum(axis=1)
     return greeks
 
-### account starts with usdcash and enters positions X, incurring X*slippage
-### X are cash delta, -X*hedgeratio are futures deltas
-### usd cash is then usdcash-sum(X)-txCost, incurring usdborrow
-def carry_vs_excesscollateral(X,collateral_weights,shortIM,futIM,slippage,basis,borrow,lend,usdcash,usdborrow,hedgeRatio=[]):
-    X_plus = X.apply(lambda x: np.max(0,x))
-    X_minus = X.apply(lambda x: np.max(0,-x))
-
-    txCost=X_plus*slippage['spot']['ask']+X_minus*slippage['spot']['bid']+\
-           X_plus * hedgeRatio * slippage['future']['bid'] + X_minus * hedgeRatio * slippage['spot']['ask']
-
-    cash = usdcash - sum(X) - txCost
-
-    excessCollateral = cash + sum(X_plus * collateral_weights - X_minus)-\
-                       sum( X_minus*shortIM - (X_plus + X_minus) * futIM)
-
-    carry = min(0,cash) * usdborrow + sum( -X_minus*borrow + X_plus*lend + X*basis)
-
-    return [carry,excessCollateral,txCost]
-
 ### optimizer using https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
 #eq_cons = {'type': 'eq',
-#           'fun' : lambda x: np.array([2*x[0] + x[1] - 1]),
-#           'jac' : lambda x: np.array([2.0, 1.0])}
+#           'fun' : lambda x: array([2*x[0] + x[1] - 1]),
+#           'jac' : lambda x: array([2.0, 1.0])}
 #res = minimize(rosen, x0, method='SLSQP', jac=rosen_der,
 #               constraints=[eq_cons, ineq_cons], options={'ftol': 1e-9, 'disp': True},
 #               bounds=bounds)
@@ -267,4 +256,78 @@ def live_risk():
                     (updated,'MM'): float(account_info['maintenanceMarginRequirement'])})
     return greeks
 
-#live_risk()
+def process_fills(exchange,spot_fills,future_fills):
+    if (spot_fills.empty)|(future_fills.empty): return pd.DataFrame()
+    spot_fills['time']=spot_fills['time'].apply(dateutil.parser.isoparse)
+    future_fills['time']=future_fills['time'].apply(dateutil.parser.isoparse)
+    # TODO: its not that simple if partials, but...
+    fill1 = spot_fills if spot_fills['time'].min()<future_fills['time'].min() else future_fills
+    fill2 = spot_fills if spot_fills['time'].min() >= future_fills['time'].min() else future_fills
+    symbol1 = fill1['market'].iloc[0]
+    symbol2 = fill2['market'].iloc[0]
+
+    ## TODO: more rigorous to see in USD than bps
+    result=pd.Series()
+    result['size'] = min([(spot_fills['price'] * spot_fills['size']).sum(),
+                            (future_fills['price'] * future_fills['size']).sum()])
+    result['avg_spot_level']=(spot_fills['size']*spot_fills['price']).sum() / spot_fills['size'].sum()
+    result['avg_future_level']=(future_fills['size']*future_fills['price']).sum() / future_fills['size'].sum()
+    result['realized_premium_bps']=(result['avg_future_level']*future_fills['size'].sum()-\
+                                    result['avg_spot_level']*future_fills['size'].sum())\
+                                    /result['size']*10000
+    result['final_delta']=( spot_fills.loc[spot_fills['side']=='buy','size'].sum() \
+                        -   spot_fills.loc[spot_fills['side'] == 'sell', 'size'].sum() \
+                        +   future_fills.loc[future_fills['side'] == 'buy', 'size'].sum() \
+                        -   future_fills.loc[future_fills['side'] == 'sell', 'size'].sum())\
+                                  *fill2.loc[fill2.index.max(),'price']
+    # premium_mid: we use nearest trades instead of candles
+    s2 = fill1['time'].apply(lambda t: fetch_nearest_trade(exchange,symbol2,t,target_depth=1)[0])
+    premium = (s2-fill1['price'])*fill1['size']* (1 if spot_fills['time'].min()<future_fills['time'].min() else -1)
+    result['premium_nearest_transaction']= premium.sum()/result['size']*10000
+    # delta_pnl: we use nearest trade at the end
+    (result['start_time'],result['end_time'])=\
+        (spot_fills['time'].min().tz_convert(None),future_fills['time'].min().tz_convert(None)) if spot_fills['time'].min()<future_fills['time'].min() \
+            else (future_fills['time'].min().tz_convert(None),spot_fills['time'].min().tz_convert(None))
+   # result['end_time'] = max(spot_fills['time'].max(), future_fills['time'].max())
+    final_spot=fetch_nearest_trade(exchange,spot_fills['market'].iloc[0],result['end_time'])[0]
+    final_future = fetch_nearest_trade(exchange,future_fills['market'].iloc[0],result['end_time'])[0]
+    result['delta_pnl'] = \
+        (spot_fills['size']*(final_spot-spot_fills['price']).sum()\
+        +(future_fills['size']*(final_future-future_fills['price']).sum())\
+        )/result['size']*10000
+    result['fee']=(spot_fills['fee']+future_fills['fee']).sum()/result['size']
+
+    return result
+
+def run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(days=1)):
+    exchange=open_exchange('ftx')
+    futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
+
+    fill_analysis = pd.DataFrame()
+    all_fills=pd.DataFrame(exchange.privateGetFills(
+                        {'start_time':int(start.timestamp()),'end_time':int(end.timestamp())}
+                        )['result'],dtype=float)
+    funding_paid = pd.DataFrame(exchange.privateGetFundingPayments(
+                        {'start_time':int(start.timestamp()),'end_time':int(end.timestamp())}
+                        )['result'],dtype=float)
+    for future in set(all_fills['market']).intersection(set(futures['name'])):
+        underlying=future.split('-')[0]
+        spot_fills=all_fills[all_fills['market']==underlying+'/USD']
+        future_fills=all_fills[all_fills['market']==future]
+        if (spot_fills.empty)|(future_fills.empty): continue
+
+        result=process_fills(exchange,spot_fills,future_fills)
+
+        funding_received= -funding_paid.loc[
+            funding_paid['future'].apply(lambda f: f.split('-')[0])==underlying,
+            'payment']
+        result['funding'] = funding_received.sum()
+        fill_analysis[underlying]=result
+
+    return (fill_analysis,all_fills)
+
+if False:
+    (fill_analysis, all_fills)=run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(days=1))
+    fill_analysis.to_excel('fill_analysis.xlsx')
+    all_fills.to_excel('all_fills.xlsx')
+

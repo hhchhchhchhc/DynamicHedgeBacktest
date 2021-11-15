@@ -4,6 +4,7 @@
 # https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 import numpy as np
 from ccxt.base.exchange import Exchange
+from ftx_utilities import getUnderlyingType,find_spot_ticker
 import pandas as pd
 import dateutil
 from datetime import *
@@ -26,6 +27,39 @@ def mkt_depth(exchange,symbol,side , target_depth=10000):
     interpolator.interpolate(method='index',inplace=True)
 
     return interpolator[target_depth]/mid-1.0
+
+def fetch_nearest_trade(exchange, symbol, time, target_depth=1000):
+
+    ### first, find an interval with trades.
+    trade_list=[]
+    span_increment_seconds=1
+    timestamp=time.timestamp()
+    end_time=timestamp+span_increment_seconds
+    cumulative_size=0
+    while cumulative_size<=target_depth:
+        trade_list=pd.DataFrame(exchange.publicGetMarketsMarketNameTrades(
+            {'market_name':symbol,'start_time':timestamp,'end_time':end_time}
+        )['result'],dtype=float)
+        end_time = end_time + span_increment_seconds
+        if not trade_list.empty: cumulative_size=(trade_list['size']*trade_list['price']).sum()
+    trade_list['time'] = trade_list['time'].apply(lambda t: dateutil.parser.isoparse(t).timestamp())
+    trade_list.sort_values('time',inplace=True,ascending=True)
+
+    ## then compute avg over cumsum>depth
+    trade_array=pd.DataFrame()
+    trade_array['time']=((trade_list['time']-timestamp)*trade_list['size']*trade_list['price']).cumsum()
+    trade_array['price']=(trade_list['price']*trade_list['size']*trade_list['price']).cumsum()
+    trade_array['size'] = (trade_list['size']*trade_list['price']).cumsum()
+
+    interpolator=trade_array.set_index('size')[['price','time']]
+    interpolator.loc[target_depth]=np.NaN
+    interpolator.loc[0]=pd.Series({'time':0,'size':0,'price':trade_array.loc[0,'price']})
+    interpolator.interpolate(method='index',inplace=True)
+
+    avg_time=interpolator.loc[target_depth,'time'] / target_depth
+    avg_price = interpolator.loc[target_depth, 'price'] / target_depth
+
+    return (avg_price,avg_time)
 
 def mkt_speed(exchange, symbol, target_depth=10000):
     # side='bids' or 'asks'
@@ -80,18 +114,9 @@ def fetch_coin_details(exchange):
     all= pd.concat([coin_details,borrow_rates,lending_rates,borrow_volumes],join='outer',axis=1)
     all.loc[coin_details['spotMargin'] == False,'borrow']= None ### hope this throws an error...
     all.loc[coin_details['spotMargin'] == False, 'lend'] = 0
-    all.drop(['name'],axis=1,inplace=True)### because future has name too
+    #all.drop(['name'],axis=1,inplace=True)### because future has name too
 
     return all
-
-def fetch_funding_rates(exchange, symbol,params={}):
-    exchange.load_markets()
-    market, marketId = exchange.get_market_params(symbol, 'market_name', params)
-    request = {
-        'future_name': marketId,
-    }
-    response = exchange.publicGetFuturesFutureNameStats(exchange.extend(request, params))
-    return response
 
 def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}):
     request = {
@@ -116,7 +141,7 @@ def fetch_funding_rate_history(exchange, perp,start_time,end_time,params={}):
     request = {
         'start_time': start_time,
         'end_time': end_time,
-        'future': perp['name'],
+        'future': perp.name,
         'resolution': exchange.describe()['timeframes']['1h']}
 
     response = exchange.publicGetFundingRates(exchange.extend(request, params))
@@ -128,9 +153,21 @@ def fetch_funding_rate_history(exchange, perp,start_time,end_time,params={}):
 
     return result
 
+def collateralWeightInitial(future):# TODO: API call to collateralWeight(Initial)
+    if future['underlying'] in ['BUSD','FTT','HUSD','TUSD','USD','USDC','USDP','WUSDC']:
+        return future['collateralWeight']
+    elif future['underlying'] in ['AUD','BRL','BRZ','CAD','CHF','EUR','GBP','HKD','SGD','TRY','ZAR']:
+        return future['collateralWeight']-0.01
+    elif future['underlying'] in ['BTC','USDT','WBTC','WUSDT']:
+        return future['collateralWeight']-0.025
+    else:
+        return future['collateralWeight']-0.05
+
+### get all static fields
 def fetch_futures(exchange,includeExpired=False,params={}):
     response = exchange.publicGetFutures(params)
     expired = exchange.publicGetExpiredFutures(params) if includeExpired==True else []
+    coin_details = fetch_coin_details(exchange)
 
     #### for IM calc
     account_leverage = exchange.privateGetAccount()['result']
@@ -141,8 +178,12 @@ def fetch_futures(exchange,includeExpired=False,params={}):
     result = []
     for i in range(0, len(markets)):
         market = markets[i]
+        underlying = exchange.safe_string(market, 'underlying')
         mark = exchange.safe_number(market, 'mark')
         imfFactor = exchange.safe_number(market, 'imfFactor')
+
+        ## eg ADA has no coin details
+        if not underlying in coin_details.index: continue
 
         result.append({
             'ask': exchange.safe_number(market, 'ask'),
@@ -170,8 +211,16 @@ def fetch_futures(exchange,includeExpired=False,params={}):
             'underlying': exchange.safe_string(market, 'underlying'),
             'upperBound': exchange.safe_value(market, 'upperBound'),
             'type': exchange.safe_string(market, 'type'),
-            'initialMarginRequirement': (imfFactor * np.sqrt(dummy_size / mark)).clip(min=1 / float(account_leverage['leverage'])),
-            'maintenanceMarginRequirement': 3 / 5 * (imfFactor * np.sqrt(dummy_size / mark)).clip(
-            min=1 / float(account_leverage['leverage']))  ## TODO: not sure
+         ### additionnals
+            'account_leverage': float(account_leverage['leverage']),
+            'collateralWeight':coin_details.loc[underlying,'collateralWeight'],
+            'underlyingType': getUnderlyingType(coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
+            'spot_ticker': exchange.safe_string(market, 'underlying')+'/USD',
+            'spotMargin': coin_details.loc[underlying,'spotMargin'],
+            'tokenizedEquity':coin_details.loc[underlying,'tokenizedEquity'],
+            'usdFungible':coin_details.loc[underlying,'usdFungible'],
+            'fiat':coin_details.loc[underlying,'fiat'],
+            'expiryTime':dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None)
+                            if exchange.safe_string(market, 'type') == 'future' else np.NaN
         })
     return result
