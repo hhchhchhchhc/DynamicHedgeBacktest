@@ -96,10 +96,15 @@ def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':Fals
 
 def open_exchange(exchange_name):
     if exchange_name=='ftx':
-        exchange = ccxt.ftx({
+        exchange = ccxt.ftx({ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
+        })
+        exchange = ccxt.ftx({  ## Benoit personnal
+            'enableRateLimit': True,
+            'apiKey': 'qhAwNo1Ttub8LTNWjyIWH7Rjecm_JkIOBVu-uffR',
+            'secret': 'L9GaUmIl7jRAUfh56c69i-jhAlgrGfZJTvCmvoc2',
         })
     if exchange_name == 'binance':
         exchange = ccxt.binance({
@@ -111,7 +116,6 @@ def open_exchange(exchange_name):
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
     return  exchange
-
 
 def optional_debug_info(datatype,exchange = "ftx", params={}):
     if  params['pickleit']:
