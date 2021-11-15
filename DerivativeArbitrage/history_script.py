@@ -5,31 +5,62 @@ from ftx_snap_basis import enricher
 from s3 import *
 
 def build_fine_history():
-    exchange=open_exchange('ftx')
-    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False))
+    exchange = open_exchange('ftx')
+    markets = exchange.fetch_markets()
+    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
 
-    funding_threshold = 1e4
-    volume_threshold = 1e6
-    type_allowed='perpetual'
-    backtest_window=timedelta(weeks=150)
+    # filtering params
+    funding_volume_threshold = 5e5
+    spot_volume_threshold = 5e4
+    borrow_volume_threshold = 5e5
+    type_allowed = 'future'
+    max_nb_coins = 15
+    carry_floor = 0.4
 
-    enriched=enricher(exchange, futures)
-    pre_filtered = enriched[
-        (enriched['expired'] == False)
-        & (enriched['funding_volume'] * enriched['mark'] > funding_threshold)
-        & (enriched['volumeUsd24h'] > volume_threshold)
-        & (enriched['tokenizedEquity']!=True)
-        & (enriched['type']==type_allowed)]
+    # fee estimation params
+    slippage_override = 2e-4  #### this is given by mktmaker
+    slippage_scaler = 1
+    slippage_orderbook_depth = 1000
+    equity = 20000
+    holding_period=timedelta(days=7)
+
+    # backtest params
+    backtest_start = datetime(2021, 9, 1)
+    backtest_end = datetime.now()
+
+    ## ----------- enrich, get history, filter
+    enriched = enricher(exchange, futures, holding_period, equity=equity,
+                        slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
+                        slippage_scaler=slippage_scaler,
+                        params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
 
     #### get history ( this is sloooow)
-    history = build_history(pre_filtered, exchange, timeframe='15s', end=datetime.today(),
-                  start=datetime.today() - backtest_window,dirname='archived data/ftx').to_parquet("15shistory.parquet")
+    hy_history = build_history(enriched, exchange, timeframe='15s', end=backtest_end, start=backtest_start,dirname='')
+
+    universe_filter_window = hy_history[datetime(2021, 9, 1):datetime(2021, 11, 15)].index
+    enriched['borrow_volume_avg'] = enriched.apply(lambda f:
+                                                   (hy_history.loc[
+                                                        universe_filter_window, f['underlying'] + '/rate/size'] *
+                                                    hy_history.loc[universe_filter_window, f.name + '/mark/o']).mean(),
+                                                   axis=1)
+    enriched['spot_volume_avg'] = enriched.apply(lambda f:
+                                                 (hy_history.loc[
+                                                     universe_filter_window, f['underlying'] + '/price/volume']).mean(),
+                                                 axis=1)
+    enriched['future_volume_avg'] = enriched.apply(lambda f:
+                                                   (hy_history.loc[
+                                                       universe_filter_window, f.name + '/price/volume']).mean(),
+                                                   axis=1)
+
+    hy_history.to_excel('15s_history.xlsx')
+    enriched.to_excel('15s_historymetadata.xlsx')
     return None
 
+build_fine_history()
 i=0
-while i<50:
+while i<0:
     try:
         build_fine_history()
     except:
-        sleep(15*60)
+        sleep(60)
     i=i+1

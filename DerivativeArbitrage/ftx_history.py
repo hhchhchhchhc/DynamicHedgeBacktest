@@ -23,7 +23,7 @@ def build_history(futures,exchange,
             perp_funding_data.to_parquet(dirname+'/allfundings.parquet')
 
     future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe,dirname)
-               for (i, f) in futures[futures['type'] == 'perpetual'].iterrows()],
+               for (i, f) in futures.iterrows()],
               join='outer',axis=1)
     future_price_data=pd.concat([price_history(f['symbol'], exchange, end, start, timeframe,dirname)
                for (i, f) in futures.iterrows()],
@@ -143,7 +143,7 @@ def rate_history(future,exchange,
 
     max_mark_data = int(1500)
     resolution = exchange.describe()['timeframes'][timeframe]
-    print('rate_history: ' + future['name'])
+    print('rate_history: ' + future['symbol'])
 
     indexes = []
     mark = []
