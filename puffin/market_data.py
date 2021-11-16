@@ -12,12 +12,13 @@ class MarketData:
         self.top_of_book_formatted = pd.DataFrame()
         self.trades_raw = pd.DataFrame()
         self.trades_formatted = pd.DataFrame()
+        self.instrument_id = tools.get_id_from_symbol(symbol)
 
     def load_top_of_book_data_from_parquet(self, date: datetime.date) -> None:
         symbol_id: int = tools.get_id_from_symbol(self.symbol)
         symbol_id_string = str(symbol_id)
         date_string = date.strftime('%Y%m%d')
-        self.top_of_book_raw = pd.read_parquet(con.source_directory +
+        self.top_of_book_raw = pd.read_parquet(con.source_directory + 'data/inputs/' +
                                                date_string + '_' + symbol_id_string + '_tob.parquet')
 
     def load_trade_data_from_parquet(self, date: datetime.date) -> None:
@@ -25,13 +26,13 @@ class MarketData:
         symbol_id_string = str(symbol_id)
         date_string = date.strftime('%Y%m%d')
         self.trades_raw = pd.read_parquet(
-            con.source_directory + date_string
+            con.source_directory + 'data/inputs/' + date_string
             + '_' + symbol_id_string + '_trade.parquet')
 
     def load_formatted_trade_data_from_csv(self, date: datetime.date) -> None:
         date_string = date.strftime('%Y%m%d')
-        self.trades_formatted = pd.read_csv(con.source_directory + 'formatted/trades/' +
-                                            date_string + '_Binance_' + self.symbol + '_trades.csv')
+        self.trades_formatted = pd.read_csv(con.source_directory + 'data/inputs/' +
+                                            date_string + f'_{self.instrument_id}_' + self.symbol + '_trades.csv')
 
     def generate_formatted_top_of_book_data(self) -> None:
         self.top_of_book_formatted = pd.DataFrame()
