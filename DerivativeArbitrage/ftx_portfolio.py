@@ -84,7 +84,7 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
     for x in positions:
         if float(x['optimalWeight']) !=0.0:
 
-            future_item=next(item for item in futures if item['name'] == x['future'])
+            future_item=next(item for item in futures if item['symbol'] == x['future'])
             coin = future_item['underlying']
             underlyingType=getUnderlyingType(coin_details.loc[coin]) if coin in coin_details.index else 'index'
             funding_stats =exchange.publicGetFuturesFutureNameStats({'future_name': future_item['name']})['result']

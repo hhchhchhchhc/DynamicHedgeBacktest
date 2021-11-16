@@ -4,7 +4,7 @@ from ftx_utilities import *
 from ftx_snap_basis import enricher
 from s3 import *
 
-def build_fine_history():
+def build_fine_history(dirname):
     exchange = open_exchange('ftx')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
@@ -25,7 +25,7 @@ def build_fine_history():
     holding_period=timedelta(days=7)
 
     # backtest params
-    backtest_start = datetime(2021, 9, 1)
+    backtest_start = datetime(2021, 10, 1)
     backtest_end = datetime.now()
 
     ## ----------- enrich, get history, filter
@@ -35,7 +35,7 @@ def build_fine_history():
                         params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
 
     #### get history ( this is sloooow)
-    hy_history = build_history(enriched, exchange, timeframe='15s', end=backtest_end, start=backtest_start,dirname='')
+    hy_history = build_history(enriched, exchange, timeframe='15s', end=backtest_end, start=backtest_start,dirname=dirname)
 
     universe_filter_window = hy_history[datetime(2021, 9, 1):datetime(2021, 11, 15)].index
     enriched['borrow_volume_avg'] = enriched.apply(lambda f:
@@ -56,11 +56,11 @@ def build_fine_history():
     enriched.to_excel('15s_historymetadata.xlsx')
     return None
 
-build_fine_history()
+build_fine_history('archived data/ftx futures')
 i=0
 while i<0:
     try:
-        build_fine_history()
+        build_fine_history('archived data/ftx futures')
     except:
         sleep(60)
     i=i+1

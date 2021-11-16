@@ -20,7 +20,7 @@ def build_history(futures,exchange,
         else:
             perp_funding_data=pd.concat([funding_history(f,exchange,start,end,dirname)
                                      for (i,f) in futures[futures['type']=='perpetual'].iterrows()],join='outer',axis=1)
-            perp_funding_data.to_parquet(dirname+'/allfundings.parquet')
+            perp_funding_data.to_parquet(parquet_filename)
 
     future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe,dirname)
                for (i, f) in futures.iterrows()],
@@ -33,7 +33,6 @@ def build_history(futures,exchange,
                                   join='outer', axis=1)
 
     parquet_filename = dirname+'/allborrows.parquet'
-
     borrow_data=pd.DataFrame()
     if os.path.isfile(parquet_filename):
         borrow_data = from_parquet(parquet_filename)
@@ -102,7 +101,7 @@ def funding_history(future,exchange,
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
-    print('funding_history: ' + future['name'])
+    print('funding_history: ' + future['symbol'])
 
     ### grab data per batch of 5000
     funding_data=pd.DataFrame()
@@ -123,7 +122,7 @@ def funding_history(future,exchange,
         funding_data = funding_data.astype(dtype={'time': 'int64'}).set_index(
             'time')[['rate']]
         data = pd.DataFrame()
-        data[future['name'] + '/rate/funding'] = funding_data['rate']
+        data[future['symbol'] + '/rate/funding'] = funding_data['rate']
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
         data = data[~data.index.duplicated()].sort_index()
     else:
@@ -245,51 +244,6 @@ def price_history(symbol,exchange,
     data = data[~data.index.duplicated()].sort_index()
 
     if dirname!='': data.to_parquet(dirname+'/'+ symbol.replace('/USD','') + "_price.parquet")
-
-    return data
-
-#### naive plex of a perp,assuming cst size.
-def perp_carry_backtest(future,rates_history,
-                   end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-                   start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
-    prekey=future['name']+'/PnL/'
-    rates_history=rates_history[start:end]
-    USDborrow = rates_history['USD/rate/borrow']
-    pnlHistory=pd.DataFrame()
-    pnlHistory[prekey+'funding'] = (rates_history[future['name']+'/rate/funding']*future['maxPos'])/365.25/24
-    pnlHistory[prekey+'borrow'] = (-USDborrow*future['maxPos']+
-                rates_history[future['underlying']+'/rate/borrow']*np.min(future['maxPos'],0))/365.25/24
-    pnlHistory[prekey+'maxCarry'] = pnlHistory[prekey+'funding']+pnlHistory[prekey+'borrow']
-    return pnlHistory
-
-#### naive plex of a perp,assuming cst size and no rate move.
-def future_carry_backtest(future,rates_history,
-                   end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-                   start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
-    prekey = future['name'] + '/PnL/'
-    rates_history=rates_history[start:end]
-    USDborrow = rates_history['USD/rate/borrow']
-    pnlHistory = pd.DataFrame(index=rates_history.index)
-    #### ignores future curves since future no cst maturity
-    pnlHistory[prekey +'borrow'] = (-USDborrow * future['maxPos'] -
-                rates_history[future['underlying'] + '/rate/borrow']*np.min(future['maxPos'],0))/365.25/24.0
-    pnlHistory[prekey+'funding'] = (rates_history.loc[start+timedelta(hours=1),future['name']+'/rate/c']
-                *future['maxPos'])/365.25/24.0
-    pnlHistory[prekey+'maxCarry'] = pnlHistory[prekey+'funding']+pnlHistory[prekey+'borrow']
-    return pnlHistory
-
-def carry_backtest(future,rates_history,
-                   end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-                   start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
-    if future['type'] == 'perpetual':
-        return perp_carry_backtest(future, rates_history, start=start, end=end)
-    elif future['type'] == 'future':
-        return future_carry_backtest(future, rates_history, start=start, end=end)
-
-def max_leverage_carry(futures,rates_history,
-                       end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-                       start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30)):
-    data = pd.concat(futures.apply(lambda f:carry_backtest(f,rates_history,start=start,end=end), axis = 1).to_list(),join='inner', axis=1)
 
     return data
 
