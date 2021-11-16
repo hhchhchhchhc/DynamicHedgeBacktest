@@ -85,13 +85,11 @@ def perp_vs_cash_backtest(  equity=1,
     previous_weights=pre_filtered['carry_mid'] \
             /(pre_filtered['carry_mid'].sum() if np.abs(pre_filtered['carry_mid'].sum())>0.1 else 0.1)
 
-    i = 0
-    time_list=[]
-    summary_list=[]
+    trajectory=pd.DataFrame()
     while point_in_time<backtest_end:
         updated,excess_margin=update(pre_filtered,point_in_time,hy_history,equity,
                        intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
-        summary=cash_carry_optimizer(exchange,updated,excess_margin,
+        optimized=cash_carry_optimizer(exchange,updated,excess_margin,
                                 previous_weights=previous_weights,
                                 holding_period = holding_period,
                                 signal_horizon=signal_horizon,
@@ -101,47 +99,38 @@ def perp_vs_cash_backtest(  equity=1,
                                 verbose=True
                               )
 
-        previous_weights=summary['optimalWeight'].drop(['USD','total'])
+        previous_weights=optimized['optimalWeight'].drop(['USD','total'])
         point_in_time+=holding_period
-        i+=1
-        time_list += [point_in_time]
-        summary_list+=[summary]
+        summary=pd.DataFrame(columns=pd.MultiIndex.from_product([[point_in_time],optimized.columns],names=['time','field']))
+        summary[(point_in_time,)]=optimized
+        trajectory=trajectory.join(summary,how='outer')
 
-    summary = pd.DataFrame(columns=pd.MultiIndex.from_product(
-        [time_list, summary.columns.to_list()],
-        names=['time', 'field']))
-    for j in range(i): summary[(time_list[j],)] = summary_list[j]
     #trajectory.xs('ask',level='field',axis=1)
 
-    with pd.ExcelWriter('summary_'+run_name+'.xlsx', engine='xlsxwriter') as writer:
-        summary.reorder_levels(['field','time'],axis='columns').to_excel(writer,'summary.xlsx')
+#    with pd.ExcelWriter('summary_'+run_name+'.xlsx', engine='xlsxwriter') as writer:
+#        trajectory.reorder_levels(['field','time'],axis='columns').to_excel(writer,'summary.xlsx')
 
-    return summary
+    return trajectory
 
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
-def run_ladder():
+def run_ladder(verbose=True):
     holding_period = [timedelta(days=d) for d in [1,2,3,4,5,6,7]]+[timedelta(hours=h) for h in [1,3,6,12]]
     signal_horizon = [timedelta(days=d) for d in [1, 2, 3, 4, 5, 6, 7]] + [timedelta(hours=h) for h in [1, 3, 6, 12]]
-    run_list =[]
-    summary_list =[]
+    ladder=pd.DataFrame()
     for hp in holding_period:
         for sh in signal_horizon:
+            if sh < hp: continue
             run_name = 'hold' + timedeltatostring(hp) + 'signal' + timedeltatostring(sh)
-            summary=perp_vs_cash_backtest(equity=1,
+            trajectory=perp_vs_cash_backtest(equity=1,
                               signal_horizon=sh,
                               holding_period=hp,
                               concentration_limit=.25,
                               loss_tolerance=0.05,
                               marginal_coin_penalty=0.05,
                               run_name=run_name)
-            run_list+=[run_name]
-            summary_list+=[summary]
-
-    i=0
-    for i in range(len(summary_list)):
-        with pd.ExcelWriter('summary.xlsx', engine='xlsxwriter') as writer:
-            summary_list[i].reorder_levels(['field','time'],axis='columns').\
-                to_excel(writer,sheet_name=run_list[i])
+            run=pd.DataFrame(columns=pd.MultiIndex.from_tuples([(run_name,c[0],c[1]) for c in trajectory.columns],names=['run','time','field']))
+            run[(run_name,)]=trajectory
+            ladder=ladder.join(run,how='outer')
 
 run_ladder()
