@@ -84,13 +84,15 @@ def update(input_futures,point_in_time,history,equity,
            intLongCarry, intShortCarry, intUSDborrow,E_long,E_short,E_intUSDborrow):
     futures=pd.DataFrame(input_futures)
 
-    ########### add borrows
+    ####### spot quantities. Not used by optimizer. Careful about foresight bias when using those !
+
+    # add borrows
     futures['borrow']=futures['underlying'].apply(lambda f:history.loc[point_in_time,f + '/rate/borrow'])
     futures['lend'] = futures['underlying'].apply(lambda f:history.loc[point_in_time, f + '/rate/borrow'])*.9 # TODO:lending rate
     futures['quote_borrow'] = history.loc[point_in_time, 'USD/rate/borrow']
     futures['quote_lend'] = history.loc[point_in_time, 'USD/rate/borrow'] * .9  # TODO:lending rate
 
-    ########### naive basis for all futures
+    # spot basis
     futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
         lambda f: history.loc[point_in_time, f.name + '/rate/funding'],axis=1)
     futures['mark']=futures.apply(
@@ -111,13 +113,15 @@ def update(input_futures,point_in_time,history,equity,
     futures.loc[futures['direction_mid']>0,'carry_mid'] = futures['carryShort']
     futures=futures.drop(columns=['carryLong','carryShort'])
 
-    # carry expectation at point_in_time
-    futures['intLongCarry']  = intLongCarry.loc[point_in_time]
-    futures['intShortCarry'] = intShortCarry.loc[point_in_time]
-    futures['intUSDborrow']  = intUSDborrow.loc[point_in_time]
-    futures['E_long']        = E_long.loc[point_in_time]
-    futures['E_short']      = E_short.loc[point_in_time]
-    futures['E_intUSDborrow']  = E_intUSDborrow.loc[point_in_time]
+    ####### expectations. This is what optimizer uses.
+
+    # carry expectation at point_in_time. -1h to avoid foresight.
+    futures['intLongCarry']  = intLongCarry.loc[point_in_time-timedelta(hours=1)]
+    futures['intShortCarry'] = intShortCarry.loc[point_in_time-timedelta(hours=1)]
+    futures['intUSDborrow']  = intUSDborrow.loc[point_in_time-timedelta(hours=1)]
+    futures['E_long']        = E_long.loc[point_in_time-timedelta(hours=1)]
+    futures['E_short']      = E_short.loc[point_in_time-timedelta(hours=1)]
+    futures['E_intUSDborrow']  = E_intUSDborrow.loc[point_in_time-timedelta(hours=1)]
 
     # initialize optimizer functions
     excess_margin = ExcessMargin(futures,equity=equity,
@@ -128,7 +132,7 @@ def update(input_futures,point_in_time,history,equity,
 def build_derived_history(exchange, input_futures, hy_history,
                   holding_period,  # to convert slippage into rate
                   signal_horizon,  # historical window for expectations
-                  verbose=False):             # use external rather than order book
+                  dirname=''):             # use external rather than order book
     futures=pd.DataFrame(input_futures)
     ### remove blanks for this
     hy_history = hy_history.fillna(method='ffill',limit=2,inplace=False)
@@ -161,10 +165,9 @@ def build_derived_history(exchange, input_futures, hy_history,
     intUSDborrow = USDborrow.rolling(holding_hours).mean()
     E_intUSDborrow = intUSDborrow.rolling(int(signal_horizon.total_seconds()/3600)).median()
     
-    if verbose:
-        with pd.ExcelWriter('paths.xlsx', engine='xlsxwriter') as writer:
+    if dirname!='':
+        with pd.ExcelWriter(dirname+'/paths.xlsx', engine='xlsxwriter') as writer:
             futures.to_excel(writer, sheet_name='futureinfo')
-            pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
             for col in futures.sort_values(by='absWeight', ascending=False).drop(index=['USD', 'total']).head(5).index:
                 all = pd.concat([intLongCarry[col],
                                 intShortCarry[col],
@@ -316,9 +319,12 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit*equity for w in futures['direction']]),
                                    ub=np.asarray([0 if w<0 else  concentration_limit*equity for w in futures['direction']]))
 
-    # guess: normalized carry expectation, rescaled to max margins
+    # guess: 
+    # - normalized carry expectation, rescaled to max margins
+    # - previous weights 
     x0=equity*np.array(E_intCarry)/sum(E_intCarry)
     x1 = x0/np.max([1-margin_constraint['fun'](x0)/equity,1-stopout_constraint['fun'](x0)/equity])
+    x1=xt
     callbackF(x1, progress_display,verbose)
 
     res = scipy.optimize.minimize(objective, x1, method='SLSQP', jac=objective_jac,
