@@ -16,14 +16,14 @@ def create_tick_bars():
 
 def run_roll_model() -> None:
     print('running roll model')
-    start_date = datetime.date(2021, 10, 1)
+    start_date = datetime.date(2021, 9, 1)
     number_of_days = 1
     bar = _config.Bar.TEN_TICKS
     strategy = _config.Strategy.ROLL_MODEL
     strategy_parameters = {'trade_on_trend': False}
     alpha = _config.AlphaModel.NONE
     alpha_parameters = {}
-    my_backtest = Backtest('XRPUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
+    my_backtest = Backtest('ADAUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
                            number_of_days)
     results, summary = my_backtest.run()
     results.to_csv(_config.source_directory + '/data/outputs/new_results_roll_ticks.csv', index=False)
@@ -32,14 +32,14 @@ def run_roll_model() -> None:
 
 def run_phi(phi: float) -> None:
     print('running phi = ' + str("{:,.2f}".format(phi)))
-    start_date = datetime.date(2021, 10, 1)
+    start_date = datetime.date(2021, 9, 1)
     number_of_days = 1
     bar = _config.Bar.ONE_SECOND
     strategy = _config.Strategy.ASMM_PHI
     strategy_parameters = {'phi': phi}
     alpha = _config.AlphaModel.NONE
     alpha_parameters = {}
-    my_backtest = Backtest('XRPUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
+    my_backtest = Backtest('ADAUSDT', bar, strategy, strategy_parameters, alpha, alpha_parameters, start_date,
                            number_of_days)
     results, summary = my_backtest.run()
     results.to_csv(_config.source_directory + 'new_results_' + str("{:,.2f}".format(phi)) + '.csv', index=False)
