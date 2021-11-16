@@ -1,1 +1,35 @@
 **/.idea
+/data/inputs/20210901_4610_ADAUSDT_tobs.csv
+/data/inputs/20210901_4610_ADAUSDT_trades.csv
+/data/inputs/20210901_4610_tob.parquet
+/data/inputs/20210901_4610_trade.parquet
+/data/inputs/20211001_Binance_XRPUSDT_tobs.csv
+/data/inputs/20211001_Binance_XRPUSDT_trades.csv
+/data/inputs/ftx_quotes_2021-10-14_BTC-PERP.csv.gz
+/data/inputs/ftx_quotes_2021-10-14_BTC-USD.csv.gz
+/data/inputs/ftx_trades_2021-10-14_BTC-PERP.csv.gz
+/data/inputs/ftx_trades_2021-10-14_BTC-USD.csv.gz
+/data/outputs/backtest_results.csv
+/data/outputs/future_trades.csv
+/data/outputs/new_results_high_low_10.00.csv
+/data/outputs/new_results_roll_ticks.csv
+/data/outputs/new_results_roll_ticks - Copy.csv
+/data/outputs/new_summary_high_low_10.00.csv
+/data/outputs/new_summary_roll_ticks.csv
+/data/outputs/new_summary_roll_ticks - Copy.csv
+/data/outputs/spot_trades.csv
+/data/outputs/spot_trades - Copy.csv
+/data/outputs/spot_trades - Copy (2).csv
+/data/outputs/spread_execution_future_trades.csv
+/data/outputs/spread_execution_spot_trades.csv
+/data/outputs/test.csv
+/BinanceUsdtBusdArbitrage/JupyterNotebooks/.ipynb_checkpoints/
+/DerivativeArbitrage/.ipynb_checkpoints/
+/Notebooks/.ipynb_checkpoints/
+/Notebooks/datasets/
+/puffin.egg-info/
+/SimpleMarketMaking/JupyterNotebooks/.ipynb_checkpoints/
+/SimpleMarketMaking/Mess/.ipynb_checkpoints/
+/SpreadExecution/JupyterNotebooks/.ipynb_checkpoints/
+/SpreadExecution/JupyterNotebooks/datasets/
+/SpreadExecution/Mess/datasets/
