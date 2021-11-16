@@ -70,7 +70,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             tob = pd.read_csv(
-                _config.source_directory + 'data/inputs/' + date_string + '_Binance_' + self.symbol + '_tobs.csv')
+                _config.source_directory + 'data/inputs/' + date_string + f'_{self.instrument_id}_' + self.symbol + '_tobs.csv')
             tobs = tobs.append(tob)
         return tobs
 
@@ -80,7 +80,7 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             trade = pd.read_csv(
-                _config.source_directory + 'data/inputs/' + date_string + '_Binance_' + self.symbol + '_trades.csv')
+                _config.source_directory + 'data/inputs/' + date_string + f'_{self.instrument_id}_' + self.symbol + '_trades.csv')
             trades = trades.append(trade)
         return trades
 
@@ -88,6 +88,7 @@ class Backtest:
                  alpha_model: AlphaModel, alpha_parameters: dict[str, float],
                  start_date: datetime.date, number_of_days: int) -> None:
         self.symbol = symbol
+        self.instrument_id = tools.get_id_from_symbol(symbol)
         self.strategy = strategy
         self.bar = bar
         self.strategy_parameters = strategy_parameters
@@ -118,6 +119,7 @@ class Backtest:
         self.backtest_pnls = []
         self.backtest_bids = []
         self.backtest_asks = []
+        self.backtest_vwaps = []
         self.vwap = None
         self.spread = None
         self.skew = None
@@ -137,6 +139,9 @@ class Backtest:
         self.volume_traded_dollar_buffer = []
         self.cumulative_volume = 0
         self.cumulative_volume_dollar = 0
+
+        with open('debug.log', 'w') as f:
+            f.write('timestamp,vwap,bid,ask,current_position,skew')
 
     def run(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         trades_index = 0
@@ -163,7 +168,7 @@ class Backtest:
             else:
                 self._tob_event(self.tobs.iloc[tobs_index])
                 tobs_index = tobs_index + 1
-        print()
+
         backtest_results = pd.DataFrame()
         backtest_results['timestamp_millis'] = self.backtest_timestamps
         backtest_results['position'] = np.multiply(self.backtest_positions, self.step_size)
@@ -177,6 +182,7 @@ class Backtest:
         backtest_results['ask'] = list(map(lambda x: None if x is None else x * self.tick_size, self.backtest_asks))
         backtest_results['market_bid'] = np.multiply(self.backtest_market_bids, self.tick_size)
         backtest_results['market_ask'] = np.multiply(self.backtest_market_asks, self.tick_size)
+        backtest_results['vwaps'] = np.multiply(self.backtest_vwaps, self.tick_size)
         backtest_results['spread'] = list(
             map(lambda x: None if x is None else x * self.tick_size, self.backtest_spreads))
         backtest_results['skew'] = list(
@@ -215,10 +221,10 @@ class Backtest:
 
     def _check_for_end_of_time_bar(self, timestamp: datetime.datetime) -> None:
         if self.time_bar_start_timestamp is None:
-            self.time_bar_start_timestamp = timestamp
+            self.time_bar_start_timestamp = int((timestamp // 1e3)*1e3)
         if timestamp - self.time_bar_start_timestamp >= 1000:
             self._end_of_bar()
-            self.time_bar_start_timestamp = timestamp
+            self.time_bar_start_timestamp = int((timestamp // 1e3)*1e3)
 
     def _check_for_end_of_tick_bar(self) -> None:
         self.tick_bar_counter = self.tick_bar_counter + 1
@@ -240,16 +246,23 @@ class Backtest:
             self._end_of_bar_asmm_nu()
         elif self.strategy == Strategy.ROLL_MODEL:
             self._end_of_bar_roll_model()
+
+        
         if self.position >= self.max_position:
             self.bid = None
         if self.position <= -self.max_position:
             self.ask = None
+
         if self.bid is not None and self.ask is not None:
             self.spread = self.ask - self.bid
+        else:
+            self.spread = None
+        
         if self.bid is not None and self.market_ask is not None and self.bid >= self.market_ask:
             self._aggressive_buy()
         if self.ask is not None and self.market_bid is not None and self.ask <= self.market_bid:
             self._aggressive_sell()
+        
         self.price_buffer = []
         self.size_buffer = []
         self._record_backtest_results()
@@ -263,11 +276,11 @@ class Backtest:
                 low = low - 1
             self.skew = self.strategy_parameters['nu'] * (self.position / self.max_position) * (high - low)
             if self.skew > 0:
-                self.bid = int(low + self.alpha_value - self.skew)
-                self.ask = int(high + self.alpha_value)
+                self.bid = int(low  - self.skew)
+                self.ask = int(high)
             else:
-                self.bid = int(low + self.alpha_value)
-                self.ask = int(high + self.alpha_value - self.skew)
+                self.bid = int(low)
+                self.ask = int(high - self.skew)
 
     def _end_of_bar_asmm_phi(self) -> None:
         if len(self.price_buffer) > 0:
@@ -293,22 +306,29 @@ class Backtest:
                 delta_vwaps = np.array(delta_vwaps)
                 x = delta_vwaps[~np.isnan(delta_vwaps)]
                 autocovariance = _get_autocovariance(x, 1)
+                self.sigma = delta_vwaps.std()
+                #if self.sigma is not None and autocovariance <0:
+                #    print('timestamp/sigma', self.time_bar_start_timestamp, self.sigma)
+                #    print(self.vwap_buffer)
+                #    print(delta_vwaps)
+                #    print(autocovariance)
+                #    print(np.sqrt(-1 * autocovariance))
                 if self.strategy_parameters['trade_on_trend']:
                     trend = self.vwap_buffer[-1] - self.vwap_buffer[0]
-                self.sigma = delta_vwaps.std()
+                
             self.bid = None
             self.ask = None
             if self.sigma is not None and autocovariance < 0:
-                self.spread = np.sqrt(-1 * autocovariance)
-                self.ask = int(self.vwap + self.spread)
-                self.bid = int(self.vwap - self.spread)
+                spread = np.sqrt(-1 * autocovariance)
+                self.ask = int(self.vwap + spread)
+                self.bid = int(self.vwap - spread)
             elif trend is not None:
-                self.spread = np.sqrt(autocovariance)
+                spread = np.sqrt(autocovariance)
                 if trend > 0:
-                    self.bid = int(self.vwap - self.spread)
+                    self.bid = int(self.vwap - spread)
                 elif trend < 0:
-                    self.ask = int(self.vwap + self.spread)
-
+                    self.ask = int(self.vwap + spread)
+            
     def _passive_buy(self) -> None:
         self._buy(self.bid)
 
@@ -339,6 +359,7 @@ class Backtest:
         self.backtest_timestamps.append(self.time_bar_start_timestamp)
         self.backtest_positions.append(self.position)
         pnl = self.cash + (self.position * ((self.market_bid + self.market_ask) / 2))
+        self.backtest_vwaps.append(self.vwap)
         self.backtest_pnls.append(pnl)
         self.backtest_bids.append(self.bid)
         self.backtest_asks.append(self.ask)
