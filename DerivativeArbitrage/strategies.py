@@ -8,9 +8,10 @@ import ccxt
 #from sklearn import *
 
 def perp_vs_cash_live(equity=1,
-                signal_horizon = timedelta(days=7),
-                holding_period = timedelta(days=7),
-                concentration_limit = 99,
+                signal_horizon = [timedelta(days=7)],
+                holding_period = [timedelta(days=7)],
+                concentration_limit = [99],
+                exclusion_list=[],
                 loss_tolerance = 0.05,
                 marginal_coin_penalty = 0.05,
                 run_name=''):
@@ -18,7 +19,7 @@ def perp_vs_cash_live(equity=1,
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
 
-    point_in_time = datetime.now().replace(minute=0,second=0,microsecond=0)
+    point_in_time = (datetime.now()-timedelta(hours=0)).replace(minute=0,second=0,microsecond=0)
 
     # filtering params
     funding_volume_threshold = 1e5  # 5e5
@@ -31,65 +32,67 @@ def perp_vs_cash_live(equity=1,
     # fee estimation params
     slippage_override = 0  # TODO: 2e-4  #### this is given by mktmaker
     slippage_scaler = 1
-    slippage_orderbook_depth = 1000
+    slippage_orderbook_depth = 10000
 
-    ## ----------- enrich, get history, filter
-    enriched = enricher(exchange, futures, holding_period, equity=equity,
-                        slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
-                        slippage_scaler=slippage_scaler,
-                        params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
+    for (holding_period,signal_horizon,concentration_limit) in [(hp,sh,c) for hp in holding_period for sh in signal_horizon for c in concentration_limit]:
 
-    #### get history ( this is sloooow)
-    hy_history = build_history(enriched, exchange,
-                               timeframe='1h', end=point_in_time, start=point_in_time-signal_horizon-holding_period,
-                               dirname='live_parquets')
+        ## ----------- enrich, get history, filter
+        enriched = enricher(exchange, futures.drop(index=exclusion_list), holding_period, equity=equity,
+                            slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
+                            slippage_scaler=slippage_scaler,
+                            params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
 
-    universe_filter_window = hy_history.index
-    enriched['borrow_volume_avg'] = enriched.apply(lambda f:
-                                                   (hy_history.loc[
-                                                        universe_filter_window, f['underlying'] + '/rate/size'] *
-                                                    hy_history.loc[universe_filter_window, f.name + '/mark/o']).mean(),
-                                                   axis=1)
-    enriched['spot_volume_avg'] = enriched.apply(lambda f:
-                                                 (hy_history.loc[
-                                                     universe_filter_window, f['underlying'] + '/price/volume']).mean(),
-                                                 axis=1)
-    enriched['future_volume_avg'] = enriched.apply(lambda f:
-                                                   (hy_history.loc[
-                                                       universe_filter_window, f.name + '/price/volume']).mean(),
-                                                   axis=1)
+        #### get history ( this is sloooow)
+        hy_history = build_history(enriched, exchange,
+                                   timeframe='1h', end=point_in_time, start=point_in_time-signal_horizon-holding_period,
+                                   dirname='live_parquets')
 
-    # ------- build derived data history
-    (intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow) = build_derived_history(
-        exchange, enriched, hy_history,
-        holding_period,  # to convert slippage into rate
-        signal_horizon)  # historical window for expectations)
-    updated, marginFunc = update(enriched, point_in_time, hy_history, equity,
-                                 intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
-    # final filter, needs some history and good avg volumes
-    pre_filtered = updated[
-        (~np.isnan(updated['E_intCarry']))
-        & (enriched['borrow_volume_avg'] > borrow_volume_threshold)
-        & (enriched['spot_volume_avg'] > spot_volume_threshold)
-        & (enriched['spot_volume_avg'] > spot_volume_threshold)]
-    pre_filtered = pre_filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
+        universe_filter_window = hy_history.index
+        enriched['borrow_volume_avg'] = enriched.apply(lambda f:
+                                                       (hy_history.loc[
+                                                            universe_filter_window, f['underlying'] + '/rate/size'] *
+                                                        hy_history.loc[universe_filter_window, f.name + '/mark/o']).mean(),
+                                                       axis=1)
+        enriched['spot_volume_avg'] = enriched.apply(lambda f:
+                                                     (hy_history.loc[
+                                                         universe_filter_window, f['underlying'] + '/price/volume']).mean(),
+                                                     axis=1)
+        enriched['future_volume_avg'] = enriched.apply(lambda f:
+                                                       (hy_history.loc[
+                                                           universe_filter_window, f.name + '/price/volume']).mean(),
+                                                       axis=1)
 
-    # run a trajectory
-    optimized = pre_filtered
-    updated, marginFunc = update(optimized, point_in_time, hy_history, equity,
-                                 intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
-    previous_weights = optimized['E_intCarry'] \
-                       / (optimized['E_intCarry'].sum() if np.abs(optimized['E_intCarry'].sum()) > 0.1 else 0.1)
+        # ------- build derived data history
+        (intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow) = build_derived_history(
+            exchange, enriched, hy_history,
+            holding_period,  # to convert slippage into rate
+            signal_horizon)  # historical window for expectations)
+        updated, marginFunc = update(enriched, point_in_time, hy_history, equity,
+                                     intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
+        # final filter, needs some history and good avg volumes
+        pre_filtered = updated[
+            (~np.isnan(updated['E_intCarry']))
+            & (enriched['borrow_volume_avg'] > borrow_volume_threshold)
+            & (enriched['spot_volume_avg'] > spot_volume_threshold)
+            & (enriched['spot_volume_avg'] > spot_volume_threshold)]
+        pre_filtered = pre_filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
 
-    optimized=cash_carry_optimizer(exchange,updated,marginFunc,
-                                previous_weights=previous_weights,
-                                holding_period = holding_period,
-                                signal_horizon=signal_horizon,
-                                concentration_limit=concentration_limit,
-                                loss_tolerance=loss_tolerance,
-                                equity=equity,
-                                verbose=True
-                              )
+        # run a trajectory
+        optimized = pre_filtered
+        updated, marginFunc = update(optimized, point_in_time, hy_history, equity,
+                                     intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
+        previous_weights = optimized['E_intCarry'] \
+                           / (optimized['E_intCarry'].sum() if np.abs(optimized['E_intCarry'].sum()) > 0.1 else 0.1)
+
+        optimized=cash_carry_optimizer(exchange,updated,marginFunc,
+                                    previous_weights=previous_weights,
+                                    holding_period = holding_period,
+                                    signal_horizon=signal_horizon,
+                                    concentration_limit=concentration_limit,
+                                    loss_tolerance=loss_tolerance,
+                                    equity=equity,
+                                    verbose=True
+                                  )
 
     optimized.to_excel('optimal_live.xlsx')
     return optimized
@@ -108,14 +111,14 @@ def perp_vs_cash_backtest(  equity=1,
 
     # filtering params
     funding_volume_threshold = 1e5#5e5
-    spot_volume_threshold = 1e4#5e4
-    borrow_volume_threshold = 1e5#5e5
+    spot_volume_threshold = 5e4
+    borrow_volume_threshold = 5e5
     type_allowed='perpetual'
     max_nb_coins = 99
     carry_floor = 0.4
 
     # fee estimation params
-    slippage_override=0# TODO: 2e-4  #### this is given by mktmaker
+    slippage_override=2e-4# TODO: 2e-4  #### this is given by mktmaker
     slippage_scaler=1
     slippage_orderbook_depth=1000
 
@@ -174,7 +177,10 @@ def perp_vs_cash_backtest(  equity=1,
     previous_weights = optimized['E_intCarry'] \
                        / (optimized['E_intCarry'].sum() if np.abs(optimized['E_intCarry'].sum()) > 0.1 else 0.1)
 
-    trajectory=pd.DataFrame()
+    trajectory=pd.DataFrame(
+                    columns=pd.MultiIndex.from_tuples([],
+                    names=['time','field']))
+
     while point_in_time<backtest_end:
         updated,excess_margin=update(pre_filtered,point_in_time,hy_history,equity,
                        intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
@@ -203,30 +209,45 @@ def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
 def run_ladder(dirname='runs'):
     ladder = pd.DataFrame()
-    concentration_limit = [9,1,.5,.25]
-    holding_period = [timedelta(hours=h) for h in [1, 3, 6, 12]] + [timedelta(days=d) for d in [1, 2, 3, 4, 5, 6, 7]]
-    signal_horizon = [timedelta(hours=h) for h in [1, 12]] + [timedelta(days=d) for d in [1, 2, 3, 7, 30]]
-    for c in concentration_limit:
-        for hp in holding_period:
-            for sh in signal_horizon:
-                if sh < hp: continue
-                run_name = 'hold' + timedeltatostring(hp) + 'signal' + timedeltatostring(sh)
+    concentration_limit_list = [9,1,.5]
+    holding_period_list = [timedelta(hours=h) for h in [1]] + [timedelta(days=d) for d in [1, 2, 3, 7]]
+    signal_horizon_list = [timedelta(hours=h) for h in [1]] + [timedelta(days=d) for d in [1, 7, 30]]
+
+  #  accrual=pd.DataFrame(
+  #                  columns=pd.MultiIndex(
+  #                  names=['concentration_limit', 'holding_period', 'signal_horizon', 'time','field'],
+  #                  dtype=[float, timedelta, timedelta, datetime,str]),
+  #                  levels=[],codes=[])
+    run_list=[]
+    accrual_list=[]
+    for c in concentration_limit_list:
+        for h in holding_period_list:
+            for s in signal_horizon_list:
+                if s < h: continue
+                run_name = 'concentration_limit_'+ str(c)\
+                           +'_holding_period_' + timedeltatostring(h) \
+                           + '_signal_horizon_' + timedeltatostring(s)
                 trajectory=perp_vs_cash_backtest(equity=1,
-                                  signal_horizon=sh,
-                                  holding_period=hp,
+                                  signal_horizon=s,
+                                  holding_period=h,
                                   concentration_limit=c,
                                   loss_tolerance=0.05,
                                   marginal_coin_penalty=0.05,
                                   run_name=run_name)
-                ladder=diagnosis_checkpoint(ladder,trajectory, 'holding_period_signal_horizon',timedeltatostring(hp)+'_'+timedeltatostring(sh))
+                #accrual[(c, h, s,)] = trajectory  # [(t,f)]
+                #for t in trajectory.columns.get_level_values('time').unique():
+                #    for f in trajectory.columns.get_level_values('field').unique():
+                #        accrual[(c,h,s,t,f)]=trajectory[(t,f)]
+                run_list = run_list+[(c,h,s)]
+                accrual_list=accrual_list+[trajectory]
+                trajectory.to_pickle(dirname + '/runs_' + run_name + '.pickle')
 
-    ladder.to_pickle(dirname + '/runs.pickle')
+    #accrual.to_pickle(dirname + '/runs_'+datetime.now().strftime("%Y-%m-%d_%H-%M-%S")+'.pickle')
 
-perp_vs_cash_live(equity=1,
-                signal_horizon = timedelta(days=2),
-                holding_period = timedelta(days=1),
-                concentration_limit = 0.5,
-                loss_tolerance = 0.05,
-                marginal_coin_penalty = 0.05,
-                run_name='live')
+#perp_vs_cash_live(equity=1,
+#                signal_horizon = [timedelta(days=2)],
+#                holding_period = [timedelta(days=1)],
+#                concentration_limit = [0.5],
+#                exclusion_list=[],
+#                run_name='live')
 run_ladder()
