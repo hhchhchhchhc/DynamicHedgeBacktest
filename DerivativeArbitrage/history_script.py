@@ -52,7 +52,7 @@ def build_fine_history(dirname):
                                                        universe_filter_window, f.name + '/price/volume']).mean(),
                                                    axis=1)
 
-    hy_history.to_excel('15s_history.xlsx')
+    hy_history.to_parquet('15s_history.parquet')
     enriched.to_excel('15s_historymetadata.xlsx')
     return None
 

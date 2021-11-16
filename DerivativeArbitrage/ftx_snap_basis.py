@@ -85,7 +85,6 @@ def update(input_futures,point_in_time,history,equity,
     futures=pd.DataFrame(input_futures)
 
     ####### spot quantities. Not used by optimizer. Careful about foresight bias when using those !
-
     # add borrows
     futures['borrow']=futures['underlying'].apply(lambda f:history.loc[point_in_time,f + '/rate/borrow'])
     futures['lend'] = futures['underlying'].apply(lambda f:history.loc[point_in_time, f + '/rate/borrow'])*.9 # TODO:lending rate
@@ -115,17 +114,31 @@ def update(input_futures,point_in_time,history,equity,
 
     ####### expectations. This is what optimizer uses.
 
-    # carry expectation at point_in_time. -1h to avoid foresight.
-    futures['intLongCarry']  = intLongCarry.loc[point_in_time-timedelta(hours=1)]
-    futures['intShortCarry'] = intShortCarry.loc[point_in_time-timedelta(hours=1)]
-    futures['intUSDborrow']  = intUSDborrow.loc[point_in_time-timedelta(hours=1)]
-    futures['E_long']        = E_long.loc[point_in_time-timedelta(hours=1)]
-    futures['E_short']      = E_short.loc[point_in_time-timedelta(hours=1)]
-    futures['E_intUSDborrow']  = E_intUSDborrow.loc[point_in_time-timedelta(hours=1)]
+    # carry expectation at point_in_time. # TODO: no need for -1h to avoid foresight, as funding is a TWAP
+    futures['intLongCarry']  = intLongCarry.loc[point_in_time]
+    futures['intShortCarry'] = intShortCarry.loc[point_in_time]
+    futures['intUSDborrow']  = intUSDborrow.loc[point_in_time]
+    futures['E_long']        = E_long.loc[point_in_time]
+    futures['E_short']      = E_short.loc[point_in_time]
+    futures['E_intUSDborrow']  = E_intUSDborrow.loc[point_in_time]
 
-    # initialize optimizer functions
-    excess_margin = ExcessMargin(futures,equity=equity,
-                 long_blowup=0.1, short_blowup=0.2, nb_blowups=3)
+    ##### assume direction only depends on sign(E[long]-E[short]), no integral.
+    # Freeze direction into Carry_t and assign max weights.
+    futures['direction'] = 1
+    futures.loc[
+        futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] < 0,
+        'direction'] = -1
+
+    # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
+    futures['intCarry']=futures['intLongCarry']
+    futures.loc[futures['direction'] < 0,'intCarry'] = futures.loc[futures['direction'] < 0,'intShortCarry']
+    futures['E_intCarry'] = futures['E_long']
+    futures.loc[futures['direction'] < 0,'E_intCarry'] = futures.loc[futures['direction'] < 0, 'E_short']
+    # TODO: covar pre-update
+    # C_int = integralCarry_t.ewm(times=hy_history.index, halflife=signal_horizon, axis=0).cov().loc[point_in_time]
+
+    ##### initialize optimizer functions
+    excess_margin = ExcessMargin(futures,equity=equity)
     return futures,excess_margin
 
 # return rolling expectations of integrals
@@ -250,27 +263,12 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
                   verbose=False):             # use external rather than order book
     futures=pd.DataFrame(input_futures)
 
-    ##### assume direction only depends on sign(E[long]-E[short]), no integral.
-    
-    # Freeze direction into Carry_t and assign max weights.
-    futures['direction'] = 1
-    futures.loc[
-        futures['E_long']*futures['MaxLongWeight']-futures['E_short']*futures['MaxShortWeight']<0,
-        'direction'] =-1
-    
-    # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
-    intCarry=futures['intLongCarry']
-    intCarry[futures['direction'] < 0] = futures.loc[futures['direction'] < 0,'intShortCarry']
-    intUSDborrow=futures['intUSDborrow'].values[0]
-    E_intCarry = futures['E_long']
-    E_intCarry[futures['direction'] < 0] = futures.loc[futures['direction'] < 0, 'E_short']
-    E_intUSDborrow=futures['E_intUSDborrow'].values[0]
-    # TODO: covar pre-update
-    # C_int = integralCarry_t.ewm(times=hy_history.index, halflife=signal_horizon, axis=0).cov().loc[point_in_time]
-
     ###### then use in convex optimiziation with lagrange multipliers w>0 and sum w=1
     # https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
-
+    intCarry=futures['intCarry'].values
+    intUSDborrow=futures['intUSDborrow'].values[0]
+    E_intCarry = futures['E_intCarry'].values
+    E_intUSDborrow=futures['E_intUSDborrow'].values[0]
     ### objective is E_int but:
     # - do not earn USDborrow if usd balance (1-sum)>0
     buy_slippage=futures['buy_slippage'].values
@@ -366,6 +364,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     # TODO: covar pre-update
     #futures.loc['total', 'lossProbability'] = loss_tolerance - loss_tolerance_constraint['fun'](res['x'])
     summary.loc['total', 'transactionCost'] = summary['transactionCost'].sum()
+    summary.columns.names=['field']
 
     summary['absWeight']=summary['optimalWeight'].apply(np.abs,axis=1)
     if verbose:

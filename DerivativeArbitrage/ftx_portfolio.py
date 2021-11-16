@@ -3,6 +3,9 @@ import numpy as np
 import pandas as pd
 from ftx_utilities import *
 from ftx_ftx import *
+NB_BLOWUPS=1
+SHORT_BLOWUP=0.2
+LONG_BLOWUP=0.1
 
 ## calc various margins for a cash and carry.
 # weights is in %of equity
@@ -10,7 +13,7 @@ from ftx_ftx import *
 # TODO: speed up with nd.array
 class ExcessMargin:
     def __init__(self,futures,equity,
-                    long_blowup=0.1,short_blowup=0.2,nb_blowups=3,params={'positive_carry_on_balances': False}):
+                    long_blowup=LONG_BLOWUP,short_blowup=SHORT_BLOWUP,nb_blowups=NB_BLOWUPS,params={'positive_carry_on_balances': False}):
         ## inputs
         self._account_leverage=futures['account_leverage'].values[0]
         self._collateralWeight=futures['collateralWeight'].values

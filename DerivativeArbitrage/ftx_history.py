@@ -25,11 +25,11 @@ def build_history(futures,exchange,
     future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe,dirname)
                for (i, f) in futures.iterrows()],
               join='outer',axis=1)
-    future_price_data=pd.concat([price_history(f['symbol'], exchange, end, start, timeframe,dirname)
-               for (i, f) in futures.iterrows()],
+    future_price_data=pd.concat([price_history(f, exchange, end, start, timeframe,dirname)
+               for f in futures['symbol']],
               join='outer',axis=1)
-    spot_price_data = pd.concat([price_history(f['underlying']+'/USD', exchange, end, start, timeframe,dirname)
-                                   for (i, f) in futures.iterrows()],
+    spot_price_data = pd.concat([price_history(f+'/USD', exchange, end, start, timeframe,dirname)
+                                   for f in futures['underlying'].unique()],
                                   join='outer', axis=1)
 
     parquet_filename = dirname+'/allborrows.parquet'

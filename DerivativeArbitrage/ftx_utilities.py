@@ -96,15 +96,16 @@ def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':Fals
 
 def open_exchange(exchange_name):
     if exchange_name=='ftx':
-        exchange = ccxt.ftx({ ## David personnal
-            'enableRateLimit': True,
-            'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
-            'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
-        })
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
             'apiKey': 'qhAwNo1Ttub8LTNWjyIWH7Rjecm_JkIOBVu-uffR',
             'secret': 'L9GaUmIl7jRAUfh56c69i-jhAlgrGfZJTvCmvoc2',
+            'FTX-SUBACCOUNT': 'CashAndCarry'
+        })
+        exchange = ccxt.ftx({ ## David personnal
+            'enableRateLimit': True,
+            'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
+            'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
     if exchange_name == 'binance':
         exchange = ccxt.binance({
@@ -117,15 +118,16 @@ def open_exchange(exchange_name):
     #exchange['secret']='none of your buisness'
     return  exchange
 
-def optional_debug_info(datatype,exchange = "ftx", params={}):
-    if  params['pickleit']:
-        pickleit(data,"C:/Users/david/Dropbox/mobilier/crypto/"+exchange + datatype +".pickle","wb")
-    if params['excelit']:
-        try:
-            data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange + datatype + ".xlsx")
-        except:###usually because file is open
-            data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange + datatype + "copy.xlsx")
-    return None
+def diagnosis_checkpoint(accruer,new_data,level_name,new_label):
+    if not level_name in new_data.columns.names:
+        new_accruer = pd.DataFrame(
+            columns=pd.MultiIndex.from_tuples([tuple([new_label]+[c]) for c in new_data.columns],
+                                               names=[level_name]+new_data.columns.names))
+        new_accruer[(new_label,)] = new_data
+        accruer.join(new_accruer, how='outer')
+    else:
+        accruer[(new_label,)] = new_data
+    return accruer
 
 #a=openit('ftxStopout.pickle')
 #outputit(a,'ftx','ftxstopout',params={'pickleit':False,'excelit':True})
