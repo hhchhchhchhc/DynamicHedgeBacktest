@@ -70,7 +70,8 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             tob = pd.read_csv(
-                _config.source_directory + 'data/inputs/' + date_string + f'_{self.instrument_id}_' + self.symbol + '_tobs.csv')
+                _config.source_directory + 'data/inputs/' + date_string + f'_{self.instrument_id}_' + self.symbol +
+                '_tobs.csv')
             tobs = tobs.append(tob)
         return tobs
 
@@ -80,7 +81,8 @@ class Backtest:
             date = start_date + datetime.timedelta(days=days)
             date_string = date.strftime('%Y%m%d')
             trade = pd.read_csv(
-                _config.source_directory + 'data/inputs/' + date_string + f'_{self.instrument_id}_' + self.symbol + '_trades.csv')
+                _config.source_directory + 'data/inputs/' + date_string + f'_{self.instrument_id}_' + self.symbol +
+                '_trades.csv')
             trades = trades.append(trade)
         return trades
 
@@ -204,7 +206,7 @@ class Backtest:
         self.price_buffer.append(trade.price)
         self.size_buffer.append(trade.size)
 
-    def _check_for_end_of_bar(self, timestamp: datetime.datetime) -> None:
+    def _check_for_end_of_bar(self, timestamp: int) -> None:
         if self.bar == Bar.ONE_SECOND:
             self._check_for_end_of_time_bar(timestamp)
         elif self.bar == Bar.TEN_TICKS:
@@ -219,12 +221,12 @@ class Backtest:
         if self.ask is not None and self.market_bid is not None and self.ask <= self.market_bid:
             self._passive_sell()
 
-    def _check_for_end_of_time_bar(self, timestamp: datetime.datetime) -> None:
+    def _check_for_end_of_time_bar(self, timestamp: int) -> None:
         if self.time_bar_start_timestamp is None:
-            self.time_bar_start_timestamp = int((timestamp // 1e3)*1e3)
+            self.time_bar_start_timestamp = int((timestamp // 1e3) * 1e3)
         if timestamp - self.time_bar_start_timestamp >= 1000:
             self._end_of_bar()
-            self.time_bar_start_timestamp = int((timestamp // 1e3)*1e3)
+            self.time_bar_start_timestamp = int((timestamp // 1e3) * 1e3)
 
     def _check_for_end_of_tick_bar(self) -> None:
         self.tick_bar_counter = self.tick_bar_counter + 1
@@ -247,7 +249,6 @@ class Backtest:
         elif self.strategy == Strategy.ROLL_MODEL:
             self._end_of_bar_roll_model()
 
-        
         if self.position >= self.max_position:
             self.bid = None
         if self.position <= -self.max_position:
@@ -257,12 +258,12 @@ class Backtest:
             self.spread = self.ask - self.bid
         else:
             self.spread = None
-        
+
         if self.bid is not None and self.market_ask is not None and self.bid >= self.market_ask:
             self._aggressive_buy()
         if self.ask is not None and self.market_bid is not None and self.ask <= self.market_bid:
             self._aggressive_sell()
-        
+
         self.price_buffer = []
         self.size_buffer = []
         self._record_backtest_results()
@@ -276,7 +277,7 @@ class Backtest:
                 low = low - 1
             self.skew = self.strategy_parameters['nu'] * (self.position / self.max_position) * (high - low)
             if self.skew > 0:
-                self.bid = int(low  - self.skew)
+                self.bid = int(low - self.skew)
                 self.ask = int(high)
             else:
                 self.bid = int(low)
@@ -307,28 +308,22 @@ class Backtest:
                 x = delta_vwaps[~np.isnan(delta_vwaps)]
                 autocovariance = _get_autocovariance(x, 1)
                 self.sigma = delta_vwaps.std()
-                #if self.sigma is not None and autocovariance <0:
-                #    print('timestamp/sigma', self.time_bar_start_timestamp, self.sigma)
-                #    print(self.vwap_buffer)
-                #    print(delta_vwaps)
-                #    print(autocovariance)
-                #    print(np.sqrt(-1 * autocovariance))
                 if self.strategy_parameters['trade_on_trend']:
                     trend = self.vwap_buffer[-1] - self.vwap_buffer[0]
-                
+
             self.bid = None
             self.ask = None
             if self.sigma is not None and autocovariance < 0:
-                spread = np.sqrt(-1 * autocovariance)
-                self.ask = int(self.vwap + spread)
-                self.bid = int(self.vwap - spread)
+                half_spread = np.sqrt(-1 * autocovariance)
+                self.ask = int(np.ceil(self.vwap + half_spread))
+                self.bid = int(np.floor(self.vwap - half_spread))
             elif trend is not None:
-                spread = np.sqrt(autocovariance)
+                half_spread = np.sqrt(autocovariance)
                 if trend > 0:
-                    self.bid = int(self.vwap - spread)
+                    self.bid = int(np.floor(self.vwap - half_spread))
                 elif trend < 0:
-                    self.ask = int(self.vwap + spread)
-            
+                    self.ask = int(np.ceil(self.vwap + half_spread))
+
     def _passive_buy(self) -> None:
         self._buy(self.bid)
 
@@ -336,8 +331,8 @@ class Backtest:
         self._buy(self.market_ask)
 
     def _buy(self, price: int) -> None:
-        self.cash = self.cash - (self.quote_size * price)
-        self.position = self.position + self.quote_size
+        self.cash -= (self.quote_size * price)
+        self.position += self.quote_size
         self.volume_traded_buffer.append(self.quote_size)
         self.volume_traded_dollar_buffer.append(self.quote_size * price)
         self.bid = None
@@ -349,8 +344,8 @@ class Backtest:
         self._sell(self.market_bid)
 
     def _sell(self, price):
-        self.cash = self.cash + (self.quote_size * price)
-        self.position = self.position - self.quote_size
+        self.cash += (self.quote_size * price)
+        self.position -= self.quote_size
         self.volume_traded_buffer.append(self.quote_size)
         self.volume_traded_dollar_buffer.append(self.quote_size * price)
         self.ask = None
@@ -380,7 +375,7 @@ class Backtest:
         if len(self.vwap_buffer) >= self.vwap_horizon:
             self.short_ma = np.mean(self.vwap_buffer)
         if self.short_ma is not None and self.vwap is not None:
-            indicator = (self.vwap - self.short_ma)/self.vwap
+            indicator = (self.vwap - self.short_ma) / self.vwap
             if self.alpha_direction == _config.Direction.NEUTRAL and indicator > 8e-4:
                 self.alpha_direction = _config.Direction.LONG
             if self.alpha_direction == _config.Direction.NEUTRAL and indicator < -8e-4:
