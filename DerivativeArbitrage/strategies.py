@@ -114,9 +114,9 @@ def perp_vs_cash_backtest(  equity=1,
 
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
-def run_ladder(verbose=True):
-    holding_period = [timedelta(days=d) for d in [1,2,3,4,5,6,7]]+[timedelta(hours=h) for h in [1,3,6,12]]
-    signal_horizon = [timedelta(days=d) for d in [1, 2, 3, 4, 5, 6, 7]] + [timedelta(hours=h) for h in [1, 3, 6, 12]]
+def run_ladder(dirname='runs'):
+    holding_period = [timedelta(days=d) for d in [1, 2, 3, 4, 5, 6, 7]] + [timedelta(hours=h) for h in [1, 3, 6, 12]]
+    signal_horizon = [timedelta(days=d) for d in [1, 2, 3, 7, 30]] + [timedelta(hours=h) for h in [1, 12]]
     ladder=pd.DataFrame()
     for hp in holding_period:
         for sh in signal_horizon:
@@ -132,5 +132,9 @@ def run_ladder(verbose=True):
             run=pd.DataFrame(columns=pd.MultiIndex.from_tuples([(run_name,c[0],c[1]) for c in trajectory.columns],names=['run','time','field']))
             run[(run_name,)]=trajectory
             ladder=ladder.join(run,how='outer')
+
+            pickleit(run,dirname+'/runs.pickle',mode="ab+")
+
+        ladder.to_parquet(dirname+'/runs_hold_'+timedeltatostring(hp)+'.parquet')
 
 run_ladder()
