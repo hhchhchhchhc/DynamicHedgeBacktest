@@ -11,7 +11,7 @@ import xlsxwriter
 
 from datetime import datetime,timezone,timedelta,date
 import dateutil
-
+import itertools
 
 os.chdir('C:\\Users\\david\\Dropbox\\mobilier\\crypto')
 
@@ -124,7 +124,7 @@ def diagnosis_checkpoint(accruer,new_data,level_name,new_label):
             columns=pd.MultiIndex.from_tuples([tuple([new_label]+[c]) for c in new_data.columns],
                                                names=[level_name]+new_data.columns.names))
         new_accruer[(new_label,)] = new_data
-        accruer.join(new_accruer, how='outer')
+        accruer=accruer.join(new_accruer, how='outer')
     else:
         accruer[(new_label,)] = new_data
     return accruer

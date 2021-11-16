@@ -106,10 +106,8 @@ def update(input_futures,point_in_time,history,equity,
     # spot carries
     futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
     futures['carryShort']=-(futures['basis_mid']-futures['quote_borrow']+futures['borrow'])
-    futures['direction_mid']=1
-    futures.loc[futures['carryShort']>futures['carryLong'],'direction_mid']=-1
     futures['carry_mid'] = futures['carryLong']
-    futures.loc[futures['direction_mid']>0,'carry_mid'] = futures['carryShort']
+    futures.loc[futures['carryShort']>futures['carryLong'],'carry_mid']=futures['carryShort']
     futures=futures.drop(columns=['carryLong','carryShort'])
 
     ####### expectations. This is what optimizer uses.
@@ -119,8 +117,8 @@ def update(input_futures,point_in_time,history,equity,
     futures['intShortCarry'] = intShortCarry.loc[point_in_time]
     futures['intUSDborrow']  = intUSDborrow.loc[point_in_time]
     futures['E_long']        = E_long.loc[point_in_time]
-    futures['E_short']      = E_short.loc[point_in_time]
-    futures['E_intUSDborrow']  = E_intUSDborrow.loc[point_in_time]
+    futures['E_short']       = E_short.loc[point_in_time]
+    futures['E_intUSDborrow']= E_intUSDborrow.loc[point_in_time]
 
     ##### assume direction only depends on sign(E[long]-E[short]), no integral.
     # Freeze direction into Carry_t and assign max weights.
