@@ -8,6 +8,8 @@ import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import xlsxwriter
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from datetime import datetime,timezone,timedelta,date
 import dateutil
@@ -96,23 +98,25 @@ def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':Fals
 
 def open_exchange(exchange_name):
     if exchange_name=='ftx':
-        exchange = ccxt.ftx({  ## Benoit personnal
-            'enableRateLimit': True,
-            'apiKey': 'qhAwNo1Ttub8LTNWjyIWH7Rjecm_JkIOBVu-uffR',
-            'secret': 'L9GaUmIl7jRAUfh56c69i-jhAlgrGfZJTvCmvoc2',
-            'FTX-SUBACCOUNT': 'CashAndCarry'
-        })
         exchange = ccxt.ftx({ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
-    if exchange_name == 'binance':
+    elif exchange_name == 'ftx_benoit':
+        exchange = ccxt.ftx({  ## Benoit personnal
+            'enableRateLimit': True,
+            'apiKey': 'yJp-MCMT5wJW65CbD8myjkAZsAbUqlnXF3EeeZsZ',
+            'secret': '6s2vWNcZrwoMc8otJN4h4semrdHyKBLohqaq2H3w',
+            #'FTX-SUBACCOUNT': 'CashAndCarry'
+        })
+    elif exchange_name == 'binance':
         exchange = ccxt.binance({
         'enableRateLimit': True,
         'apiKey': 'pMaBWUoEVqsRJXZJoQ31JkA13QJHNRZyb6N0uZSAlwJscBMXprjgDQqKAfOLdGPK',
         'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
     })
+    else: print('what exchange?')
     print(exchange.requiredCredentials)  # prints required credentials
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
@@ -134,3 +138,18 @@ def diagnosis_checkpoint(accruer,new_data,level_name,new_label):
 #a.columns
 
 #sd=from_parquet("history.parquet")
+def compile_runs(dirname='runs/'):
+    result=pd.DataFrame()
+    for filename in [filename for filename in os.listdir(dirname) if "runs_" in filename]:
+        df=pd.read_pickle(dirname+filename).T
+        df['concentration_limit']=float(filename.split('_')[3])
+        df['holding_period'] = pd.Timedelta(filename.split('_')[6])
+        df['signal_horizon'] = pd.Timedelta(filename.split('_')[9].split('.')[0])
+        df['time']=df.apply(lambda f: f.name[0],axis=1)
+        df['field'] = df.apply(lambda f: f.name[1], axis=1)
+        result=result.append(df.set_index(['concentration_limit',
+                                             'holding_period',
+                                             'signal_horizon',
+                                             'time','field']))
+
+    return result
