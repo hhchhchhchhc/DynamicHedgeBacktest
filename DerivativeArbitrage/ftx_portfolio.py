@@ -4,8 +4,8 @@ import pandas as pd
 from ftx_utilities import *
 from ftx_ftx import *
 NB_BLOWUPS=1
-SHORT_BLOWUP=0.2
-LONG_BLOWUP=0.1
+SHORT_BLOWUP=0.3
+LONG_BLOWUP=0.15
 
 ## calc various margins for a cash and carry.
 # weights is in %of equity
@@ -302,8 +302,8 @@ def process_fills(exchange,spot_fills,future_fills):
 
     return result
 
-def run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(days=1)):
-    exchange=open_exchange('ftx')
+def run_fills_analysis(exchange_name='ftx', end = datetime.now(),start = datetime.now()- timedelta(days=30)):
+    exchange=open_exchange(exchange_name)
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
 
     fill_analysis = pd.DataFrame()
@@ -313,6 +313,7 @@ def run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(da
     funding_paid = pd.DataFrame(exchange.privateGetFundingPayments(
                         {'start_time':int(start.timestamp()),'end_time':int(end.timestamp())}
                         )['result'],dtype=float)
+    if all_fills.empty: return (fill_analysis,all_fills)
     for future in set(all_fills['market']).intersection(set(futures['name'])):
         underlying=future.split('-')[0]
         spot_fills=all_fills[all_fills['market']==underlying+'/USD']
@@ -330,7 +331,9 @@ def run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(da
     return (fill_analysis,all_fills)
 
 if False:
-    (fill_analysis, all_fills)=run_fills_analysis(end = datetime.now(),start = datetime.now()- timedelta(days=1))
-    fill_analysis.to_excel('fill_analysis.xlsx')
-    all_fills.to_excel('all_fills.xlsx')
-
+    (fill_analysis, all_fills)=run_fills_analysis('ftx',
+            end = datetime.now(),
+            start = datetime.now()- timedelta(days=7))
+    with pd.ExcelWriter('fills.xlsx', engine='xlsxwriter') as writer:
+        fill_analysis.to_excel(writer,sheet_name='fill_analysis')
+        all_fills.to_excel(writer,sheet_name='all_fills')
