@@ -5,10 +5,11 @@ from concurrent.futures import ProcessPoolExecutor
 
 def main():
     my_backtest = Backtest()
-    # my_backtest.run(0)
-    with ProcessPoolExecutor(8) as pool:
-        for latency in [0, 10000000, 25000000, 50000000, 100000000, 150000000, 300000000, 450000000]:
-            pool.submit(my_backtest.run, latency)
+    my_backtest.run(150000000, True)
+    my_backtest.run(150000000, False)
+    # with ProcessPoolExecutor(8) as pool:
+    #     for latency in [0, 10000000, 25000000, 50000000, 100000000, 150000000, 300000000, 450000000]:
+    #         pool.submit(my_backtest.run, latency)
 
 
 if __name__ == '__main__':
