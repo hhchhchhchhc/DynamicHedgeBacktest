@@ -6,6 +6,7 @@ from ftx_utilities import *
 from ftx_ftx import *
 from dateutil import rrule
 
+# all rates annualized, all volumes daily
 def build_history(futures,exchange,
         timeframe='1h',
         end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
@@ -130,7 +131,7 @@ def funding_history(future,exchange,
 
     return data
 
-#### annualized rates for futures and perp
+#### annualized rates for futures and perp, volumes are daily
 def rate_history(future,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
@@ -152,12 +153,13 @@ def rate_history(future,exchange,
 
     while end_time >= start.timestamp():
         if start_time < start.timestamp(): start_time = start.timestamp()
-        new_mark = fetch_ohlcv(exchange, future['symbol'], timeframe=timeframe, start=start_time, end=end_time)
+        new_mark = fetch_ohlcv(exchange, future['symbol'], timeframe=timeframe, start=start_time, end=end_time) # volume is for max_mark_data*resolution
         new_indexes = exchange.publicGetIndexesMarketNameCandles(
             params={'start_time': start_time, 'end_time': end_time, 'market_name': future['underlying'],
                     'resolution': resolution})['result']
 
         if (len(new_mark) == 0): break
+
         mark.extend(new_mark)
         indexes.extend(new_indexes)
         end_time = (datetime.fromtimestamp(start_time) - timedelta(seconds=int(resolution))).timestamp()
@@ -168,10 +170,12 @@ def rate_history(future,exchange,
 
     ###### indexes
     indexes = pd.DataFrame(indexes, dtype=float).astype(dtype={'time': 'int64'}).set_index('time')
-    indexes = indexes.drop(columns=['startTime', 'volume'])
+    indexes['volume'] = indexes['volume']* 24 * 3600 / int(resolution)
+    indexes = indexes.drop(columns=['startTime', 'volume']) # volume is often none
 
     ###### marks
     mark = pd.DataFrame(columns=column_names, data=mark).astype(dtype={'t': 'int64'}).set_index('t')
+    mark['volume']=mark['volume']*24*3600/int(resolution)
 
     mark.columns = ['mark/' + column for column in mark.columns]
     indexes.columns = ['indexes/' + column for column in indexes.columns]
@@ -239,6 +243,7 @@ def price_history(symbol,exchange,
 
     ###### spot
     data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
+    data['volume'] = data['volume'] * 24 * 3600 / int(resolution)
     data.columns = [symbol.replace('/USD','') + '/price/' + column for column in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()

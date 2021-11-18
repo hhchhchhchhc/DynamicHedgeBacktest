@@ -118,6 +118,7 @@ def fetch_coin_details(exchange):
 
     return all
 
+# time in mili, rate annualized, size 1h(?)
 def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}):
     request = {
         'coin': coin,
@@ -134,6 +135,7 @@ def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}):
     result = pd.DataFrame(exchange.safe_value(response, 'result', [])).astype({'coin':str,'time':str,'size':float,'rate':float})
     result['time']=result['time'].apply(lambda t:dateutil.parser.isoparse(t).timestamp()*1000)
     result['rate']*=24*365.25
+    result['size']*=24 # assume borrow size is for the hour
 
     return result
 

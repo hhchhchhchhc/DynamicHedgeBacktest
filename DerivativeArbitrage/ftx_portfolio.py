@@ -3,9 +3,6 @@ import numpy as np
 import pandas as pd
 from ftx_utilities import *
 from ftx_ftx import *
-NB_BLOWUPS=1
-SHORT_BLOWUP=0.3
-LONG_BLOWUP=0.15
 
 ## calc various margins for a cash and carry.
 # weights is in %of equity

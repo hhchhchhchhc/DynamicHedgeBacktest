@@ -10,9 +10,6 @@ def build_fine_history(dirname):
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
 
     # filtering params
-    funding_volume_threshold = 5e5
-    spot_volume_threshold = 5e4
-    borrow_volume_threshold = 5e5
     type_allowed = 'future'
     max_nb_coins = 15
     carry_floor = 0.4
@@ -25,8 +22,8 @@ def build_fine_history(dirname):
     holding_period=timedelta(days=7)
 
     # backtest params
-    backtest_start = datetime(2021, 10, 1)
-    backtest_end = datetime.now()
+    backtest_start = datetime(2021, 9, 20)
+    backtest_end = datetime(2021, 11, 16)
 
     ## ----------- enrich, get history, filter
     enriched = enricher(exchange, futures, holding_period, equity=equity,
@@ -52,15 +49,15 @@ def build_fine_history(dirname):
                                                        universe_filter_window, f.name + '/price/volume']).mean(),
                                                    axis=1)
 
-    hy_history.to_parquet('15s_history.parquet')
-    enriched.to_excel('15s_historymetadata.xlsx')
+    hy_history.to_parquet(dirname+'/history.parquet')
+    enriched.to_excel(dirname+'/history.xlsx')
     return None
 
-build_fine_history('archived data/ftx futures')
+build_fine_history('archived data/omg')
 i=0
 while i<0:
     try:
-        build_fine_history('archived data/ftx futures')
+        build_fine_history('archived data/omg')
     except:
         sleep(60)
     i=i+1
