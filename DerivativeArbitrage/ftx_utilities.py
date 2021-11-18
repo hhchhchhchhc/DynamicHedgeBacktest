@@ -16,19 +16,9 @@ import dateutil
 import itertools
 
 os.chdir('C:\\Users\\david\\Dropbox\\mobilier\\crypto')
-sceening_mode = 'wide'
 NB_BLOWUPS = 3
 SHORT_BLOWUP = 0.3
 LONG_BLOWUP = 0.15
-BORROW_DECILE = 0.1
-if sceening_mode=='wide':
-    FUTURE_VOLUME_THRESHOLD = 2e5
-    SPOT_VOLUME_THRESHOLD = 2e5
-    BORROW_VOLUME_THRESHOLD = 2e5
-elif sceening_mode=='tight':
-    FUTURE_VOLUME_THRESHOLD = 5e6
-    SPOT_VOLUME_THRESHOLD = 5e6
-    BORROW_VOLUME_THRESHOLD = 5e6
 
 ########## only for dated futures
 def calc_basis(f,s,T,t): # T is tring, t is date

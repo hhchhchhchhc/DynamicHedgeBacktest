@@ -158,14 +158,14 @@ def rate_history(future,exchange,
             params={'start_time': start_time, 'end_time': end_time, 'market_name': future['underlying'],
                     'resolution': resolution})['result']
 
-        if (len(new_mark) == 0): break
+        if ((len(new_indexes) == 0)|(len(new_mark) == 0)): break
 
         mark.extend(new_mark)
         indexes.extend(new_indexes)
         end_time = (datetime.fromtimestamp(start_time) - timedelta(seconds=int(resolution))).timestamp()
         start_time = (datetime.fromtimestamp(end_time) - timedelta(
             seconds=max_mark_data * int(resolution))).timestamp()
-
+    if ((len(indexes) == 0) | (len(mark) == 0)): return pd.DataFrame()
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
     ###### indexes
