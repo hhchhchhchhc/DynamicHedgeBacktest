@@ -9,6 +9,57 @@ import seaborn as sns
 import ccxt
 #from sklearn import *
 
+def refresh_universe(exchange_name,sceening_mode):
+    filename = sceening_mode+'.xlsx'
+    if os.path.isfile(filename): return pd.read_excel(filename)
+
+    exchange=open_exchange(exchange_name)
+    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
+    markets=exchange.fetch_markets()
+
+    universe_start = datetime(2021, 6, 1)
+    universe_end = datetime(2021, 11, 1)
+    borrow_decile = 0.1
+    #type_allowed='perpetual'
+    if sceening_mode == 'wide':
+        future_volume_threshold = 2e5
+        spot_volume_threshold = 2e5
+        borrow_volume_threshold = 2e5
+    elif sceening_mode == 'tight':
+        future_volume_threshold = 5e6
+        spot_volume_threshold = 5e6
+        borrow_volume_threshold = 5e6
+
+   # qualitative screening
+    futures = futures[
+        (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
+        & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
+        & (futures['tokenizedEquity'] != True)
+        & (futures['spotMargin'] == True)]
+
+    # volume screening
+    hy_history = build_history(futures, exchange,
+                               timeframe='1h', end=universe_end, start=universe_start,
+                               dirname='archived data/universe')
+    universe_filter_window=hy_history[universe_start:universe_end].index
+    futures['borrow_volume_decile'] = futures.apply(lambda f:
+                            (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']*hy_history.loc[universe_filter_window,f.name+'/mark/o']).quantile(q=borrow_decile),axis=1)
+    futures['spot_volume_avg'] = futures.apply(lambda f:
+                            (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean(),axis=1)
+    futures['future_volume_avg'] = futures.apply(lambda f:
+                            (hy_history.loc[universe_filter_window,f.name + '/price/volume']).mean(),axis=1)
+
+    futures = futures[
+          (futures['borrow_volume_decile'] > borrow_volume_threshold)
+        & (futures['spot_volume_avg'] > spot_volume_threshold)
+        & (futures['future_volume_avg'] > future_volume_threshold)]
+
+    futures.to_excel(filename)
+
+    return futures['symbol'].values
+refresh_universe('ftx','wide')
+refresh_universe('ftx','tight')
+
 def perp_vs_cash_live(equity=10000,
                 signal_horizon = [timedelta(days=7)],
                 holding_period = [timedelta(days=2)],
@@ -28,9 +79,7 @@ def perp_vs_cash_live(equity=10000,
     point_in_time = (datetime.now()-timedelta(hours=0)).replace(minute=0,second=0,microsecond=0)
 
     # filtering params
-    funding_volume_threshold = FUTURE_VOLUME_THRESHOLD
-    spot_volume_threshold = SPOT_VOLUME_THRESHOLD
-    borrow_volume_threshold = BORROW_VOLUME_THRESHOLD
+    universe=refresh_universe('ftx', 'wide')
     type_allowed = 'perpetual'
     max_nb_coins = 99
     carry_floor = 0.4
@@ -53,21 +102,6 @@ def perp_vs_cash_live(equity=10000,
                                    timeframe='1h', end=point_in_time, start=point_in_time-signal_horizon-holding_period,
                                    dirname='live_parquets')
 
-        universe_filter_window = hy_history.index
-        enriched['borrow_volume_decile'] = enriched.apply(lambda f:
-                                                       (hy_history.loc[
-                                                            universe_filter_window, f['underlying'] + '/rate/size'] *
-                                                        hy_history.loc[universe_filter_window, f.name + '/mark/o']).quantile(q=BORROW_DECILE),
-                                                       axis=1)
-        enriched['spot_volume_avg'] = enriched.apply(lambda f:
-                                                     (hy_history.loc[
-                                                         universe_filter_window, f['underlying'] + '/price/volume']).mean(),
-                                                     axis=1)
-        enriched['future_volume_avg'] = enriched.apply(lambda f:
-                                                       (hy_history.loc[
-                                                           universe_filter_window, f.name + '/price/volume']).mean(),
-                                                       axis=1)
-
         # ------- build derived data history
         (intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow) = build_derived_history(
             exchange, enriched, hy_history,
@@ -78,9 +112,8 @@ def perp_vs_cash_live(equity=10000,
         # final filter, needs some history and good avg volumes
         pre_filtered = updated[
             (~np.isnan(updated['E_intCarry']))
-            & (enriched['borrow_volume_decile'] > BORROW_VOLUME_THRESHOLD)
-            & (enriched['spot_volume_avg'] > SPOT_VOLUME_THRESHOLD)
-            & (enriched['future_volume_avg'] > FUTURE_VOLUME_THRESHOLD)]
+            & (updated['type']==type_allowed)
+            & (updated['symbol'].isin(universe['symbol']))]
         pre_filtered = pre_filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
 
         # run a trajectory
@@ -97,35 +130,35 @@ def perp_vs_cash_live(equity=10000,
                                     concentration_limit=concentration_limit,
                                     loss_tolerance=loss_tolerance,
                                     equity=equity,
-                                    verbose=True,
-                                    dirname = run_dir
+                                    verbose=True
                                   )
 
     optimized.to_excel('optimal_live.xlsx')
     return optimized
 
 
-def perp_vs_cash_backtest(  equity=1,
+def perp_vs_cash_backtest(
+                equity=1,
                 signal_horizon = timedelta(days=7),
                 holding_period = timedelta(days=7),
+                slippage_override=2e-4,# TODO: 2e-4  #### this is given by mktmaker
                 concentration_limit = 99,
-                loss_tolerance = 0.05,
-                marginal_coin_penalty = 0.05,
                 run_dir=''):
+    if os.path.isdir(run_dir):
+        for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
+    else: os.mkdir(run_dir)
+
     exchange=open_exchange('ftx')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
 
     # filtering params
-    funding_volume_threshold = FUNDING_VOLUME_THRESHOLD
-    spot_volume_threshold = SPOT_VOLUME_THRESHOLD
-    borrow_volume_threshold = BORROW_VOLUME_THRESHOLD
+    universe = refresh_universe('ftx', 'wide')
     type_allowed='perpetual'
     max_nb_coins = 99
     carry_floor = 0.4
 
     # fee estimation params
-    slippage_override=2e-4# TODO: 2e-4  #### this is given by mktmaker
     slippage_scaler=1
     slippage_orderbook_depth=1000
 
@@ -153,14 +186,6 @@ def perp_vs_cash_backtest(  equity=1,
         hy_history = build_history(enriched,exchange,timeframe='1h',end=backtest_end,start=backtest_start-signal_horizon-holding_period)
         to_parquet(hy_history,"temporary_parquets/history.parquet")
 
-    universe_filter_window=hy_history[datetime(2021,6,1):datetime(2021,11,1)].index
-    enriched['borrow_volume_decile'] = enriched.apply(lambda f:
-                            (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']*hy_history.loc[universe_filter_window,f.name+'/mark/o']).quantile(q=BORROW_DECILE),axis=1)
-    enriched['spot_volume_avg'] = enriched.apply(lambda f:
-                            (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean(),axis=1)
-    enriched['future_volume_avg'] = enriched.apply(lambda f:
-                            (hy_history.loc[universe_filter_window,f.name + '/price/volume']).mean(),axis=1)
-
     # ------- build derived data history
     (intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)=build_derived_history(
         exchange, enriched, hy_history,
@@ -171,9 +196,8 @@ def perp_vs_cash_backtest(  equity=1,
     # final filter, needs some history and good avg volumes
     pre_filtered=updated[
               (~np.isnan(updated['E_intCarry']))
-            & (enriched['borrow_volume_decile'] >BORROW_VOLUME_THRESHOLD)
-            & (enriched['spot_volume_avg'] >SPOT_VOLUME_THRESHOLD)
-            & (enriched['future_volume_avg'] > FUTURE_VOLUME_THRESHOLD)]
+            & (updated['type'] == type_allowed)
+            & (updated['symbol'].isin(universe['symbol']))]
     pre_filtered = pre_filtered.sort_values(by='E_intCarry',ascending=False).head(max_nb_coins)#,key=abs
 
     # run a trajectory
@@ -196,7 +220,6 @@ def perp_vs_cash_backtest(  equity=1,
                                 holding_period = holding_period,
                                 signal_horizon=signal_horizon,
                                 concentration_limit=concentration_limit,
-                                loss_tolerance=loss_tolerance,
                                 equity=equity,
                                 verbose=True
                               )
@@ -214,47 +237,44 @@ def perp_vs_cash_backtest(  equity=1,
 
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
-def run_ladder(dirname='runs'):
+def run_ladder(dirname='runs',
+                concentration_limit_list=[9, 1, .5],
+                holding_period_list = [timedelta(hours=h) for h in [1]] + [timedelta(days=d) for d in [1, 2, 3, 7]],
+                signal_horizon_list = [timedelta(hours=h) for h in [1]] + [timedelta(days=d) for d in [1, 7, 30]],
+                slippage_override = [2e-4]):
     ladder = pd.DataFrame()
-    concentration_limit_list = [9,1,.5]
-    holding_period_list = [timedelta(hours=h) for h in [1]] + [timedelta(days=d) for d in [1, 2, 3, 7]]
-    signal_horizon_list = [timedelta(hours=h) for h in [1]] + [timedelta(days=d) for d in [1, 7, 30]]
-
-  #  accrual=pd.DataFrame(
-  #                  columns=pd.MultiIndex(
-  #                  names=['concentration_limit', 'holding_period', 'signal_horizon', 'time','field'],
-  #                  dtype=[float, timedelta, timedelta, datetime,str]),
-  #                  levels=[],codes=[])
     run_list=[]
     accrual_list=[]
     for c in concentration_limit_list:
         for h in holding_period_list:
             for s in signal_horizon_list:
-                if s < h: continue
-                run_name = 'concentration_limit_'+ str(c)\
-                           +'_holding_period_' + timedeltatostring(h) \
-                           + '_signal_horizon_' + timedeltatostring(s)
-                trajectory=perp_vs_cash_backtest(equity=1,
-                                  signal_horizon=s,
-                                  holding_period=h,
-                                  concentration_limit=c,
-                                  loss_tolerance=0.05,
-                                  marginal_coin_penalty=0.05,
-                                  run_name=run_name)
-                #accrual[(c, h, s,)] = trajectory  # [(t,f)]
-                #for t in trajectory.columns.get_level_values('time').unique():
-                #    for f in trajectory.columns.get_level_values('field').unique():
-                #        accrual[(c,h,s,t,f)]=trajectory[(t,f)]
-                run_list = run_list+[(c,h,s)]
-                accrual_list=accrual_list+[trajectory]
-                trajectory.to_pickle(dirname + '/runs_' + run_name + '.pickle')
+                for txcost in slippage_override:
+                    if s < h: continue
+                    run_name = 'concentration_limit_'+ str(c)\
+                               +'_holding_period_' + timedeltatostring(h) \
+                               + '_signal_horizon_' + timedeltatostring(s) \
+                               + '_slippage_override_' + str(txcost)
+                    trajectory=perp_vs_cash_backtest(equity=1,
+                                      signal_horizon=s,
+                                      holding_period=h,
+                                      slippage_override=txcost,
+                                      concentration_limit=c,
+                                      run_name=run_name)
+                    #accrual[(c, h, s,)] = trajectory  # [(t,f)]
+                    #for t in trajectory.columns.get_level_values('time').unique():
+                    #    for f in trajectory.columns.get_level_values('field').unique():
+                    #        accrual[(c,h,s,t,f)]=trajectory[(t,f)]
+                    run_list = run_list+[(c,h,s)]
+                    accrual_list=accrual_list+[trajectory]
+                    trajectory.to_pickle(dirname + '/runs_' + run_name + '.pickle')
 
     #accrual.to_pickle(dirname + '/runs_'+datetime.now().strftime("%Y-%m-%d_%H-%M-%S")+'.pickle')
 
-perp_vs_cash_live(equity=1,
-                signal_horizon = [timedelta(days=2)],
-                holding_period = [timedelta(days=1)],
+if False:
+    perp_vs_cash_live(equity=1,
+                signal_horizon = [timedelta(days=7)],
+                holding_period = [timedelta(days=2)],
                 concentration_limit = [0.5],
                 exclusion_list=[],
                 run_dir='live_parquets')
-#run_ladder()
+if False: run_ladder()
