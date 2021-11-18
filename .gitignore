@@ -10,3 +10,5 @@
 /SpreadExecution/JupyterNotebooks/.ipynb_checkpoints/
 /SpreadExecution/JupyterNotebooks/datasets/
 /SpreadExecution/Mess/datasets/
+*.csv
+*.parquet
