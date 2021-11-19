@@ -11,7 +11,7 @@ from ftx_ftx import *
 # adds info, transcation costs, and basic screening
 def enricher(exchange,input_futures,holding_period,equity=EQUITY,
              slippage_override= -999, slippage_orderbook_depth= 0,
-             slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':'perpetual','fee_mode':'retail'}):
+             slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':['perpetual'],'fee_mode':'retail'}):
     futures=pd.DataFrame(input_futures)
     markets=exchange.fetch_markets()
 
@@ -20,7 +20,7 @@ def enricher(exchange,input_futures,holding_period,equity=EQUITY,
         (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
         & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
         & (futures['tokenizedEquity'] != True)
-        & (futures['type'] == params['type_allowed'])]
+        & (futures['type'].isin(params['type_allowed'])==True)]
     
     ########### add borrows
     coin_details = pd.DataFrame(exchange.publicGetWalletCoins()['result'], dtype=float).set_index('id')
@@ -339,7 +339,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
                                       constraints = [margin_constraint,stopout_constraint], # ,loss_tolerance_constraint
                                       bounds = bounds,
                                       callback=lambda x:callbackF(x,progress_display,(True if 'verbose' in optional_params else False)),
-                                      options = {'ftol': 1e-4*equity, 'disp': False})
+                                      options = {'ftol': 1e-3, 'disp': False})
 
     callbackF(res['x'], progress_display,(True if 'verbose' in optional_params else False))
 
