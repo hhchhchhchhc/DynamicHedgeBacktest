@@ -5,7 +5,7 @@ from ftx_utilities import *
 from ftx_ftx import *
 
 ## calc various margins for a cash and carry.
-# weights is in %of equity
+# weights is position size, not %
 # note: weight.shape = futures.shape, but returns a shape = futures.shape+1 !
 # TODO: speed up with nd.array
 class ExcessMargin:
@@ -23,9 +23,8 @@ class ExcessMargin:
         self._nb_blowups = nb_blowups
         self._params=params
 
-    def call(self,weights):
+    def call(self,x):
         n=len(weights)
-        x = self._equity * weights
 
         # TODO: staked counts towards MM not IM
         collateral = np.array([
