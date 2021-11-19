@@ -3,13 +3,16 @@ from SpreadExecution.Mess.backtest import Backtest
 from concurrent.futures import ProcessPoolExecutor
 
 
-def main():
+def one_run(latency: int):
     my_backtest = Backtest()
-    my_backtest.run(150000000, True)
-    my_backtest.run(150000000, False)
-    # with ProcessPoolExecutor(8) as pool:
-    #     for latency in [0, 10000000, 25000000, 50000000, 100000000, 150000000, 300000000, 450000000]:
-    #         pool.submit(my_backtest.run, latency)
+    my_backtest.run(latency, True)
+    my_backtest.run(latency, False)
+
+
+def main():
+    with ProcessPoolExecutor(16) as pool:
+        for i in range(16):
+            pool.submit(one_run, 150000000)
 
 
 if __name__ == '__main__':

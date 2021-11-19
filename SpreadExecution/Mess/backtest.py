@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 from enum import Enum
 
+np.seterr(all='raise')
+
 
 class OrderState(Enum):
     PENDING_NEW = 1
@@ -22,8 +24,11 @@ def _compute_autocorrelation(delta_vwaps: np.array) -> float:
     n = len(delta_vwaps)
     x = delta_vwaps[:n - 1]
     y = delta_vwaps[1:]
-    covariance = np.cov(x, y)
-    correlation = covariance[0, 1] / np.sqrt(covariance[0, 0] * covariance[1, 1])
+    covariance_matrix = np.cov(x, y)
+    correlation = covariance_matrix[0, 1]
+    variances = covariance_matrix[0, 0] * covariance_matrix[1, 1]
+    if variances > 0:
+        correlation /= np.sqrt(variances)
     return correlation
 
 
@@ -34,14 +39,14 @@ def _compute_trend(prices: np.array):
 class Backtest:
     def __init__(self):
         self.latency = 0
-        exchange_spot_trades_file = puffin.config.source_directory + 'data/inputs/ftx_trades_2021-10-14_BTC-USD.csv.gz'
+        exchange_spot_trades_file = puffin.config.source_directory + 'data/inputs/ftx_trades_2021-10-16_BTC-USD.csv.gz'
         self.exchange_spot_trades = ti.generate_trade_data_from_gzip('BTC/USD', exchange_spot_trades_file)
-        exchange_spot_tobs_file = puffin.config.source_directory + 'data/inputs/ftx_quotes_2021-10-14_BTC-USD.csv.gz'
+        exchange_spot_tobs_file = puffin.config.source_directory + 'data/inputs/ftx_quotes_2021-10-16_BTC-USD.csv.gz'
         self.exchange_spot_tobs = ti.generate_tob_data_from_gzip('BTC/USD', exchange_spot_tobs_file)
-        exchange_future_trades_file = puffin.config.source_directory + 'data/inputs/ftx_trades_2021-10-14_BTC-PERP' \
+        exchange_future_trades_file = puffin.config.source_directory + 'data/inputs/ftx_trades_2021-10-16_BTC-PERP' \
                                                                        '.csv.gz '
         self.exchange_future_trades = ti.generate_trade_data_from_gzip('BTC/USD', exchange_future_trades_file)
-        exchange_future_tobs_file = puffin.config.source_directory + 'data/inputs/ftx_quotes_2021-10-14_BTC-PERP.csv.gz'
+        exchange_future_tobs_file = puffin.config.source_directory + 'data/inputs/ftx_quotes_2021-10-16_BTC-PERP.csv.gz'
         self.exchange_future_tobs = ti.generate_tob_data_from_gzip('BTC/USD', exchange_future_tobs_file)
         self.first_time = max(self.exchange_spot_trades['exchange_timestamp_nanos'].iloc[0],
                               self.exchange_spot_tobs['exchange_timestamp_nanos'].iloc[0],
@@ -53,9 +58,7 @@ class Backtest:
                              self.exchange_future_tobs['exchange_timestamp_nanos'].iloc[-1])
         self.start_time = self.first_time + max(60 * 60 * 1000000000, random.randrange(self.last_time -
                                                                                        self.first_time))
-        # self.start_time = self.first_time + (2 * 60 * 60 * 1000000000)
         self.start_time = ((self.start_time // 1000000000) + 2) * 1000000000
-        print(str(self.start_time))
         self.current_time = self.start_time
         self.spot_minimum_basis_spread_buffer = pd.DataFrame(columns=['timestamp', 'price'])
         self.future_minimum_basis_spread_buffer = pd.DataFrame(columns=['timestamp', 'price'])
@@ -122,8 +125,6 @@ class Backtest:
         self.strategy_future_best_ask_price = None
         self.run_start_time = self.start_time
         self.current_time = self.start_time
-        print('Start at ' + datetime.datetime.fromtimestamp(self.current_time // 1000000000).strftime(
-            '%Y-%m-%d %H:%M:%S'))
         while self.current_time < self.last_time and \
                 ((self.spot_position < self.target_position) or (self.future_position > - self.target_position)):
             self._update_world_before_strategy_decision()
@@ -145,14 +146,14 @@ class Backtest:
                         and ((self.spot_autocorrelation < self.autocorrelation_threshold)
                              or not self.use_autocorrelation):
                     strategy_buys_spot = True
-                if (self.delta == -1) and ((self.spot_autocorrelation < self.autocorrelation_threshold)
+                if (self.delta < 0) and ((self.spot_autocorrelation < self.autocorrelation_threshold)
                                            or (self.spot_trend > 0) or not self.use_autocorrelation):
                     strategy_buys_spot = True
                 if (self.delta == 0) and (self.strategy_basis_spread > self.minimum_basis_spread) \
                         and ((self.future_autocorrelation < self.autocorrelation_threshold)
                              or not self.use_autocorrelation):
                     strategy_sells_future = True
-                if (self.delta == 1) and ((self.future_autocorrelation < self.autocorrelation_threshold)
+                if (self.delta > 0) and ((self.future_autocorrelation < self.autocorrelation_threshold)
                                           or (self.future_trend < 0) or not self.use_autocorrelation):
                     strategy_sells_future = True
                 self._execute_strategy_spot(strategy_buys_spot)
@@ -211,9 +212,6 @@ class Backtest:
             else:
                 self.spot_bid_order_state = OrderState.PENDING_FILL
             self.spot_position += self.quote_size
-            print('Spot Aggressive Buy at ' + datetime.datetime.fromtimestamp(self.current_time // 1000000000).strftime(
-                '%Y-%m-%d %H:%M:%S'))
-            print('Minimum Basis Spread = ' + str(self.minimum_basis_spread))
 
     def _check_for_aggressive_future_fill_at_order_entry(self):
         timestamp = self.future_ask_order_state_timestamp + self.latency
@@ -232,10 +230,6 @@ class Backtest:
             else:
                 self.future_ask_order_state = OrderState.PENDING_FILL
             self.future_position -= self.quote_size
-            print('Future Aggressive Sell at ' + datetime.datetime.fromtimestamp(
-                self.current_time // 1000000000).strftime(
-                '%Y-%m-%d %H:%M:%S'))
-            print('Minimum Basis Spread = ' + str(self.minimum_basis_spread))
 
     def _check_for_passive_spot_fill(self):
         spot_trades = self.exchange_spot_trades[self.exchange_spot_trades.exchange_timestamp_nanos.between(
@@ -256,9 +250,6 @@ class Backtest:
             else:
                 self.spot_bid_order_state = OrderState.PENDING_FILL
             self.spot_position += self.quote_size
-            print('Spot Passive Buy at ' + datetime.datetime.fromtimestamp(self.current_time // 1000000000).strftime(
-                '%Y-%m-%d %H:%M:%S'))
-            print('Minimum Basis Spread = ' + str(self.minimum_basis_spread))
 
     def _check_for_passive_future_fill(self):
         future_trades = self.exchange_future_trades[self.exchange_future_trades.exchange_timestamp_nanos.between(
@@ -279,9 +270,6 @@ class Backtest:
             else:
                 self.future_ask_order_state = OrderState.PENDING_FILL
             self.future_position -= self.quote_size
-            print('Future Passive Sell at ' + datetime.datetime.fromtimestamp(self.current_time // 1000000000).strftime(
-                '%Y-%m-%d %H:%M:%S'))
-            print('Minimum Basis Spread = ' + str(self.minimum_basis_spread))
 
     def _compute_minimum_basis_spread_at_time(self) -> None:
         self._update_minimum_basis_spread_buffer()
@@ -436,10 +424,13 @@ class Backtest:
         executed_premium = 2 * (future_vwap - spot_vwap) / (future_vwap + spot_vwap)
         passive = np.sum(self.backtest_spot_trades['is_passive']) + np.sum(self.backtest_future_trades['is_passive'])
         execution_duration = datetime.timedelta(microseconds=int((self.current_time - self.run_start_time) // 1000))
-        print('')
-        print('Latency: ' + str(self.latency / 1000000) + ' millis.')
-        print('Use Autocorrelation: ' + str(self.use_autocorrelation) + '.')
-        print('Executed premium: ' + str(1e4 * executed_premium) + ' bp.')
-        print('number passive execution: ' + str(passive) + '.')
-        print('Execution duration: ' + str(execution_duration) + '.')
-        print('')
+        # print('')
+        # print('Start at ' + datetime.datetime.fromtimestamp(self.start_time // 1000000000).strftime(
+        #     '%Y-%m-%d %H:%M:%S'))
+        # print('Latency: ' + str(self.latency / 1000000) + ' millis.')
+        # print('Use Autocorrelation: ' + str(self.use_autocorrelation) + '.')
+        # print('Executed premium: ' + str(1e4 * executed_premium) + ' bp.')
+        # print('number passive execution: ' + str(passive) + '.')
+        # print('Execution duration: ' + str(execution_duration) + '.')
+        # print('')
+        print(str(self.use_autocorrelation) + ',' + str(1e4 * executed_premium))
