@@ -250,8 +250,8 @@ def run_ladder( concentration_limit_list,
     for c in concentration_limit_list:
         for h in holding_period_list:
             for s in signal_horizon_list:
+                if s < h: continue
                 for txcost in slippage_override:
-                    if s < h: continue
                     run_name = 'concentration_limit_'+ str(c)\
                                +'_holding_period_' + timedeltatostring(h) \
                                + '_signal_horizon_' + timedeltatostring(s) \
@@ -270,7 +270,7 @@ def run_ladder( concentration_limit_list,
                     trajectory['concentration_limit'] = c
                     trajectory['signal_horizon'] = s
                     trajectory['holding_period'] = h
-                    ladder.to_excel(run_dir + '/' + run_name + '.xlsx')
+                    trajectory.to_excel(run_dir + '/' + run_name + '.xlsx')
                     ladder=ladder.append(trajectory,ignore_index=True)
 
     ladder.to_pickle(run_dir + '/ladder.pickle')
