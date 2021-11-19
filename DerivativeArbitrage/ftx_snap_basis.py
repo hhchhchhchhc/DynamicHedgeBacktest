@@ -44,7 +44,7 @@ def enricher(exchange,input_futures,holding_period,equity=EQUITY,
     futures['direction_mid']=1
     futures.loc[futures['carryShort']+futures['carryLong']<0,'direction_mid']=-1
     futures['carry_mid'] = futures['carryLong']
-    futures.loc[futures['direction_mid']<0,'carry_mid'] = futures['carryShort']
+    futures.loc[futures['direction_mid']<0,'carry_mid'] = futures.loc[futures['direction_mid']<0,'carryShort']
 
     # transaction costs
     costs=fetch_rate_slippage(futures, exchange, holding_period,
@@ -101,13 +101,15 @@ def update(input_futures,point_in_time,history,equity,
     futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future','underlying'].apply(
         lambda f: history.loc[point_in_time, f + '/rate/T'])
     futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
-        lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
+        lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], point_in_time), axis=1)
 
     # spot carries
     futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
-    futures['carryShort']=-(futures['basis_mid']-futures['quote_borrow']+futures['borrow'])
+    futures['carryShort']=futures['basis_mid']-futures['quote_borrow']+futures['borrow']
+    futures['direction_mid']=1
+    futures.loc[futures['carryShort']+futures['carryLong']<0,'direction_mid']=-1
     futures['carry_mid'] = futures['carryLong']
-    futures.loc[futures['carryShort']>futures['carryLong'],'carry_mid']=futures['carryShort']
+    futures.loc[futures['direction_mid']<0,'carry_mid'] = futures.loc[futures['direction_mid']<0,'carryShort']
     futures=futures.drop(columns=['carryLong','carryShort'])
 
     ####### expectations. This is what optimizer uses.
@@ -193,7 +195,8 @@ def build_derived_history(exchange, input_futures, hy_history,
 
 #-------------------- transaction costs---------------
 # add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
-# Unless slippage override, calculate from orderbook (override Only live is supported).
+# Slippage override =spread to mid for a single leg, with fees = avg taker/maker.
+# Otherwise calculate from orderbook (override Only live is supported).
 def fetch_rate_slippage(input_futures, exchange: Exchange,holding_period,
                             slippage_override: int = -999, slippage_orderbook_depth: float = 0,
                             slippage_scaler: float = 1.0,params={'override_slippage':True,'fee_mode':'retail'}) -> None:
@@ -298,7 +301,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     #loss_tolerance_constraint = {'type': 'ineq',
     #            'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
     margin_constraint = {'type': 'ineq',
-                'fun': lambda x: excess_margin.call(x)['totalIM']}
+                'fun': lambda x: excess_margin.call(x)['totalIM'] - equity*OPEN_ORDERS_HEARDROOM}
     stopout_constraint = {'type': 'ineq',
                 'fun': lambda x: excess_margin.call(x)['totalMM']}
     bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit*equity for w in futures['direction']]),

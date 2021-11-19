@@ -20,6 +20,7 @@ NB_BLOWUPS = 3
 SHORT_BLOWUP = 0.3
 LONG_BLOWUP = 0.15
 EQUITY=1e5
+OPEN_ORDERS_HEARDROOM=.01 # assumes moderate slicing, given avg rebalancing in progress isn't huge.
 
 ########## only for dated futures
 def calc_basis(f,s,T,t): # T is tring, t is date
