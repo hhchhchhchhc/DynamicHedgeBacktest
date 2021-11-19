@@ -12,3 +12,4 @@
 /SpreadExecution/Mess/datasets/
 *.csv
 *.parquet
+**/__pycache__
