@@ -24,7 +24,7 @@ class ExcessMargin:
         self._params=params
 
     def call(self,x):
-        n=len(weights)
+        n=len(x)
 
         # TODO: staked counts towards MM not IM
         collateral = np.array([
