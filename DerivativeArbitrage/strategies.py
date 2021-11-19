@@ -141,7 +141,7 @@ def perp_vs_cash_backtest(
                 slippage_override,
                 concentration_limit,
                 filename='',
-                params={}):
+                optional_params=[]):
     exchange=open_exchange('ftx')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
@@ -213,7 +213,7 @@ def perp_vs_cash_backtest(
                                 signal_horizon=signal_horizon,
                                 concentration_limit=concentration_limit,
                                 equity=equity,
-                                optional_params= []
+                                optional_params= optional_params
                               )
         # need to assign RealizedCarry to previous_time
         if not trajectory.empty: trajectory.loc[trajectory['time']==previous_time,'RealizedCarry']=optimized['RealizedCarry'].values
@@ -277,19 +277,19 @@ def run_ladder( concentration_limit_list,
 
 def run_benchmark_ladder(
                 concentration_limit_list,
-                slippage_override,
+                slippage_override_list,
                 run_dir):
     ladder = pd.DataFrame()
     #### first, pick best basket every hour, ignoring tx costs
     for c in concentration_limit_list:
-            for txcost in slippage_override:
+            for txcost in slippage_override_list:
                 trajectory = perp_vs_cash_backtest(equity=EQUITY,
                                                    signal_horizon=timedelta(hours=1),
                                                    holding_period=timedelta(hours=1),
                                                    slippage_override=txcost,
                                                    concentration_limit=c,
                                                    filename='cost_blind',
-                                                   params={'cost_blind':True})
+                                                   optional_params=['cost_blind'])
                 trajectory['slippage_override'] = txcost
                 trajectory['concentration_limit'] = c
                 ladder = ladder.append(trajectory,ignore_index=True)
@@ -306,7 +306,7 @@ if False:
 if True:
     run_benchmark_ladder(
                 concentration_limit_list=[9, 1, .5],
-                slippage_override=[2e-4],
+                slippage_override_list=[2e-4],
                 run_dir='DONOTDELETE_cost_blind')
 if True:
     run_ladder( concentration_limit_list=[9, 1, .5],

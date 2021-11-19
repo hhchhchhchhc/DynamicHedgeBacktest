@@ -257,8 +257,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
                   previous_weights,
                   holding_period,  # to convert slippag into rate
                   signal_horizon,  # historical window for expectations
-                  concentration_limit=99,
-                  equity=EQUITY,# for markovitz
+                  concentration_limit,
+                  equity,# for markovitz
                   optional_params=[]):             # use external rather than order book
     futures=pd.DataFrame(input_futures)
 
