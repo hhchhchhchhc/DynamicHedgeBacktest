@@ -60,13 +60,11 @@ def refresh_universe(exchange_name,sceening_mode):
 refresh_universe('ftx','wide')
 refresh_universe('ftx','tight')
 
-def perp_vs_cash_live(equity=10000,
-                signal_horizon = [timedelta(days=7)],
-                holding_period = [timedelta(days=2)],
-                concentration_limit = [0.5],
-                exclusion_list=[],
-                loss_tolerance = 0.05,
-                marginal_coin_penalty = 0.05,
+def perp_vs_cash_live(equity,
+                signal_horizon,
+                holding_period,
+                concentration_limit,
+                exclusion_list,
                 run_dir=''):
     if os.path.isdir(run_dir):
         for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
@@ -128,26 +126,22 @@ def perp_vs_cash_live(equity=10000,
                                     holding_period = holding_period,
                                     signal_horizon=signal_horizon,
                                     concentration_limit=concentration_limit,
-                                    loss_tolerance=loss_tolerance,
                                     equity=equity,
-                                    verbose=True
+                                    optional_params= ['verbose']
                                   )
 
-    optimized.to_excel('optimal_live.xlsx')
+    optimized.to_excel(run_dir+'/optimal_live.xlsx')
     return optimized
 
 
 def perp_vs_cash_backtest(
-                equity=1,
-                signal_horizon = timedelta(days=7),
-                holding_period = timedelta(days=7),
-                slippage_override=2e-4,# TODO: 2e-4  #### this is given by mktmaker
-                concentration_limit = 99,
-                run_dir=''):
-    if os.path.isdir(run_dir):
-        for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
-    else: os.mkdir(run_dir)
-
+                equity,
+                signal_horizon,
+                holding_period,
+                slippage_override,
+                concentration_limit,
+                filename='',
+                params={}):
     exchange=open_exchange('ftx')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
@@ -174,23 +168,23 @@ def perp_vs_cash_backtest(
 
     #### get history ( this is sloooow)
     try:
-        hy_history = from_parquet("temporary_parquets/history.parquet")
+        hy_history = from_parquet("DONOTDELETE_temporary_parquets/history.parquet")
         existing_futures = [name.split('/')[0] for name in hy_history.columns]
         new_futures = enriched[enriched['symbol'].isin(existing_futures)==False]
         if new_futures.empty==False:
             hy_history=pd.concat([hy_history,
                     build_history(new_futures,exchange,timeframe='1h',end=backtest_end,start=backtest_start-signal_horizon-holding_period)],
                     join='outer',axis=1)
-            to_parquet(hy_history, "temporary_parquets/history.parquet")
+            to_parquet(hy_history, "DONOTDELETE_temporary_parquets/history.parquet")
     except FileNotFoundError:
         hy_history = build_history(enriched,exchange,timeframe='1h',end=backtest_end,start=backtest_start-signal_horizon-holding_period)
-        to_parquet(hy_history,"temporary_parquets/history.parquet")
+        to_parquet(hy_history,"DONOTDELETE_temporary_parquets/history.parquet")
 
     # ------- build derived data history
     (intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)=build_derived_history(
         exchange, enriched, hy_history,
         holding_period,  # to convert slippage into rate
-        signal_horizon)  # historical window for expectations)
+        signal_horizon,filename)  # historical window for expectations)
     updated, marginFunc = update(enriched, backtest_end, hy_history, equity,
                                  intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
     # final filter, needs some history and good avg volumes
@@ -205,12 +199,10 @@ def perp_vs_cash_backtest(
     point_in_time=backtest_start+signal_horizon+holding_period # integrals not defined before that
     updated, marginFunc = update(optimized, backtest_start + signal_horizon + holding_period, hy_history, equity,
                                  intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
-    previous_weights = optimized['E_intCarry'] \
+    previous_weights = equity * optimized['E_intCarry'] \
                        / (optimized['E_intCarry'].sum() if np.abs(optimized['E_intCarry'].sum()) > 0.1 else 0.1)
-
-    trajectory=pd.DataFrame(
-                    columns=pd.MultiIndex.from_tuples([],
-                    names=['time','field']))
+    previous_time=point_in_time
+    trajectory=pd.DataFrame()
 
     while point_in_time<backtest_end:
         updated,excess_margin=update(pre_filtered,point_in_time,hy_history,equity,
@@ -221,12 +213,20 @@ def perp_vs_cash_backtest(
                                 signal_horizon=signal_horizon,
                                 concentration_limit=concentration_limit,
                                 equity=equity,
-                                verbose=True
+                                optional_params= []
                               )
+        # need to assign RealizedCarry to previous_time
+        if not trajectory.empty: trajectory.loc[trajectory['time']==previous_time,'RealizedCarry']=optimized['RealizedCarry'].values
+        optimized['time'] = point_in_time
 
-        previous_weights=optimized['optimalWeight'].drop(['USD','total'])
-        point_in_time+=holding_period
-        trajectory=diagnosis_checkpoint(trajectory, optimized, 'time',point_in_time)
+        # increment
+        trajectory=trajectory.append(optimized.reset_index().rename({'name':'symbol'}),ignore_index=True)
+        previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
+        previous_time=point_in_time
+        point_in_time += holding_period
+
+    # remove last line because RealizedCarry is wrong there
+    trajectory=trajectory.drop(trajectory[trajectory['time']==previous_time].index)
 
     #trajectory.xs('ask',level='field',axis=1)
 
@@ -237,14 +237,16 @@ def perp_vs_cash_backtest(
 
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
-def run_ladder(dirname='runs',
-                concentration_limit_list=[9, 1, .5],
-                holding_period_list = [timedelta(hours=h) for h in [1]] + [timedelta(days=d) for d in [1, 2, 3, 7]],
-                signal_horizon_list = [timedelta(hours=h) for h in [1]] + [timedelta(days=d) for d in [1, 7, 30]],
-                slippage_override = [2e-4]):
+def run_ladder( concentration_limit_list,
+                holding_period_list,
+                signal_horizon_list,
+                slippage_override,
+                run_dir):
+    if os.path.isdir(run_dir):
+        for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
+    else: os.mkdir(run_dir)
+
     ladder = pd.DataFrame()
-    run_list=[]
-    accrual_list=[]
     for c in concentration_limit_list:
         for h in holding_period_list:
             for s in signal_horizon_list:
@@ -254,27 +256,61 @@ def run_ladder(dirname='runs',
                                +'_holding_period_' + timedeltatostring(h) \
                                + '_signal_horizon_' + timedeltatostring(s) \
                                + '_slippage_override_' + str(txcost)
-                    trajectory=perp_vs_cash_backtest(equity=1,
+                    trajectory=perp_vs_cash_backtest(equity=EQUITY,
                                       signal_horizon=s,
                                       holding_period=h,
                                       slippage_override=txcost,
                                       concentration_limit=c,
-                                      run_name=run_name)
+                                      filename='')#non verbose
                     #accrual[(c, h, s,)] = trajectory  # [(t,f)]
                     #for t in trajectory.columns.get_level_values('time').unique():
                     #    for f in trajectory.columns.get_level_values('field').unique():
                     #        accrual[(c,h,s,t,f)]=trajectory[(t,f)]
-                    run_list = run_list+[(c,h,s)]
-                    accrual_list=accrual_list+[trajectory]
-                    trajectory.to_pickle(dirname + '/runs_' + run_name + '.pickle')
+                    trajectory['slippage_override']=txcost
+                    trajectory['concentration_limit'] = c
+                    trajectory['signal_horizon'] = s
+                    trajectory['holding_period'] = h
+                    ladder.to_excel(run_dir + '/' + run_name + '.xlsx')
+                    ladder=ladder.append(trajectory,ignore_index=True)
 
-    #accrual.to_pickle(dirname + '/runs_'+datetime.now().strftime("%Y-%m-%d_%H-%M-%S")+'.pickle')
+    ladder.to_pickle(run_dir + '/ladder.pickle')
+
+def run_benchmark_ladder(
+                concentration_limit_list,
+                slippage_override,
+                run_dir):
+    ladder = pd.DataFrame()
+    #### first, pick best basket every hour, ignoring tx costs
+    for c in concentration_limit_list:
+            for txcost in slippage_override:
+                trajectory = perp_vs_cash_backtest(equity=EQUITY,
+                                                   signal_horizon=timedelta(hours=1),
+                                                   holding_period=timedelta(hours=1),
+                                                   slippage_override=txcost,
+                                                   concentration_limit=c,
+                                                   filename='cost_blind',
+                                                   params={'cost_blind':True})
+                trajectory['slippage_override'] = txcost
+                trajectory['concentration_limit'] = c
+                ladder = ladder.append(trajectory,ignore_index=True)
+
+    ladder.to_pickle(run_dir + '/ladder.pickle')
 
 if False:
-    perp_vs_cash_live(equity=1,
+    perp_vs_cash_live(equity=EQUITY,
                 signal_horizon = [timedelta(days=7)],
                 holding_period = [timedelta(days=2)],
                 concentration_limit = [0.5],
                 exclusion_list=[],
-                run_dir='live_parquets')
-if False: run_ladder()
+                run_dir='DONOTDELETE_live_parquets')
+if True:
+    run_benchmark_ladder(
+                concentration_limit_list=[9, 1, .5],
+                slippage_override=[2e-4],
+                run_dir='DONOTDELETE_cost_blind')
+if True:
+    run_ladder( concentration_limit_list=[9, 1, .5],
+                holding_period_list = [timedelta(hours=h) for h in [6,12]] + [timedelta(days=d) for d in [1, 2, 3, 4,5]],
+                signal_horizon_list = [timedelta(hours=h) for h in [12]] + [timedelta(days=d) for d in [1, 2,3,4,5,7,10,30]],
+                slippage_override = [2e-4],
+                run_dir='DONOTDELETE_runs')
