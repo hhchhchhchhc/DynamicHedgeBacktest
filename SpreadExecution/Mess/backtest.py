@@ -6,6 +6,7 @@ import random
 import pandas as pd
 import numpy as np
 from enum import Enum
+import os
 
 np.seterr(all='raise')
 
@@ -37,17 +38,20 @@ def _compute_trend(prices: np.array):
 
 
 class Backtest:
-    def __init__(self):
+    def __init__(self, data_dir: str, date: datetime.datetime, base_asset: str, quote_asset: str):
         self.latency = 0
-        exchange_spot_trades_file = puffin.config.source_directory + 'data/inputs/ftx_trades_2021-10-16_BTC-USD.csv.gz'
-        self.exchange_spot_trades = ti.generate_trade_data_from_gzip('BTC/USD', exchange_spot_trades_file)
-        exchange_spot_tobs_file = puffin.config.source_directory + 'data/inputs/ftx_quotes_2021-10-16_BTC-USD.csv.gz'
-        self.exchange_spot_tobs = ti.generate_tob_data_from_gzip('BTC/USD', exchange_spot_tobs_file)
-        exchange_future_trades_file = puffin.config.source_directory + 'data/inputs/ftx_trades_2021-10-16_BTC-PERP' \
-                                                                       '.csv.gz '
-        self.exchange_future_trades = ti.generate_trade_data_from_gzip('BTC/USD', exchange_future_trades_file)
-        exchange_future_tobs_file = puffin.config.source_directory + 'data/inputs/ftx_quotes_2021-10-16_BTC-PERP.csv.gz'
-        self.exchange_future_tobs = ti.generate_tob_data_from_gzip('BTC/USD', exchange_future_tobs_file)
+        date_str = date.strftime('%Y-%m-%d')
+        symbol = base_asset + '/' + quote_asset
+        spot_filename_suffix = '_' + base_asset + '-' + quote_asset + '.csv.gz'
+        perp_filename_suffix = '_' + base_asset + '-PERP.csv.gz'
+        exchange_spot_trades_file = os.path.join(data_dir, 'ftx_trades_' + date_str + spot_filename_suffix)
+        self.exchange_spot_trades = ti.generate_trade_data_from_gzip(symbol, exchange_spot_trades_file)
+        exchange_spot_tobs_file = os.path.join(data_dir, 'ftx_quotes_' + date_str + spot_filename_suffix)
+        self.exchange_spot_tobs = ti.generate_tob_data_from_gzip(symbol, exchange_spot_tobs_file)
+        exchange_future_trades_file = os.path.join(data_dir, 'ftx_trades_' + date_str + perp_filename_suffix)
+        self.exchange_future_trades = ti.generate_trade_data_from_gzip(symbol, exchange_future_trades_file)
+        exchange_future_tobs_file = os.path.join(data_dir, 'ftx_quotes_' + date_str + perp_filename_suffix)
+        self.exchange_future_tobs = ti.generate_tob_data_from_gzip(symbol, exchange_future_tobs_file)
         self.first_time = max(self.exchange_spot_trades['exchange_timestamp_nanos'].iloc[0],
                               self.exchange_spot_tobs['exchange_timestamp_nanos'].iloc[0],
                               self.exchange_future_trades['exchange_timestamp_nanos'].iloc[0],
@@ -159,7 +163,7 @@ class Backtest:
                 self._execute_strategy_spot(strategy_buys_spot)
                 self._execute_strategy_future(strategy_sells_future)
             self.current_time += 1000000000
-        self._write_results_to_files()
+        #self._write_results_to_files()
         self._print_some_result_to_console()
 
     def _update_world_before_strategy_decision(self) -> None:
@@ -433,4 +437,4 @@ class Backtest:
         # print('number passive execution: ' + str(passive) + '.')
         # print('Execution duration: ' + str(execution_duration) + '.')
         # print('')
-        print(str(self.use_autocorrelation) + ',' + str(1e4 * executed_premium))
+        print(str(self.use_autocorrelation) + ',' + str(1e4 * executed_premium) + ',' + str(self.latency / 1000000) + ',' + str(passive) + ',' + str(execution_duration) + ',' + str(self.target_position) + ',' + str(self.start_time))
