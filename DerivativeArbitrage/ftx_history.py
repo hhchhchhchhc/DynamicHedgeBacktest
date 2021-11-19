@@ -21,7 +21,7 @@ def build_history(futures,exchange,
         else:
             perp_funding_data=pd.concat([funding_history(f,exchange,start,end,dirname)
                                      for (i,f) in futures[futures['type']=='perpetual'].iterrows()],join='outer',axis=1)
-            perp_funding_data.to_parquet(parquet_filename)
+            if dirname!='': perp_funding_data.to_parquet(parquet_filename)
 
     future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe,dirname)
                for (i, f) in futures.iterrows()],
@@ -42,7 +42,7 @@ def build_history(futures,exchange,
                for f in futures['underlying'].unique()]
                           +[borrow_history('USD',exchange,end,start,dirname)],
               join='outer',axis=1)
-        borrow_data.to_parquet(parquet_filename)
+        if dirname!='': borrow_data.to_parquet(parquet_filename)
 
     ## just couldn't figure out pd.concat...
     data = perp_funding_data.join(

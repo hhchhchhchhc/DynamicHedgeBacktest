@@ -404,7 +404,7 @@ def strategyOO():
         & (enriched['funding_volume'] * enriched['mark'] > funding_threshold)
         & (enriched['volumeUsd24h'] > volume_threshold)
         & (enriched['tokenizedEquity'] != True)
-        & (enriched['type'] == type_allowed)]
+        & (enriched['type'].isin(type_allowed))]
 
     today=datetime.today().replace(hour=0,minute=0,second=0,microsecond=0)
     history=RawHistory(pre_filtered)

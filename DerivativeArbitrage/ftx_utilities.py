@@ -8,8 +8,12 @@ import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import xlsxwriter
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+
+import matplotlib
+import cufflinks as cf
+cf.go_offline()
+cf.set_config_file(offline=False, world_readable=True)
+import plotly.express as px
 
 from datetime import datetime,timezone,timedelta,date
 import dateutil

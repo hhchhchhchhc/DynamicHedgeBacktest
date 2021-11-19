@@ -9,8 +9,8 @@ import seaborn as sns
 import ccxt
 #from sklearn import *
 
-def refresh_universe(exchange_name,sceening_mode):
-    filename = sceening_mode+'.xlsx'
+def refresh_universe(exchange_name,sceening_mode,run_dir):
+    filename = run_dir+'/'+sceening_mode+'.xlsx'
     if os.path.isfile(filename): return pd.read_excel(filename)
 
     exchange=open_exchange(exchange_name)
@@ -20,7 +20,7 @@ def refresh_universe(exchange_name,sceening_mode):
     universe_start = datetime(2021, 6, 1)
     universe_end = datetime(2021, 11, 1)
     borrow_decile = 0.1
-    #type_allowed='perpetual'
+    #type_allowed=['perpetual']
     if sceening_mode == 'wide':
         future_volume_threshold = 2e5
         spot_volume_threshold = 2e5
@@ -57,8 +57,6 @@ def refresh_universe(exchange_name,sceening_mode):
     futures.to_excel(filename)
 
     return futures['symbol'].values
-refresh_universe('ftx','wide')
-refresh_universe('ftx','tight')
 
 def perp_vs_cash_live(equity,
                 signal_horizon,
@@ -77,8 +75,8 @@ def perp_vs_cash_live(equity,
     point_in_time = (datetime.now()-timedelta(hours=0)).replace(minute=0,second=0,microsecond=0)
 
     # filtering params
-    universe=refresh_universe('ftx', 'wide')
-    type_allowed = 'perpetual'
+    universe=refresh_universe('ftx', 'wide','DONOTDELETE_configs')
+    type_allowed = ['perpetual']
     max_nb_coins = 99
     carry_floor = 0.4
 
@@ -110,7 +108,7 @@ def perp_vs_cash_live(equity,
         # final filter, needs some history and good avg volumes
         pre_filtered = updated[
             (~np.isnan(updated['E_intCarry']))
-            & (updated['type']==type_allowed)
+            & (updated['type'].isin(type_allowed))
             & (updated['symbol'].isin(universe['symbol']))]
         pre_filtered = pre_filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
 
@@ -147,10 +145,13 @@ def perp_vs_cash_backtest(
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
 
     # filtering params
-    universe = refresh_universe('ftx', 'wide')
-    type_allowed='perpetual'
+    universe = refresh_universe('ftx', 'wide','DONOTDELETE_configs')
+    type_allowed=['perpetual']
     max_nb_coins = 99
     carry_floor = 0.4
+    pre_filtered=futures[
+                (futures['type'].isin(type_allowed))
+              & (futures['symbol'].isin(universe['symbol']))]
 
     # fee estimation params
     slippage_scaler=1
@@ -161,7 +162,7 @@ def perp_vs_cash_backtest(
     backtest_end = datetime(2021, 10, 1)
 
     ## ----------- enrich, get history, filter
-    enriched=enricher(exchange, futures, holding_period,equity=equity,
+    enriched=enricher(exchange, pre_filtered, holding_period,equity=equity,
                     slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                     slippage_scaler=slippage_scaler,
                     params={'override_slippage': True,'type_allowed':type_allowed,'fee_mode':'retail'})
@@ -188,24 +189,20 @@ def perp_vs_cash_backtest(
     updated, marginFunc = update(enriched, backtest_end, hy_history, equity,
                                  intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
     # final filter, needs some history and good avg volumes
-    pre_filtered=updated[
-              (~np.isnan(updated['E_intCarry']))
-            & (updated['type'] == type_allowed)
-            & (updated['symbol'].isin(universe['symbol']))]
-    pre_filtered = pre_filtered.sort_values(by='E_intCarry',ascending=False).head(max_nb_coins)#,key=abs
+    post_filtered=updated[~np.isnan(updated['E_intCarry'])]
+    post_filtered = post_filtered.sort_values(by='E_intCarry',key=abs,ascending=False).head(max_nb_coins)#,key=abs
 
     # run a trajectory
-    optimized=pre_filtered
     point_in_time=backtest_start+signal_horizon+holding_period # integrals not defined before that
-    updated, marginFunc = update(optimized, backtest_start + signal_horizon + holding_period, hy_history, equity,
+    updated, marginFunc = update(post_filtered, point_in_time, hy_history, equity,
                                  intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
-    previous_weights = equity * optimized['E_intCarry'] \
-                       / (optimized['E_intCarry'].sum() if np.abs(optimized['E_intCarry'].sum()) > 0.1 else 0.1)
+    previous_weights = equity * updated['E_intCarry'] \
+                       / (updated['E_intCarry'].sum() if np.abs(updated['E_intCarry'].sum()) > 0.1 else 0.1)
     previous_time=point_in_time
     trajectory=pd.DataFrame()
 
     while point_in_time<backtest_end:
-        updated,excess_margin=update(pre_filtered,point_in_time,hy_history,equity,
+        updated,excess_margin=update(post_filtered,point_in_time,hy_history,equity,
                        intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
         optimized=cash_carry_optimizer(exchange,updated,excess_margin,
                                 previous_weights=previous_weights,
@@ -289,7 +286,7 @@ def run_benchmark_ladder(
                                                    slippage_override=txcost,
                                                    concentration_limit=c,
                                                    filename='cost_blind',
-                                                   optional_params=['cost_blind'])
+                                                   optional_params=['cost_blind'])#,'verbose'])
                 trajectory['slippage_override'] = txcost
                 trajectory['concentration_limit'] = c
                 ladder = ladder.append(trajectory,ignore_index=True)
@@ -305,10 +302,10 @@ if False:
                 run_dir='DONOTDELETE_live_parquets')
 if True:
     run_benchmark_ladder(
-                concentration_limit_list=[9, 1, .5],
+                concentration_limit_list=[.5],
                 slippage_override_list=[2e-4],
                 run_dir='DONOTDELETE_cost_blind')
-if True:
+if False:
     run_ladder( concentration_limit_list=[9, 1, .5],
                 holding_period_list = [timedelta(hours=h) for h in [6,12]] + [timedelta(days=d) for d in [1, 2, 3, 4,5]],
                 signal_horizon_list = [timedelta(hours=h) for h in [12]] + [timedelta(days=d) for d in [1, 2,3,4,5,7,10,30]],
