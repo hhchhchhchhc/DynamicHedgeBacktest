@@ -19,6 +19,7 @@ os.chdir('C:\\Users\\david\\Dropbox\\mobilier\\crypto')
 NB_BLOWUPS = 3
 SHORT_BLOWUP = 0.3
 LONG_BLOWUP = 0.15
+EQUITY=1e5
 
 ########## only for dated futures
 def calc_basis(f,s,T,t): # T is tring, t is date
@@ -124,17 +125,6 @@ def open_exchange(exchange_name):
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
     return  exchange
-
-def diagnosis_checkpoint(accruer,new_data,level_name,new_label):
-    if not level_name in new_data.columns.names:
-        new_accruer = pd.DataFrame(
-            columns=pd.MultiIndex.from_tuples([tuple([new_label]+[c]) for c in new_data.columns],
-                                               names=[level_name]+new_data.columns.names))
-        new_accruer[(new_label,)] = new_data
-        accruer=accruer.join(new_accruer, how='outer')
-    else:
-        accruer[(new_label,)] = new_data
-    return accruer
 
 #a=openit('ftxStopout.pickle')
 #outputit(a,'ftx','ftxstopout',params={'pickleit':False,'excelit':True})

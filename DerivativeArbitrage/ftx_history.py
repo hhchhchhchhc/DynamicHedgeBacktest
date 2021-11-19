@@ -11,7 +11,7 @@ def build_history(futures,exchange,
         timeframe='1h',
         end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
         start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                  dirname='temporary_parquets'):
+                  dirname='DONOTDELETE_temporary_parquets'):
 
     perp_funding_data=pd.DataFrame()
     if not futures[futures['type']=='perpetual'].empty:
@@ -59,7 +59,7 @@ def build_history(futures,exchange,
 def borrow_history(spot,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                   dirname='temporary_parquets'):
+                   dirname='DONOTDELETE_temporary_parquets'):
     parquet_filename = dirname+'/allborrows.parquet'
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
     max_funding_data = int(500)  # in hour. limit is 500 :(
@@ -97,7 +97,7 @@ def borrow_history(spot,exchange,
 def funding_history(future,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
-                    dirname='temporary_parquets'):
+                    dirname='DONOTDELETE_temporary_parquets'):
     parquet_filename=dirname+'/allfundings.parquet'
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
     max_funding_data = int(500)  # in hour. limit is 500 :(
@@ -136,7 +136,7 @@ def rate_history(future,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                  timeframe='1h',
-                 dirname='temporary_parquets'):
+                 dirname='DONOTDELETE_temporary_parquets'):
     if dirname!='':
         parquet_filename=dirname+'/'+future['symbol']+'_futures.parquet'
         if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
@@ -216,7 +216,7 @@ def price_history(symbol,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                  timeframe='1h',
-                  dirname='temporary_parquets'):
+                  dirname='DONOTDELETE_temporary_parquets'):
     if dirname!='':
         parquet_filename = dirname +'/' + symbol.replace('/USD','') + '_price.parquet'
         if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
