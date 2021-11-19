@@ -22,22 +22,26 @@ class ExcessMargin:
         self._short_blowup = short_blowup
         self._nb_blowups = nb_blowups
         self._params=params
-
+    # unused for now
+    def update(self,mark):
+        self._mark = mark
     def call(self,x):
         n=len(x)
 
         # TODO: staked counts towards MM not IM
+        # https://help.ftx.com/hc/en-us/articles/360031149632
         collateral = np.array([
             x[i] if x[i]<0
-            else x[i]*min(self._collateralWeight[i],1.1 / (1 + self._imfFactor[i] * np.sqrt(abs(x[i]))))
+            else x[i]*min(self._collateralWeight[i],1.1 / (1 + self._imfFactor[i] * np.sqrt(abs(x[i])/ self._mark[i])))
                         for i in range(n)])
+        # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
         im_short = np.array([
             0 if x[i] > 0
-            else -x[i]*(1.1/self._collateralWeightInitial[i]-1)
+            else -x[i]*max(1.1/self._collateralWeightInitial[i]-1, self._imfFactor[i] * np.sqrt(abs(x[i])/ self._mark[i]))
                         for i in range(n)])
         mm_short = np.array([
             0 if x[i] > 0
-            else -x[i] *(1.03/self._collateralWeightInitial[i]-1)
+            else -x[i] *max(1.03/self._collateralWeightInitial[i]-1, 0.6*self._imfFactor[i] * np.sqrt(abs(x[i])/ self._mark[i]))
                         for i in range(n)])
         im_fut = np.array([
             abs(x[i])*max(1.0 / self._account_leverage,self._imfFactor[i] * np.sqrt(abs(x[i]) / self._mark[i]))
