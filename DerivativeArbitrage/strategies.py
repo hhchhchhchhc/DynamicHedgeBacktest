@@ -47,7 +47,7 @@ def refresh_universe(exchange_name,sceening_mode,run_dir):
     futures['spot_volume_avg'] = futures.apply(lambda f:
                             (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean(),axis=1)
     futures['future_volume_avg'] = futures.apply(lambda f:
-                            (hy_history.loc[universe_filter_window,f.name + '/price/volume']).mean(),axis=1)
+                            (hy_history.loc[universe_filter_window,f.name + '/mark/volume']).mean(),axis=1)
 
     futures = futures[
           (futures['borrow_volume_decile'] > borrow_volume_threshold)
@@ -162,7 +162,7 @@ def perp_vs_cash_backtest(
     backtest_end = datetime(2021, 10, 1)
 
     ## ----------- enrich, get history, filter
-    enriched=enricher(exchange, pre_filtered, holding_period,equity=equity,
+    enriched=enricher(exchange, pre_filtered, holding_period,equity=float(equity),
                     slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                     slippage_scaler=slippage_scaler,
                     params={'override_slippage': True,'type_allowed':type_allowed,'fee_mode':'retail'})
@@ -239,9 +239,7 @@ def run_ladder( concentration_limit_list,
                 signal_horizon_list,
                 slippage_override,
                 run_dir):
-    if os.path.isdir(run_dir):
-        for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
-    else: os.mkdir(run_dir)
+    if not os.path.isdir(run_dir): os.mkdir(run_dir)
 
     ladder = pd.DataFrame()
     for c in concentration_limit_list:
@@ -300,7 +298,7 @@ if False:
                 concentration_limit = [0.5],
                 exclusion_list=[],
                 run_dir='DONOTDELETE_live_parquets')
-if True:
+if False:
     run_benchmark_ladder(
                 concentration_limit_list=[.5],
                 slippage_override_list=[2e-4],
@@ -309,5 +307,5 @@ if False:
     run_ladder( concentration_limit_list=[9, 1, .5],
                 holding_period_list = [timedelta(hours=h) for h in [6,12]] + [timedelta(days=d) for d in [1, 2, 3, 4,5]],
                 signal_horizon_list = [timedelta(hours=h) for h in [12]] + [timedelta(days=d) for d in [1, 2,3,4,5,7,10,30]],
-                slippage_override = [2e-4],
+                slippage_override = [2e-4,5e-4],
                 run_dir='DONOTDELETE_runs')
