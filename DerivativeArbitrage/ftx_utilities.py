@@ -130,24 +130,3 @@ def open_exchange(exchange_name):
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
     return  exchange
-
-#a=openit('ftxStopout.pickle')
-#outputit(a,'ftx','ftxstopout',params={'pickleit':False,'excelit':True})
-#a.columns
-
-#sd=from_parquet("history.parquet")
-def compile_runs(dirname='runs/'):
-    result=pd.DataFrame()
-    for filename in [filename for filename in os.listdir(dirname) if "runs_" in filename]:
-        df=pd.read_pickle(dirname+filename).T
-        df['concentration_limit']=float(filename.split('_')[3])
-        df['holding_period'] = pd.Timedelta(filename.split('_')[6])
-        df['signal_horizon'] = pd.Timedelta(filename.split('_')[9].split('.')[0])
-        df['time']=df.apply(lambda f: f.name[0],axis=1)
-        df['field'] = df.apply(lambda f: f.name[1], axis=1)
-        result=result.append(df.set_index(['concentration_limit',
-                                             'holding_period',
-                                             'signal_horizon',
-                                             'time','field']))
-
-    return result
