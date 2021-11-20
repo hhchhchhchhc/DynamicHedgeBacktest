@@ -26,9 +26,6 @@ def build_history(futures,exchange,
     future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe,dirname)
                for (i, f) in futures.iterrows()],
               join='outer',axis=1)
-    future_price_data=pd.concat([price_history(f, exchange, end, start, timeframe,dirname)
-               for f in futures['symbol']],
-              join='outer',axis=1)
     spot_price_data = pd.concat([price_history(f+'/USD', exchange, end, start, timeframe,dirname)
                                    for f in futures['underlying'].unique()],
                                   join='outer', axis=1)
@@ -47,9 +44,7 @@ def build_history(futures,exchange,
     ## just couldn't figure out pd.concat...
     data = perp_funding_data.join(
                 future_rate_data.join(
-                    future_price_data.join(
-                        spot_price_data.join(borrow_data, how='outer'),
-                    how='outer'),
+                    spot_price_data.join(borrow_data, how='outer'),
                 how='outer'),
             how='outer')
 
