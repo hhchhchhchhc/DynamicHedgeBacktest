@@ -2,7 +2,6 @@ from time import sleep
 from ftx_history import *
 from ftx_utilities import *
 from ftx_snap_basis import enricher
-from s3 import *
 
 def ftx_history(dirname='',
                        start=datetime(2021, 9, 20),
@@ -48,7 +47,7 @@ def ftx_history(dirname='',
                                                  axis=1)
     enriched['future_volume_avg'] = enriched.apply(lambda f:
                                                    (hy_history.loc[
-                                                       universe_filter_window, f.name + '/price/volume']).mean(),
+                                                       universe_filter_window, f.name + '/mark/volume']).mean(),
                                                    axis=1)
 
     if dirname!='':
@@ -57,10 +56,13 @@ def ftx_history(dirname='',
 
     return hy_history
 
-i=0
-while i<0:
+i=1
+while i<1:
     try:
-        ftx_history(coin_list=['OMG,BOBA'],start=datetime.now(),end=datetime.now()-timedelta(weeks=1),timeframe='5m')
+        end_time = datetime(2021, 7, 8)  # datetime.today().replace(minute=0,second=0,microsecond=0)
+        start_time = datetime(2021, 7, 7)
+        coins = ['OKB']
+        ftx_history(dirname='',start=start_time,end=end_time,timeframe='5m',coin_list=coins)
     except:
-        sleep(60)
+        sleep(5)
     i=i+1
