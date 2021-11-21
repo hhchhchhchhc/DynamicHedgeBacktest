@@ -9,9 +9,9 @@ import seaborn as sns
 import ccxt
 #from sklearn import *
 
-def refresh_universe(exchange_name,sceening_mode,run_dir):
-    filename = run_dir+'/'+sceening_mode+'.xlsx'
-    if os.path.isfile(filename): return pd.read_excel(filename)
+def refresh_universe(exchange_name):
+    filename = 'DONOTDELETE_configs/universe.xlsx'
+    if os.path.isfile(filename): return pd.read_excel(filename,sheet_name='futures')
 
     exchange=open_exchange(exchange_name)
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
@@ -21,14 +21,10 @@ def refresh_universe(exchange_name,sceening_mode,run_dir):
     universe_end = datetime(2021, 11, 1)
     borrow_decile = 0.1
     #type_allowed=['perpetual']
-    if sceening_mode == 'wide':
-        future_volume_threshold = 2e5
-        spot_volume_threshold = 2e5
-        borrow_volume_threshold = 2e5
-    elif sceening_mode == 'tight':
-        future_volume_threshold = 5e6
-        spot_volume_threshold = 5e6
-        borrow_volume_threshold = 5e6
+    screening_params=pd.DataFrame(
+        index=['future_volume_threshold','spot_volume_threshold','borrow_volume_threshold'],
+        data={'wide':[2e5,2e5,2e5],# important that wide is first :(
+              'tight':[5e5,5e5,5e5]})
 
    # qualitative screening
     futures = futures[
@@ -40,7 +36,7 @@ def refresh_universe(exchange_name,sceening_mode,run_dir):
     # volume screening
     hy_history = build_history(futures, exchange,
                                timeframe='1h', end=universe_end, start=universe_start,
-                               dirname='archived data/universe')
+                               dirname='DONOTDELETE_configs/universe_history')
     universe_filter_window=hy_history[universe_start:universe_end].index
     futures['borrow_volume_decile'] = futures.apply(lambda f:
                             (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']*hy_history.loc[universe_filter_window,f.name+'/mark/o']).quantile(q=borrow_decile),axis=1)
@@ -49,14 +45,23 @@ def refresh_universe(exchange_name,sceening_mode,run_dir):
     futures['future_volume_avg'] = futures.apply(lambda f:
                             (hy_history.loc[universe_filter_window,f.name + '/mark/volume']).mean(),axis=1)
 
-    futures = futures[
-          (futures['borrow_volume_decile'] > borrow_volume_threshold)
-        & (futures['spot_volume_avg'] > spot_volume_threshold)
-        & (futures['future_volume_avg'] > future_volume_threshold)]
+    futures['inclusion_level'] = 'not_included'
+    for c in screening_params:# important that wide is first :(
+        futures.loc[
+              (futures['borrow_volume_decile'] > screening_params.loc['borrow_volume_threshold',c])
+            & (futures['spot_volume_avg'] > screening_params.loc['spot_volume_threshold',c])
+            & (futures['future_volume_avg'] > screening_params.loc['future_volume_threshold',c]),'inclusion_level'] = c
 
-    futures.to_excel(filename)
+    with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
+        parameters = pd.Series(name='run_params',data={
+            'run_date':datetime.today(),
+            'universe_start': universe_start,
+            'universe_end': universe_end,
+            'borrow_decile': borrow_decile}).to_excel(writer,sheet_name='parameters')
+        screening_params.to_excel(writer, sheet_name='screening_params')
+        futures.to_excel(writer, sheet_name='futures')
 
-    return futures['symbol'].values
+    return futures
 
 def perp_vs_cash_live(equity,
                 signal_horizon,
@@ -75,7 +80,9 @@ def perp_vs_cash_live(equity,
     point_in_time = (datetime.now()-timedelta(hours=0)).replace(minute=0,second=0,microsecond=0)
 
     # filtering params
-    universe=refresh_universe('ftx', 'wide','DONOTDELETE_configs')
+    universe_df=refresh_universe('ftx')
+    universe_size='wide'
+    universe=universe_df.loc[universe_df['inclusion_level']==universe_size].drop(index=exclusion_list)
     type_allowed = ['perpetual']
     max_nb_coins = 99
     carry_floor = 0.4
@@ -88,7 +95,7 @@ def perp_vs_cash_live(equity,
     for (holding_period,signal_horizon,concentration_limit) in [(hp,sh,c) for hp in holding_period for sh in signal_horizon for c in concentration_limit]:
 
         ## ----------- enrich, get history, filter
-        enriched = enricher(exchange, futures.drop(index=exclusion_list), holding_period, equity=equity,
+        enriched = enricher(exchange, futures, holding_period, equity=equity,
                             slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                             slippage_scaler=slippage_scaler,
                             params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
@@ -109,7 +116,7 @@ def perp_vs_cash_live(equity,
         pre_filtered = updated[
             (~np.isnan(updated['E_intCarry']))
             & (updated['type'].isin(type_allowed))
-            & (updated['symbol'].isin(universe['symbol']))]
+            & (updated['symbol'].isin(universe))]
         pre_filtered = pre_filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
 
         # run a trajectory
@@ -128,7 +135,19 @@ def perp_vs_cash_live(equity,
                                     optional_params= ['verbose']
                                   )
 
-    optimized.to_excel(run_dir+'/optimal_live.xlsx')
+    with pd.ExcelWriter(run_dir+'/optimal_live.xlsx', engine='xlsxwriter') as writer:
+        parameters = pd.Series({
+            'run_date':datetime.today(),
+            'exclusion_list': exclusion_list,
+            'type_allowed': type_allowed,
+            'max_nb_coins': max_nb_coins,
+            'carry_floor': carry_floor,
+            'slippage_override': slippage_override,
+            'slippage_scaler': slippage_scaler,
+            'slippage_orderbook_depth': slippage_orderbook_depth})
+        optimized.to_excel(writer,sheet_name='optimized')
+        parameters.to_excel(writer,sheet_name='parameters')
+
     return optimized
 
 
@@ -139,16 +158,18 @@ def perp_vs_cash_backtest(
                 slippage_override,
                 concentration_limit,
                 filename='',
-                optional_params=[]):
+                optional_params=[],
+                exclusion_list=[]):
     exchange=open_exchange('ftx')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
 
     # filtering params
-    universe = refresh_universe('ftx', 'wide','DONOTDELETE_configs')
+    universe_df=refresh_universe('ftx')
+    universe_size='tight'
+    universe=universe_df.loc[universe_df['inclusion_level']==universe_size].drop(index=exclusion_list)
     type_allowed=['perpetual']
     max_nb_coins = 99
-    carry_floor = 0.4
     pre_filtered=futures[
                 (futures['type'].isin(type_allowed))
               & (futures['symbol'].isin(universe['symbol']))]
@@ -298,7 +319,9 @@ if False:
                 concentration_limit = [0.5],
                 exclusion_list=[],
                 run_dir='DONOTDELETE_live_parquets')
-if False:
+    s3_upload_file('DONOTDELETE_live_parquets/optimal_live.xlsx', 'gof.crypto.shared', 'ftx_optimal_cash_carry.xlsx')
+if True:
+    s3_upload_file('DONOTDELETE_configs/universe.xlsx', 'gof.crypto.shared', 'ftx_universe.xlsx')
     run_benchmark_ladder(
                 concentration_limit_list=[.5],
                 slippage_override_list=[2e-4],
