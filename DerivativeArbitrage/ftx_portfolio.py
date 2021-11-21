@@ -17,10 +17,10 @@ class ExcessMargin:
         self._imfFactor = futures['imfFactor'].values
         self._mark = futures['mark'].values
         self._collateralWeightInitial = futures.apply(collateralWeightInitial,axis=1).values
-        self._equity=equity
-        self._long_blowup=long_blowup
-        self._short_blowup = short_blowup
-        self._nb_blowups = nb_blowups
+        self._equity=float(equity)
+        self._long_blowup= float(long_blowup)
+        self._short_blowup = float(short_blowup)
+        self._nb_blowups = int(nb_blowups)
         self._params=params
     # unused for now
     def update(self,mark):
