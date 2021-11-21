@@ -8,7 +8,7 @@ import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import xlsxwriter
-
+from s3 import *
 import matplotlib
 import cufflinks as cf
 cf.go_offline()
@@ -20,12 +20,12 @@ import dateutil
 import itertools
 
 os.chdir('C:\\Users\\david\\Dropbox\\mobilier\\crypto')
-NB_BLOWUPS = 3
-SHORT_BLOWUP = 0.3
-LONG_BLOWUP = 0.15
-EQUITY=1e5
-OPEN_ORDERS_HEARDROOM=.01 # assumes moderate slicing, given avg rebalancing in progress isn't huge.
-
+static_params=pd.read_excel('DONOTDELETE_configs/static_params.xlsx',index_col='key')
+NB_BLOWUPS = static_params.loc['NB_BLOWUPS','value']#3
+SHORT_BLOWUP = static_params.loc['SHORT_BLOWUP','value']# = 0.3
+LONG_BLOWUP = static_params.loc['LONG_BLOWUP','value']# = 0.15
+EQUITY = static_params.loc['EQUITY','value']#=1e5
+print('read static_params')
 ########## only for dated futures
 def calc_basis(f,s,T,t): # T is tring, t is date
     basis = np.log(float(f)/float(s))
