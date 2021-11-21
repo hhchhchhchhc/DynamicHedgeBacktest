@@ -25,7 +25,9 @@ NB_BLOWUPS = static_params.loc['NB_BLOWUPS','value']#3
 SHORT_BLOWUP = static_params.loc['SHORT_BLOWUP','value']# = 0.3
 LONG_BLOWUP = static_params.loc['LONG_BLOWUP','value']# = 0.15
 EQUITY = static_params.loc['EQUITY','value']#=1e5
+OPEN_ORDERS_HEARDROOM = static_params.loc['OPEN_ORDERS_HEARDROOM','value']#=1e5
 print('read static_params')
+
 ########## only for dated futures
 def calc_basis(f,s,T,t): # T is tring, t is date
     basis = np.log(float(f)/float(s))

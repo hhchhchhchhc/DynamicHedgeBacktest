@@ -9,10 +9,13 @@ import seaborn as sns
 import ccxt
 #from sklearn import *
 
-def refresh_universe(exchange_name):
+def refresh_universe(exchange_name,universe_size):
     filename = 'DONOTDELETE_configs/universe.xlsx'
-    if os.path.isfile(filename): return pd.read_excel(filename,sheet_name='futures')
-
+    if os.path.isfile(filename):
+        try:
+            return pd.read_excel(filename,sheet_name=universe_size,index_col=0)
+        except:
+            pass
     exchange=open_exchange(exchange_name)
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets=exchange.fetch_markets()
@@ -45,32 +48,35 @@ def refresh_universe(exchange_name):
     futures['future_volume_avg'] = futures.apply(lambda f:
                             (hy_history.loc[universe_filter_window,f.name + '/mark/volume']).mean(),axis=1)
 
-    futures['inclusion_level'] = 'not_included'
-    for c in screening_params:# important that wide is first :(
-        futures.loc[
-              (futures['borrow_volume_decile'] > screening_params.loc['borrow_volume_threshold',c])
-            & (futures['spot_volume_avg'] > screening_params.loc['spot_volume_threshold',c])
-            & (futures['future_volume_avg'] > screening_params.loc['future_volume_threshold',c]),'inclusion_level'] = c
-
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
+        for c in screening_params:# important that wide is first :(
+            population = futures.loc[
+                  (futures['borrow_volume_decile'] > screening_params.loc['borrow_volume_threshold',c])
+                & (futures['spot_volume_avg'] > screening_params.loc['spot_volume_threshold',c])
+                & (futures['future_volume_avg'] > screening_params.loc['future_volume_threshold',c])]
+            population.to_excel(writer, sheet_name=c)
+
         parameters = pd.Series(name='run_params',data={
             'run_date':datetime.today(),
             'universe_start': universe_start,
             'universe_end': universe_end,
             'borrow_decile': borrow_decile}).to_excel(writer,sheet_name='parameters')
         screening_params.to_excel(writer, sheet_name='screening_params')
-        futures.to_excel(writer, sheet_name='futures')
+        #TODO: s3_upload_file(filename, 'gof.crypto.shared', 'ftx_universe_'+str(datetime.now())+'.xlsx')
 
     return futures
 
 def perp_vs_cash_live(equity,
                 signal_horizon,
                 holding_period,
+                slippage_override,
                 concentration_limit,
                 exclusion_list,
                 run_dir=''):
     if os.path.isdir(run_dir):
-        for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
+        first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
+        if max(first_history.index)<datetime.now().replace(minute=0,second=0,microsecond=0):
+            for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
     else: os.mkdir(run_dir)
 
     exchange = open_exchange('ftx')
@@ -80,19 +86,16 @@ def perp_vs_cash_live(equity,
     point_in_time = (datetime.now()-timedelta(hours=0)).replace(minute=0,second=0,microsecond=0)
 
     # filtering params
-    universe_df=refresh_universe('ftx')
-    universe_size='wide'
-    universe=universe_df.loc[universe_df['inclusion_level']==universe_size].drop(index=exclusion_list)
+    universe=refresh_universe('ftx','wide').drop(index=exclusion_list)
     type_allowed = ['perpetual']
     max_nb_coins = 99
     carry_floor = 0.4
 
     # fee estimation params
-    slippage_override = 0  # TODO: 2e-4  #### this is given by mktmaker
     slippage_scaler = 1
     slippage_orderbook_depth = 10000
 
-    for (holding_period,signal_horizon,concentration_limit) in [(hp,sh,c) for hp in holding_period for sh in signal_horizon for c in concentration_limit]:
+    for (holding_period,signal_horizon,slippage_override,concentration_limit) in [(hp,sh,sl,c) for hp in holding_period for sh in signal_horizon for sl in slippage_override for c in concentration_limit]:
 
         ## ----------- enrich, get history, filter
         enriched = enricher(exchange, futures, holding_period, equity=equity,
@@ -103,7 +106,7 @@ def perp_vs_cash_live(equity,
         #### get history ( this is sloooow)
         hy_history = build_history(enriched, exchange,
                                    timeframe='1h', end=point_in_time, start=point_in_time-signal_horizon-holding_period,
-                                   dirname='live_parquets')
+                                   dirname='DONOTDELETE_live_parquets')
 
         # ------- build derived data history
         (intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow) = build_derived_history(
@@ -116,7 +119,7 @@ def perp_vs_cash_live(equity,
         pre_filtered = updated[
             (~np.isnan(updated['E_intCarry']))
             & (updated['type'].isin(type_allowed))
-            & (updated['symbol'].isin(universe))]
+            & (updated['symbol'].isin(universe.index))]
         pre_filtered = pre_filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
 
         # run a trajectory
@@ -165,14 +168,12 @@ def perp_vs_cash_backtest(
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
 
     # filtering params
-    universe_df=refresh_universe('ftx')
-    universe_size='tight'
-    universe=universe_df.loc[universe_df['inclusion_level']==universe_size].drop(index=exclusion_list)
+    universe = refresh_universe('ftx', 'tight').drop(index=exclusion_list)
     type_allowed=['perpetual']
     max_nb_coins = 99
     pre_filtered=futures[
                 (futures['type'].isin(type_allowed))
-              & (futures['symbol'].isin(universe['symbol']))]
+              & (futures['symbol'].isin(universe.index))]
 
     # fee estimation params
     slippage_scaler=1
@@ -312,16 +313,16 @@ def run_benchmark_ladder(
 
     ladder.to_pickle(run_dir + '/ladder.pickle')
 
-if False:
+if True:
     perp_vs_cash_live(equity=EQUITY,
                 signal_horizon = [timedelta(days=7)],
                 holding_period = [timedelta(days=2)],
+                slippage_override = [2e-4],
                 concentration_limit = [0.5],
                 exclusion_list=[],
                 run_dir='DONOTDELETE_live_parquets')
-    s3_upload_file('DONOTDELETE_live_parquets/optimal_live.xlsx', 'gof.crypto.shared', 'ftx_optimal_cash_carry.xlsx')
-if True:
-    s3_upload_file('DONOTDELETE_configs/universe.xlsx', 'gof.crypto.shared', 'ftx_universe.xlsx')
+    #TODO: s3_upload_file('DONOTDELETE_live_parquets/optimal_live.xlsx', 'gof.crypto.shared', 'ftx_optimal_cash_carry'+str(datetime.now())+'.xlsx')
+if False:
     run_benchmark_ladder(
                 concentration_limit_list=[.5],
                 slippage_override_list=[2e-4],
