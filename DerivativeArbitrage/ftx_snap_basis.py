@@ -351,7 +351,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary['CarryEstimator']=E_intCarry+E_intUSDborrow
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
-        summary['RealizedCarry'] = np.dot(xt,intCarry+intUSDborrow)
+        summary['RealizedCarry'] = xt*(intCarry+intUSDborrow)
         summary['excessIM'] = excess_margin.call(res['x'])['IM']
         summary['excessMM'] = excess_margin.call(res['x'])['MM']
 
