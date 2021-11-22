@@ -19,13 +19,22 @@ from datetime import datetime,timezone,timedelta,date
 import dateutil
 import itertools
 
-os.chdir('C:\\Users\\david\\Dropbox\\mobilier\\crypto')
-static_params=pd.read_excel('DONOTDELETE_configs/static_params.xlsx',index_col='key')
-NB_BLOWUPS = static_params.loc['NB_BLOWUPS','value']#3
-SHORT_BLOWUP = static_params.loc['SHORT_BLOWUP','value']# = 0.3
-LONG_BLOWUP = static_params.loc['LONG_BLOWUP','value']# = 0.15
-EQUITY = static_params.loc['EQUITY','value']#=1e5
-OPEN_ORDERS_HEARDROOM = static_params.loc['OPEN_ORDERS_HEARDROOM','value']#=1e5
+def timedeltatostring(dt):
+    return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
+
+
+if not 'Runtime' in os.listdir('.'): raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
+static_params=pd.read_excel('Runtime/configs/static_params.xlsx',index_col='key')
+NB_BLOWUPS = int(static_params.loc['NB_BLOWUPS','value'])#3)
+SHORT_BLOWUP = float(static_params.loc['SHORT_BLOWUP','value'])# = 0.3
+LONG_BLOWUP = float(static_params.loc['LONG_BLOWUP','value'])# = 0.15
+EQUITY = float(static_params.loc['EQUITY','value'])#=1e5
+OPEN_ORDERS_HEADROOM = float(static_params.loc['OPEN_ORDERS_HEADROOM','value'])#=1e5
+SIGNAL_HORIZON = pd.Timedelta(static_params.loc['SIGNAL_HORIZON','value'])
+HOLDING_PERIOD = pd.Timedelta(static_params.loc['HOLDING_PERIOD','value'])
+SLIPPAGE_OVERRIDE = float(static_params.loc['SLIPPAGE_OVERRIDE','value'])
+CONCENTRATION_LIMIT = float(static_params.loc['CONCENTRATION_LIMIT','value'])
+EXCLUSION_LIST = [c for c in static_params.loc['EXCLUSION_LIST','value'].split('+')]
 print('read static_params')
 
 ########## only for dated futures
