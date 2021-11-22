@@ -25,31 +25,40 @@ class ExcessMargin:
     # unused for now
     def update(self,mark):
         self._mark = mark
-    def call(self,x):
-        n=len(x)
 
+    def baseMargins(self,x,mark):
+        n = len(x)
         # TODO: staked counts towards MM not IM
         # https://help.ftx.com/hc/en-us/articles/360031149632
         collateral = np.array([
-            x[i] if x[i]<0
-            else x[i]*min(self._collateralWeight[i],1.1 / (1 + self._imfFactor[i] * np.sqrt(abs(x[i])/ self._mark[i])))
-                        for i in range(n)])
+            x[i] if x[i] < 0
+            else x[i] * min(self._collateralWeight[i],
+                            1.1 / (1 + self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i])))
+            for i in range(n)])
         # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
         im_short = np.array([
             0 if x[i] > 0
-            else -x[i]*max(1.1/self._collateralWeightInitial[i]-1, self._imfFactor[i] * np.sqrt(abs(x[i])/ self._mark[i]))
-                        for i in range(n)])
+            else -x[i] * max(1.1 / self._collateralWeightInitial[i] - 1,
+                             self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
+            for i in range(n)])
         mm_short = np.array([
             0 if x[i] > 0
-            else -x[i] *max(1.03/self._collateralWeightInitial[i]-1, 0.6*self._imfFactor[i] * np.sqrt(abs(x[i])/ self._mark[i]))
-                        for i in range(n)])
+            else -x[i] * max(1.03 / self._collateralWeightInitial[i] - 1,
+                             0.6 * self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
+            for i in range(n)])
         im_fut = np.array([
-            abs(x[i])*max(1.0 / self._account_leverage,self._imfFactor[i] * np.sqrt(abs(x[i]) / self._mark[i]))
-                        for i in range(n)])
-        mm_fut= np.array([
-            max([0.03*x[i], 0.6 * im_fut[i]])
-                        for i in range(n)])
+            abs(x[i]) * max(1.0 / self._account_leverage, self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
+            for i in range(n)])
+        mm_fut = np.array([
+            max([0.03 * x[i], 0.6 * im_fut[i]])
+            for i in range(n)])
 
+        return (collateral,im_short,mm_short,im_fut,mm_fut)
+
+    def call(self,x):
+        n=len(x)
+
+        # blowups deal with a spike situation on the nb_blowups biggest deltas
         # long: new freeColl = (1+ds)w-(ds+blow)-fut_mm(1+ds+blow)
         # freeColl move = w ds-(ds+blow)-mm(ds+blow) = blow(1-mm) -ds(1-w+mm) ---> ~blow
         # short: new freeColl = -(1+ds)+(ds+blow)-fut_mm(1+ds+blow)-spot_mm(1+ds)
@@ -60,16 +69,23 @@ class ExcessMargin:
             for j in range(len(blowup_idx)):
                 i=blowup_idx[j]
                 blowups[i] = x[i]*self._long_blowup if x[i]>0 else -x[i]*self._short_blowup
-    
-        excessIM = collateral - im_fut - im_short
-        excessMM = collateral - mm_fut - mm_short - blowups
-        totalIM = self._equity -sum(x) - 0.1* max([0,sum(x)-self._equity]) + sum(excessIM)
-        totalMM = self._equity -sum(x) - 0.03 * max([0, sum(x) - self._equity]) + sum(excessMM)
+
+        # assume all coins go either LONG_BLOWUP or SHORT_BLOWUP..what is the margin impact incl future pnl ?
+        (collateral_up,im_short_up,mm_short_up,im_fut_up,mm_fut_up) = self.baseMargins(x*(1+LONG_BLOWUP),self._mark*(1+LONG_BLOWUP))
+        MM_up = collateral_up - mm_fut_up - mm_short_up - x * LONG_BLOWUP # the futures pnl
+        (collateral_down,im_short_down,mm_short_down,im_fut_down,mm_fut_down) = self.baseMargins(x*(1-SHORT_BLOWUP),self._mark*(1-SHORT_BLOWUP))
+        MM_down = collateral_down - mm_fut_down - mm_short_down + x * SHORT_BLOWUP # the futures pnl
+        (collateral,im_short,mm_short,im_fut,mm_fut) = self.baseMargins(x,self._mark)
+        MM = collateral - mm_fut - mm_short - blowups
+
+        IM = collateral - im_fut - im_short
+        totalIM = self._equity -sum(x) - 0.1* max([0,sum(x)-self._equity]) + sum(IM)
+        totalMM = self._equity -sum(x) - 0.03 * max([0, sum(x) - self._equity]) + min([sum(MM),sum(MM_up),sum(MM_down)])
 
         return {'totalIM':totalIM,
                 'totalMM':totalMM,
-                'IM':excessIM,
-                'MM':excessMM}
+                'IM':IM,
+                'MM':MM}
 
 ### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
 ### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
