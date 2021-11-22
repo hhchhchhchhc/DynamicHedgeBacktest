@@ -142,7 +142,7 @@ def update(input_futures,point_in_time,history,equity,
     return futures,excess_margin
 
 # return rolling expectations of integrals
-def build_derived_history(exchange, input_futures, hy_history,
+def forecast(exchange, input_futures, hy_history,
                   holding_period,  # to convert slippage into rate
                   signal_horizon,  # historical window for expectations
                   filename=''):             # use external rather than order book
@@ -257,7 +257,7 @@ def transaction_cost_calculator(dx,buy_slippage,sell_slippage):
     ])
 
 def cash_carry_optimizer(exchange, input_futures,excess_margin,
-                  previous_weights,
+                  previous_weights_df,
                   holding_period,  # to convert slippag into rate
                   signal_horizon,  # historical window for expectations
                   concentration_limit,
@@ -273,6 +273,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     E_intUSDborrow=futures['E_intUSDborrow'].values[0]
     buy_slippage=futures['buy_slippage'].values
     sell_slippage = futures['sell_slippage'].values
+    # xt: must ensure order is the same
+    previous_weights=futures.join(previous_weights_df,how='left',lsuffix='_')['optimalWeight'].fillna(0.0)
     xt=previous_weights.values
 
     ##### optimization functions
@@ -301,7 +303,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     #loss_tolerance_constraint = {'type': 'ineq',
     #            'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
     margin_constraint = {'type': 'ineq',
-                'fun': lambda x: excess_margin.call(x)['totalIM'] - equity*OPEN_ORDERS_HEARDROOM}
+                'fun': lambda x: excess_margin.call(x)['totalIM'] - equity*OPEN_ORDERS_HEADROOM}
     stopout_constraint = {'type': 'ineq',
                 'fun': lambda x: excess_margin.call(x)['totalMM']}
     bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit*equity for w in futures['direction']]),
@@ -330,8 +332,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         # guess:
         # - normalized carry expectation, rescaled to max margins
         # - previous weights
-        x0=equity*np.array(E_intCarry)/sum(E_intCarry)
-        x1 = x0/np.max([1-margin_constraint['fun'](x0)/equity,1-stopout_constraint['fun'](x0)/equity])
+        #x0=equity*np.array(E_intCarry)/sum(E_intCarry)
+        #x1 = x0/np.max([1-margin_constraint['fun'](x0)/equity,1-stopout_constraint['fun'](x0)/equity])
         x1=xt
         callbackF(x1, progress_display,(True if 'verbose' in optional_params else False))
 
@@ -349,7 +351,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary['CarryEstimator']=E_intCarry+E_intUSDborrow
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
-        summary['RealizedCarry'] = previous_weights * (intCarry+intUSDborrow)
+        summary['RealizedCarry'] = np.dot(xt,intCarry+intUSDborrow)
         summary['excessIM'] = excess_margin.call(res['x'])['IM']
         summary['excessMM'] = excess_margin.call(res['x'])['MM']
 
@@ -378,7 +380,6 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary.loc['total', 'transactionCost'] = summary['transactionCost'].sum()
         summary.columns.names=['field']
 
-        summary['absWeight']=summary['optimalWeight'].apply(np.abs,axis=1)
         if (True if 'verbose' in optional_params else False):
             with pd.ExcelWriter('paths.xlsx', engine='xlsxwriter') as writer:
                 summary.to_excel(writer, sheet_name='futureinfo')
