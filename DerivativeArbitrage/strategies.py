@@ -152,6 +152,13 @@ def perp_vs_cash_live(equity,
         optimized.to_excel(writer,sheet_name='optimized')
         parameters.to_excel(writer,sheet_name='parameters')
 
+    display=optimized[['optimalWeight','ExpectedCarry','transactionCost']]
+    display['absWeight']=display['optimalWeight'].apply(abs)
+    display.loc['total','absWeight']=display.drop(index='total')['absWeight'].sum()
+    display=display.sort_values(by='absWeight',ascending=True)
+    display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
+    print(display)
+
     return optimized
 
 
@@ -344,4 +351,4 @@ def run(command_list):
     #            slippage_override = [2e-4,5e-4],
     #            run_dir='Runtime/runs')
 
-run(['ladder'])
+run(['live'])
