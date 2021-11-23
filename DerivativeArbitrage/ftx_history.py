@@ -13,6 +13,9 @@ def build_history(futures,exchange,
         parquet_filename = dirname+'/allfundings.parquet'
         if os.path.isfile(parquet_filename):
             perp_funding_data=from_parquet(parquet_filename)
+            perp_funding_data = perp_funding_data[[c for c in perp_funding_data.columns if any( \
+                                        coin == c.split('/')[0] for coin in list(futures['symbol'])
+                                    )]]
         else:
             perp_funding_data=pd.concat([funding_history(f,exchange,start,end,dirname)
                                      for (i,f) in futures[futures['type']=='perpetual'].iterrows()],join='outer',axis=1)
@@ -29,6 +32,9 @@ def build_history(futures,exchange,
     borrow_data=pd.DataFrame()
     if os.path.isfile(parquet_filename):
         borrow_data = from_parquet(parquet_filename)
+        borrow_data = borrow_data[[c for c in borrow_data.columns if any( \
+                                       coin==c.split('/')[0] for coin in (['USD']+ list(futures['underlying']))
+                                   )]]
     else:
         borrow_data=pd.concat([borrow_history(f, exchange, end, start,dirname)
                for f in futures['underlying'].unique()]
@@ -43,7 +49,7 @@ def build_history(futures,exchange,
                 how='outer'),
             how='outer')
 
-    return data
+    return data[~data.index.duplicated()].sort_index()
 
 ### only perps, only borrow and funding, only hourly
 def borrow_history(spot,exchange,

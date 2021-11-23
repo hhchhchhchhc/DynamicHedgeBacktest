@@ -3,6 +3,20 @@ from ftx_history import *
 from ftx_utilities import *
 from ftx_snap_basis import enricher
 
+def ftx_read_history(dirname='',coin_list=[]):
+    exchange = open_exchange('ftx')
+    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
+    if coin_list!=[]: futures=futures[futures['underlying'].isin(coin_list)]
+
+    # pass timeframe=np.NaN to avoid recreating history....
+    return build_history(futures, exchange, dirname=dirname, timeframe=np.NaN).dropna()
+
+if False:
+    directory='C:/Users/david/puffin/DerivativeArbitrage/Runtime/temporary_parquets/'
+    coins=['OKB','1INCH']
+    a=ftx_read_history(dirname=directory,coin_list=coins)
+    print(a)
+
 def ftx_history(dirname='',
                        start=datetime(2021, 9, 20),
                        end = datetime(2021, 11, 16),
