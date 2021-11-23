@@ -22,8 +22,11 @@ import itertools
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
 
-
-if not 'Runtime' in os.listdir('.'): raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
+if not 'Runtime' in os.listdir('.'):
+    # notebooks run one level down...
+    os.chdir('../')
+    if not 'Runtime' in os.listdir('.'):
+        raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
 static_params=pd.read_excel('Runtime/configs/static_params.xlsx',index_col='key')
 NB_BLOWUPS = int(static_params.loc['NB_BLOWUPS','value'])#3)
 SHORT_BLOWUP = float(static_params.loc['SHORT_BLOWUP','value'])# = 0.3
