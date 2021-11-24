@@ -247,7 +247,7 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
 
 
 def live_risk():
-    exchange = open_exchange('ftx')
+    exchange = open_exchange('ftx_benoit','CashAndCarry')
     coin_details = fetch_coin_details(exchange)
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False, includeIndex=True)).set_index('name')
 
@@ -270,7 +270,7 @@ def live_risk():
 
     return result
 
-live_risk()
+print(live_risk())
 
 def process_fills(exchange,spot_fills,future_fills):
     if (spot_fills.empty)|(future_fills.empty): return pd.DataFrame()
