@@ -249,31 +249,28 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
 def live_risk():
     exchange = open_exchange('ftx')
     coin_details = fetch_coin_details(exchange)
-    positions=exchange.fetch_positions(params={})#'showAvgPrice':True})
-    balances=exchange.fetch_balance(params={})['info']['result']#'showAvgPrice':True})
+    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False, includeIndex=True)).set_index('name')
 
-    greeks = portfolio_greeks(exchange,positions,balances)
+    positions=pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],dtype=float)#'showAvgPrice':True})
+    positions['coin']=positions['future'].apply(lambda f: f.split('-')[0])
+    positions = positions[positions['netSize'] != 0.0].set_index('coin').fillna(0.0)
 
-    ## 'actual' column
-    account_info = exchange.privateGetAccount()['result']
-    updated=greeks.index[0][0]
-    greeks[('actual',
-            None,
-            None,
-            None,
-            None,
-            None)] = pd.Series({
-                    (updated,'PV'):float(account_info['totalAccountValue']),
-                    (updated, 'ref'): float(account_info['totalPositionSize']), ## gross notional in lieu of ref
-                    (updated,'Delta'):None,
-                    (updated,'ShadowDelta'):None,
-                    (updated,'Gamma'):None,
-                    (updated,'IR01'):None,
-                    (updated,'Carry'):None,
-                    (updated,'collateralValue'): float(account_info['collateral']),
-                    (updated,'IM'): float(account_info['initialMarginRequirement']),
-                    (updated,'MM'): float(account_info['maintenanceMarginRequirement'])})
-    return greeks
+    balances=pd.DataFrame(exchange.fetch_balance(params={})['info']['result'],dtype=float)#'showAvgPrice':True})
+    balances=balances[balances['total']!=0.0].set_index('coin').fillna(0.0)
+
+    greeks=balances.join(positions,how='outer')
+    greeks['futureDelta'] = positions.apply(lambda f: f['netSize'] * futures.loc[f['future'], 'mark'], axis=1)
+    greeks['spotDelta'] = balances.apply(lambda f: f['total'] * coin_details.loc[f.name, 'indexPrice'], axis=1)
+    result=greeks[['futureDelta','spotDelta']].fillna(0.0)
+    result['netDelta'] = result['futureDelta'] + result['spotDelta']
+    result.loc['total', ['futureDelta', 'spotDelta', 'netDelta']] = result[['futureDelta', 'spotDelta', 'netDelta']].sum()
+
+    account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[0, 1:8]
+    result.loc['total', account_info.index] = account_info.values
+
+    return result
+
+live_risk()
 
 def process_fills(exchange,spot_fills,future_fills):
     if (spot_fills.empty)|(future_fills.empty): return pd.DataFrame()
