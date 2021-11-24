@@ -263,9 +263,9 @@ def live_risk():
     greeks['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
     result=greeks[['futureDelta','spotDelta']].fillna(0.0)
     result['netDelta'] = result['futureDelta'] + result['spotDelta']
-    greeks['futureMark'] = positions.apply(lambda f: futures.loc[f['future'], 'mark'], axis=1)
-    greeks['futureIndex'] = positions.apply(lambda f: futures.loc[f['future'], 'index'], axis=1)
-    greeks['spotMark'] = balances.apply(lambda f: (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
+    result['futureMark'] = positions.apply(lambda f: futures.loc[f['future'], 'mark'], axis=1)
+    result['futureIndex'] = positions.apply(lambda f: futures.loc[f['future'], 'index'], axis=1)
+    result['spotMark'] = balances.apply(lambda f: (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
     result.loc['total', ['futureDelta', 'spotDelta', 'netDelta']] = result[['futureDelta', 'spotDelta', 'netDelta']].sum()
 
     account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[0, 1:8]
