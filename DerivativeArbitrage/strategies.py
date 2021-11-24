@@ -66,12 +66,12 @@ def refresh_universe(exchange_name,universe_size):
 
     return futures
 
-def perp_vs_cash_live(equity,
+def perp_vs_cash_live(equity=EQUITY,
                 signal_horizon,
                 holding_period,
                 slippage_override,
                 concentration_limit,
-                exclusion_list,
+                exclusion_list=EXCLUSION_LIST,
                 run_dir=''):
     try:
         first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
@@ -163,14 +163,14 @@ def perp_vs_cash_live(equity,
 
 
 def perp_vs_cash_backtest(
-                equity,
+                equity=EQUITY,
                 signal_horizon,
                 holding_period,
                 slippage_override,
                 concentration_limit,
+                exclusion_list=EXCLUSION_LIST,
                 filename='',
-                optional_params=[],
-                exclusion_list=[]):
+                optional_params=[]):
     exchange=open_exchange('ftx')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
@@ -281,7 +281,7 @@ def run_ladder( concentration_limit_list,
                                +'_holding_period_' + timedeltatostring(h) \
                                + '_signal_horizon_' + timedeltatostring(s) \
                                + '_slippage_override_' + str(txcost)
-                    trajectory=perp_vs_cash_backtest(equity=EQUITY,
+                    trajectory=perp_vs_cash_backtest(
                                       signal_horizon=s,
                                       holding_period=h,
                                       slippage_override=txcost,
@@ -301,14 +301,16 @@ def run_ladder( concentration_limit_list,
     ladder.to_pickle(run_dir + '/ladder.pickle')
 
 def run_benchmark_ladder(
-                concentration_limit_list,
+                concentration_limit_list=,
+                holding_period_list,
+                signal_horizon_list,
                 slippage_override_list,
                 run_dir):
     ladder = pd.DataFrame()
     #### first, pick best basket every hour, ignoring tx costs
     for c in concentration_limit_list:
             for txcost in slippage_override_list:
-                trajectory = perp_vs_cash_backtest(equity=EQUITY,
+                trajectory = perp_vs_cash_backtest(
                                                    signal_horizon=timedelta(hours=1),
                                                    holding_period=timedelta(hours=1),
                                                    slippage_override=txcost,
@@ -323,12 +325,11 @@ def run_benchmark_ladder(
 
 def run(command_list):
     if 'live' in command_list:
-        perp_vs_cash_live(equity=EQUITY,
+        perp_vs_cash_live(
+                    concentration_limit=[CONCENTRATION_LIMIT],
                     signal_horizon = [SIGNAL_HORIZON],
                     holding_period = [HOLDING_PERIOD],
                     slippage_override = [SLIPPAGE_OVERRIDE],
-                    concentration_limit = [CONCENTRATION_LIMIT],
-                    exclusion_list=EXCLUSION_LIST,
                     run_dir='Runtime/Live_parquets')
         #s3_upload_file('Runtime/live_parquets/optimal_live.xlsx', 'gof.crypto.shared', 'ftx_optimal_cash_carry_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx')
     if 'benchmark' in command_list:
@@ -351,4 +352,4 @@ def run(command_list):
     #            slippage_override = [2e-4,5e-4],
     #            run_dir='Runtime/runs')
 
-run(['live'])
+run(['ladder'])

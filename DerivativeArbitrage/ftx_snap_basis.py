@@ -9,7 +9,7 @@ from ftx_history import *
 from ftx_ftx import *
 
 # adds info, transcation costs, and basic screening
-def enricher(exchange,input_futures,holding_period,equity=EQUITY,
+def enricher(exchange,input_futures,holding_period,equity,
              slippage_override= -999, slippage_orderbook_depth= 0,
              slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':['perpetual'],'fee_mode':'retail'}):
     futures=pd.DataFrame(input_futures)

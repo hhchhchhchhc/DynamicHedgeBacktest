@@ -166,7 +166,7 @@ def collateralWeightInitial(future):# TODO: API call to collateralWeight(Initial
         return future['collateralWeight']-0.05
 
 ### get all static fields
-def fetch_futures(exchange,includeExpired=False,params={}):
+def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):
     response = exchange.publicGetFutures(params)
     expired = exchange.publicGetExpiredFutures(params) if includeExpired==True else []
     coin_details = fetch_coin_details(exchange)
@@ -185,7 +185,8 @@ def fetch_futures(exchange,includeExpired=False,params={}):
         imfFactor = exchange.safe_number(market, 'imfFactor')
 
         ## eg ADA has no coin details
-        if not underlying in coin_details.index: continue
+        if not underlying in coin_details.index:
+            if not includeIndex: continue
 
         result.append({
             'ask': exchange.safe_number(market, 'ask'),
@@ -215,13 +216,13 @@ def fetch_futures(exchange,includeExpired=False,params={}):
             'type': exchange.safe_string(market, 'type'),
          ### additionnals
             'account_leverage': float(account_leverage['leverage']),
-            'collateralWeight':coin_details.loc[underlying,'collateralWeight'],
+            'collateralWeight':coin_details.loc[underlying,'collateralWeight'] if not includeIndex else 'coin_details not found',
             'underlyingType': getUnderlyingType(coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
             'spot_ticker': exchange.safe_string(market, 'underlying')+'/USD',
-            'spotMargin': coin_details.loc[underlying,'spotMargin'],
-            'tokenizedEquity':coin_details.loc[underlying,'tokenizedEquity'],
-            'usdFungible':coin_details.loc[underlying,'usdFungible'],
-            'fiat':coin_details.loc[underlying,'fiat'],
+            'spotMargin': coin_details.loc[underlying,'spotMargin'] if not includeIndex else 'coin_details not found',
+            'tokenizedEquity':coin_details.loc[underlying,'tokenizedEquity'] if not includeIndex else 'coin_details not found',
+            'usdFungible':coin_details.loc[underlying,'usdFungible'] if not includeIndex else 'coin_details not found',
+            'fiat':coin_details.loc[underlying,'fiat'] if not includeIndex else 'coin_details not found',
             'expiryTime':dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None)
                             if exchange.safe_string(market, 'type') == 'future' else np.NaN
         })
