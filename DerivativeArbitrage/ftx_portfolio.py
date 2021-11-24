@@ -248,11 +248,11 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
 
 def live_risk():
     exchange = open_exchange('ftx_benoit','CashAndCarry')
-    coin_details = fetch_coin_details(exchange)
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False, includeIndex=True)).set_index('name')
+    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 
-    positions=pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],dtype=float)#'showAvgPrice':True})
-    positions['coin']=positions['future'].apply(lambda f: f.split('-')[0])
+    positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],dtype=float)#'showAvgPrice':True})
+    positions['coin'] = positions['future'].apply(lambda f: f.split('-')[0])
     positions = positions[positions['netSize'] != 0.0].set_index('coin').fillna(0.0)
 
     balances=pd.DataFrame(exchange.fetch_balance(params={})['info']['result'],dtype=float)#'showAvgPrice':True})
@@ -260,9 +260,12 @@ def live_risk():
 
     greeks=balances.join(positions,how='outer')
     greeks['futureDelta'] = positions.apply(lambda f: f['netSize'] * futures.loc[f['future'], 'mark'], axis=1)
-    greeks['spotDelta'] = balances.apply(lambda f: f['total'] * coin_details.loc[f.name, 'indexPrice'], axis=1)
+    greeks['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
     result=greeks[['futureDelta','spotDelta']].fillna(0.0)
     result['netDelta'] = result['futureDelta'] + result['spotDelta']
+    greeks['futureMark'] = positions.apply(lambda f: futures.loc[f['future'], 'mark'], axis=1)
+    greeks['futureIndex'] = positions.apply(lambda f: futures.loc[f['future'], 'index'], axis=1)
+    greeks['spotMark'] = balances.apply(lambda f: (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
     result.loc['total', ['futureDelta', 'spotDelta', 'netDelta']] = result[['futureDelta', 'spotDelta', 'netDelta']].sum()
 
     account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[0, 1:8]
