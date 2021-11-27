@@ -127,6 +127,7 @@ def open_exchange(exchange_name,subaccount=''):
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
+        print('subaccount list: ' + ''.join([r['nickname'] + ' / ' for r in exchange.privateGetSubaccounts()['result']]))
     elif exchange_name == 'ftx_benoit':
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
@@ -134,14 +135,23 @@ def open_exchange(exchange_name,subaccount=''):
             'secret': '6s2vWNcZrwoMc8otJN4h4semrdHyKBLohqaq2H3w',
         })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
+        print('subaccount list: ' + ''.join([r['nickname'] + ' / ' for r in exchange.privateGetSubaccounts()['result']]))
     elif exchange_name == 'binance':
         exchange = ccxt.binance({
         'enableRateLimit': True,
         'apiKey': 'pMaBWUoEVqsRJXZJoQ31JkA13QJHNRZyb6N0uZSAlwJscBMXprjgDQqKAfOLdGPK',
         'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
     })
+    elif exchange_name == 'okex':
+        exchange = ccxt.okex5({
+        'enableRateLimit': True,
+        'apiKey': '4bf52639-0d85-442b-8b15-7b0c816fff01',
+        'secret': '3928F4153024A1DB2B75FAF5045C8503',
+        'password':'etvoilacencoreokex'
+    })
+        print(exchange.privateGetUsersSubaccountList())
     else: print('what exchange?')
-    print('subaccount list: '+ ''.join([r['nickname']+' / ' for r in exchange.privateGetSubaccounts()['result']]))
+
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
-    return  exchange
+    return exchange

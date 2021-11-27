@@ -26,7 +26,8 @@ def refresh_universe(exchange_name,universe_size):
     #type_allowed=['perpetual']
     screening_params=pd.DataFrame(
         index=['future_volume_threshold','spot_volume_threshold','borrow_volume_threshold'],
-        data={'wide':[2e5,2e5,2e5],# important that wide is first :(
+        data={'max':[5e4,5e4,5e4],
+              'wide':[2e5,2e5,2e5],# important that wide is first :(
               'tight':[5e5,5e5,5e5]})
 
    # qualitative screening
@@ -66,11 +67,12 @@ def refresh_universe(exchange_name,universe_size):
 
     return futures
 
-def perp_vs_cash_live(equity=EQUITY,
+def perp_vs_cash_live(
                 signal_horizon,
                 holding_period,
                 slippage_override,
                 concentration_limit,
+                equity=EQUITY,
                 exclusion_list=EXCLUSION_LIST,
                 run_dir=''):
     try:
@@ -87,7 +89,7 @@ def perp_vs_cash_live(equity=EQUITY,
     point_in_time = (datetime.now()-timedelta(hours=0)).replace(minute=0,second=0,microsecond=0)
 
     # filtering params
-    universe=refresh_universe('ftx','wide')
+    universe=refresh_universe('ftx','max')
     universe=universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = ['perpetual']
     max_nb_coins = 99
@@ -163,11 +165,11 @@ def perp_vs_cash_live(equity=EQUITY,
 
 
 def perp_vs_cash_backtest(
-                equity=EQUITY,
                 signal_horizon,
                 holding_period,
                 slippage_override,
                 concentration_limit,
+                equity=EQUITY,
                 exclusion_list=EXCLUSION_LIST,
                 filename='',
                 optional_params=[]):
@@ -301,7 +303,7 @@ def run_ladder( concentration_limit_list,
     ladder.to_pickle(run_dir + '/ladder.pickle')
 
 def run_benchmark_ladder(
-                concentration_limit_list=,
+                concentration_limit_list,
                 holding_period_list,
                 signal_horizon_list,
                 slippage_override_list,
@@ -324,6 +326,7 @@ def run_benchmark_ladder(
     ladder.to_pickle(run_dir + '/ladder.pickle')
 
 def run(command_list):
+    print(static_params)
     if 'live' in command_list:
         perp_vs_cash_live(
                     concentration_limit=[CONCENTRATION_LIMIT],
@@ -352,4 +355,4 @@ def run(command_list):
     #            slippage_override = [2e-4,5e-4],
     #            run_dir='Runtime/runs')
 
-run(['ladder'])
+run(['live'])

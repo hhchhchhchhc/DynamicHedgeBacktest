@@ -1,7 +1,7 @@
 from time import sleep
 from ftx_history import *
 from ftx_utilities import *
-from ftx_snap_basis import enricher
+from ftx_snap_basis import enricher,forecast
 
 def ftx_read_history(dirname='',coin_list=[]):
     exchange = open_exchange('ftx')
@@ -10,12 +10,6 @@ def ftx_read_history(dirname='',coin_list=[]):
 
     # pass timeframe=np.NaN to avoid recreating history....
     return build_history(futures, exchange, dirname=dirname, timeframe=np.NaN).dropna()
-
-if False:
-    directory='C:/Users/david/puffin/DerivativeArbitrage/Runtime/temporary_parquets/'
-    coins=['OKB','1INCH']
-    a=ftx_read_history(dirname=directory,coin_list=coins)
-    print(a)
 
 def ftx_history(dirname='',
                        start=datetime(2021, 9, 20),
@@ -39,6 +33,7 @@ def ftx_history(dirname='',
     slippage_orderbook_depth = 1000
     equity = 20000
     holding_period=timedelta(days=7)
+    signal_horizon = timedelta(days=7)
 
     ## ----------- enrich, get history, filter
     enriched = enricher(exchange, futures, holding_period, equity=equity,
@@ -48,21 +43,9 @@ def ftx_history(dirname='',
 
     #### get history ( this is sloooow)
     hy_history = build_history(enriched, exchange, timeframe=timeframe, end=end, start=start,dirname=dirname)
-
-    universe_filter_window = hy_history[datetime(2021, 9, 1):datetime(2021, 11, 15)].index
-    enriched['borrow_volume_avg'] = enriched.apply(lambda f:
-                                                   (hy_history.loc[
-                                                        universe_filter_window, f['underlying'] + '/rate/size'] *
-                                                    hy_history.loc[universe_filter_window, f.name + '/mark/o']).mean(),
-                                                   axis=1)
-    enriched['spot_volume_avg'] = enriched.apply(lambda f:
-                                                 (hy_history.loc[
-                                                     universe_filter_window, f['underlying'] + '/price/volume']).mean(),
-                                                 axis=1)
-    enriched['future_volume_avg'] = enriched.apply(lambda f:
-                                                   (hy_history.loc[
-                                                       universe_filter_window, f.name + '/mark/volume']).mean(),
-                                                   axis=1)
+    for (i,f) in enriched[enriched['type']=='perpetual'].iterrows():
+        hy_history[f['underlying']+'/CarryLong'] = - hy_history['USD/rate/borrow'] + hy_history[f.name+'/rate/funding']
+        hy_history[f['underlying'] + '/CarryShort'] = -hy_history[f['underlying']+'/rate/borrow'] - hy_history[f.name + '/rate/funding']
 
     if dirname!='':
         hy_history.to_parquet(dirname+'/history.parquet')
@@ -70,11 +53,11 @@ def ftx_history(dirname='',
 
     return hy_history
 
-i=1
+i=0
 while i<1:
     try:
-        end_time = datetime(2021, 7, 8)  # datetime.today().replace(minute=0,second=0,microsecond=0)
-        start_time = datetime(2021, 7, 7)
+        end_time = datetime(2021, 11, 23)  # datetime.today().replace(minute=0,second=0,microsecond=0)
+        start_time = datetime(2021, 11, 18)
         coins = ['OKB']
         ftx_history(dirname='',start=start_time,end=end_time,timeframe='5m',coin_list=coins)
     except:
