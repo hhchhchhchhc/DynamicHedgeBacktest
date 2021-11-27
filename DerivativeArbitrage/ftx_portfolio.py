@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-import numpy as np
 import pandas as pd
+
 from ftx_utilities import *
 from ftx_ftx import *
+from history_script import ftx_history
 
 ## calc various margins for a cash and carry.
 # weights is position size, not %
@@ -237,17 +238,8 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
             None)] = greeks.sum(axis=1)
     return greeks
 
-### optimizer using https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
-#eq_cons = {'type': 'eq',
-#           'fun' : lambda x: array([2*x[0] + x[1] - 1]),
-#           'jac' : lambda x: array([2.0, 1.0])}
-#res = minimize(rosen, x0, method='SLSQP', jac=rosen_der,
-#               constraints=[eq_cons, ineq_cons], options={'ftol': 1e-9, 'disp': True},
-#               bounds=bounds)
-
-
-def live_risk():
-    exchange = open_exchange('ftx_benoit','CashAndCarry')
+def live_risk(exchange_name,subaccount=''):
+    exchange = open_exchange(exchange_name,subaccount)
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False, includeIndex=True)).set_index('name')
     markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 
@@ -272,8 +264,6 @@ def live_risk():
     result.loc['total', account_info.index] = account_info.values
 
     return result
-
-print(live_risk())
 
 def process_fills(exchange,spot_fills,future_fills):
     if (spot_fills.empty)|(future_fills.empty): return pd.DataFrame()
@@ -318,8 +308,8 @@ def process_fills(exchange,spot_fills,future_fills):
 
     return result
 
-def run_fills_analysis(exchange_name='ftx', end = datetime.now(),start = datetime.now()- timedelta(days=30)):
-    exchange=open_exchange(exchange_name)
+def run_fills_analysis(exchange_name='ftx', end = datetime.now(),start = datetime.now()- timedelta(days=30),subaccount=''):
+    exchange=open_exchange(exchange_name,subaccount)
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
 
     fill_analysis = pd.DataFrame()
@@ -353,3 +343,97 @@ if False:
     with pd.ExcelWriter('fills.xlsx', engine='xlsxwriter') as writer:
         fill_analysis.to_excel(writer,sheet_name='fill_analysis')
         all_fills.to_excel(writer,sheet_name='all_fills')
+
+def plex(exchange_name,start,end,subaccount=''):
+    #exchange=pickle.load('exch')
+    exchange=open_exchange(exchange_name,subaccount)
+    markets=exchange.fetch_markets()
+    tickers = exchange.fetch_tickers()
+
+    start_time = start.timestamp()
+    end_time = end.timestamp()
+    params={'start_time':start_time,'end_time':end_time}
+
+    cash_flows=pd.DataFrame(columns=['time','coin','inflow','event_type'])
+
+    funding= pd.DataFrame(exchange.privateGetFundingPayments(params)['result'],dtype=float)
+    if not funding.empty:
+        funding['coin']=funding['future'].apply(lambda f: tickers[f]['info']['underlying'])
+        funding['inflow']= -funding['payment']
+        funding['event_type']='funding'
+        cash_flows=cash_flows.append(funding[['time','coin','inflow','event_type']],ignore_index=True)
+
+    deposits= pd.DataFrame(exchange.privateGetWalletDeposits(params)['result'],dtype=float)
+    if not deposits.empty:
+        deposits=deposits[deposits['status']=='complete']
+        deposits['inflow']=deposits['size']
+        deposits['event_type'] = 'deposit'
+        cash_flows=cash_flows.append(deposits[['time','coin','inflow','event_type']],ignore_index=True)
+
+    withdrawals = pd.DataFrame(exchange.privateGetWalletWithdrawals(params)['result'],dtype=float)
+    if not withdrawals.empty:
+        withdrawals = withdrawals[withdrawals['status'] == 'complete']
+        withdrawals['inflow'] = -withdrawals['size']
+        withdrawals['event_type'] = 'withdrawal'
+        cash_flows=cash_flows.append(withdrawals[['time','coin','inflow','event_type']],ignore_index=True)
+
+    borrow= pd.DataFrame(exchange.privateGetSpotMarginBorrowHistory(params)['result'],dtype=float)
+    if not borrow.empty:
+        borrow['inflow']=-borrow['cost']
+        borrow['event_type'] = 'borrow'
+        cash_flows=cash_flows.append(borrow[['time','coin','inflow','event_type']],ignore_index=True)
+    lending = pd.DataFrame(exchange.privateGetSpotMarginLendingHistory(params)['result'],dtype=float)
+    if not lending.empty:
+        lending['inflow'] = lending['proceeds']
+        lending['event_type'] = 'lending'
+        cash_flows=cash_flows.append(lending[['time','coin','inflow','event_type']],ignore_index=True)
+
+    airdrops = pd.DataFrame(exchange.privateGetWalletAirdrops(params)['result'],dtype=float)
+    if not airdrops.empty:
+        airdrops = airdrops[airdrops['status'] == 'complete']
+        airdrops['inflow'] = airdrops['size']
+        airdrops['event_type'] = 'airdrops'
+        cash_flows=cash_flows.append(airdrops[['time','coin','inflow','event_type']],ignore_index=True)
+
+    staking = pd.DataFrame(exchange.privateGetStakingStakingRewards(params)['result'],dtype=float)
+    if not staking.empty:
+        staking['event_type'] = 'staking'
+        staking['inflow'] = staking['size']
+        cash_flows=cash_flows.append(staking[['time','coin','inflow','event_type']],ignore_index=True)
+
+    trades = run_fills_analysis(exchange_name, start=start, end=end, subaccount=subaccount)
+    if not trades.empty:
+        trades=trades[trades['type']=='order'] # TODO: dealt with unlock and otc later
+
+        # get eod_marks from history
+        trades['underlying'] = trades.apply(lambda f:
+                                        f['baseCurrency']+'/USD' if f['market']==None else
+                                        f['market'],axis=1)
+        history = ftx_history(dirname='',
+                start=end-timedelta(seconds=15),
+                end=end+timedelta(seconds=15),
+                timeframe='15s',
+                coin_list=trades['underlying'].unique())
+
+        trades['coin'] = trades['market'] # TODO: attribution...
+        trades['coin']
+
+
+        trades['inflow'] = trades.apply(lambda x: x['size']*(eod_marks[x['market']]-x['price']),axis=1)
+        trades['event_type'] = 'intraday'
+        cash_flows=cash_flows.append(staking[['time','coin','inflow','event_type']],ignore_index=True)
+
+        txFees = trades[trades['fee']>0.00000000001]
+        txFees['coin'] = txFees['feeCurrency']
+        txFees['inflow'] = -txFees['fee']
+        txFees['event_type'] = 'txFee'
+        cash_flows = cash_flows.append(txFees[['time', 'coin', 'inflow', 'event_type']], ignore_index=True)
+
+    all=pd.concat([funding,deposits,withdrawals,trades,borrow,lending,airdrops,staking],axis=0)
+    all.to_excel('allplex.xlsx')
+
+    run_fills_analysis(exchange,start=start,end=end)
+
+    return None
+
+plex('ftx',start=datetime.now()-timedelta(weeks=1),end=datetime.now(),subaccount='')#margintest
