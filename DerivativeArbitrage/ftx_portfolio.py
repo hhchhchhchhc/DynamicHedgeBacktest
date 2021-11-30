@@ -491,7 +491,7 @@ def plex(exchange,start,end,starting_portfolio=dict):
 
     return None
 
-if True:
+if False:
     exchange=open_exchange('ftx','')
     starting_portfolio = fetch_portfolio(exchange, start=datetime.now()-timedelta(weeks=5))
     plex(exchange,start=datetime.now()-timedelta(weeks=5),end=datetime.now().replace(microsecond=0,second=0,minute=0),starting_portfolio=starting_portfolio)#margintest

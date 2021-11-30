@@ -89,7 +89,7 @@ def perp_vs_cash_live(
     point_in_time = (datetime.now()-timedelta(hours=0)).replace(minute=0,second=0,microsecond=0)
 
     # filtering params
-    universe=refresh_universe('ftx','max')
+    universe=refresh_universe('ftx','wide')
     universe=universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = ['perpetual']
     max_nb_coins = 99
