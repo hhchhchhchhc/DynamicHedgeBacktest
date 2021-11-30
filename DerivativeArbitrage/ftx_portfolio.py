@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import os.path
+
 import pandas as pd
 
 from ftx_utilities import *
@@ -336,7 +338,7 @@ def run_fills_analysis(exchange, end = datetime.now(),start = datetime.now()- ti
     return (fill_analysis,all_fills)
 
 if False:
-    exchange = open_exchange('ftx')
+    exchange = open_exchange('ftx','test')
     (fill_analysis, all_fills)=run_fills_analysis(exchange,
             end = datetime.now(),
             start = datetime.now()- timedelta(days=7))
@@ -344,34 +346,31 @@ if False:
         fill_analysis.to_excel(writer,sheet_name='fill_analysis')
         all_fills.to_excel(writer,sheet_name='all_fills')
 
-def fetch_portfolio(exchange,start):
-    start_time = start.timestamp()
-    end = datetime.now()
-    end_time = end.timestamp()
-    params={'start_time':start_time,'end_time':end_time}
-
+def fetch_portfolio(exchange,time):
     positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],
                              dtype=float)  # 'showAvgPrice':True})
     positions = positions[positions['netSize'] != 0.0].fillna(0.0)
-    positions['coin'] = positions['future'].apply(lambda f:f.split('-')[0])
+    positions['coin'] = 'USD'
     positions['inflow'] = positions['netSize']
-    positions['time']=end
-    positions['event_type'] = 'initial'
+    positions['time']=time
+    positions['event_type'] = 'delta'
     positions['attribution'] = positions['future']
 
     balances = pd.DataFrame(exchange.fetch_balance(params={})['info']['result'], dtype=float)  # 'showAvgPrice':True})
     balances = balances[balances['total'] != 0.0].fillna(0.0)
     balances['inflow'] =balances['total']
     balances.loc[balances['coin']=='USD','inflow']+= positions['unrealizedPnl'].sum()
-    balances['time']=end
-    balances['event_type'] = 'initial'
+    balances['time']=time
+    balances['event_type'] = 'delta'
     balances['attribution'] = balances['coin']
 
-    return {'cash':balances[['time','coin','inflow','event_type','attribution']],'derivatives':positions[['time','coin','inflow','event_type','attribution']]}
+    return pd.concat([
+        balances[['time','coin','inflow','event_type','attribution']],
+        positions[['time','coin','inflow','event_type','attribution']]],axis=0,ignore_index=True)
 
 
 
-def plex(exchange,start,end,starting_portfolio=dict):
+def plex(exchange,start,end,start_portfolio):
     #exchange=pickle.load('exch')
     markets=exchange.fetch_markets()
     tickers = exchange.fetch_tickers()
@@ -454,27 +453,16 @@ def plex(exchange,start,end,starting_portfolio=dict):
         txFees['event_type'] = 'txFee'
         cash_flows = cash_flows.append(txFees[['time', 'coin', 'inflow', 'event_type']], ignore_index=True)
 
-    if starting_portfolio!={}:# TODO: this isn't done yet
-        startingPortfolio = pd.DataFrame()
-        startingPortfolio['coin'] = starting_portfolio['coin']
-        startingPortfolio['inflow'] = 0 # when spot available
-        startingPortfolio['event_type'] = 'delta'
-        cash_flows = cash_flows.append(startingPortfolio[['time', 'coin', 'inflow', 'event_type']], ignore_index=True)
-        start_mark = pd.Series(dict(zip(startingPortfolio['coin'].values, [
-            fetch_spot_or_perp_ohlcv(exchange, f+'/USD', timeframe='15s', start=start.timestamp(), end=15 + start.timestamp())[0][1]
-                for f in startingPortfolio['coin'].values])))
-
     # now compile symbol list and get end prices. TODO: doesn't work for fiat
     symbol_list=cash_flows['coin'].unique()
     end_mark = pd.Series(dict(zip(symbol_list,[
         fetch_spot_or_perp_ohlcv(exchange, f+'/USD',timeframe='15s', start=end.timestamp(), end=15+end.timestamp())[0][1]
                  for f in symbol_list])))
-    cash_flows.loc[cash_flows['event_type'] == 'delta','start_mark'] = cash_flows.loc[
-        cash_flows['event_type'] == 'delta','coin'].apply(lambda f: start_mark[f])
     cash_flows['end_mark']=cash_flows['coin'].apply(lambda f: end_mark[f])
 
     # attribute all to coin except futures
-    cash_flows.loc[cash_flows['attribution'].isna()==True,'attribution']=cash_flows.loc[cash_flows['attribution'].isna()==True,'coin']
+    cash_flows['attribution'] = cash_flows['coin']
+    cash_flows.loc[cash_flows['event_type'] == 'future_trade','attribution']=cash_flows.loc[cash_flows['event_type'] == 'future_trade','coin']
     # rescale inflows, or recompute if needed
     cash_flows['inflow'] *= cash_flows['end_mark']
 
@@ -482,16 +470,44 @@ def plex(exchange,start,end,starting_portfolio=dict):
         cash_flows.loc[cash_flows['event_type']=='future_trade','inflow']=(\
             trades['size'] * trades['side'].apply(lambda side: 1 if side == 'buy' else -1)*\
             (end_mark[trades['coin']].values-trades['price'])).values
-    if not starting_portfolio.empty:
-        cash_flows.loc[cash_flows['event_type'] == 'delta', 'inflow'] = \
-            (startingPortfolio['weight']* \
-            (end_mark[trades['coin']].values - start_mark[trades['price']].values)).values
+    if not start_portfolio.empty:
+        start_mark = pd.Series(dict(zip(start_portfolio['attribution'].values, [
+            fetch_spot_or_perp_ohlcv(exchange, (f if '-' in f else f + '/USD'), timeframe='15s',start=start.timestamp(), end=15 + start.timestamp())[0][1]
+                            for f in start_portfolio['attribution'].values])))
+        end_mark = pd.Series(dict(zip(start_portfolio['attribution'].values, [
+            fetch_spot_or_perp_ohlcv(exchange, (f if '-' in f else f + '/USD'), timeframe='15s', start=end.timestamp(),end=15 + end.timestamp())[0][1]
+                            for f in start_portfolio['attribution'].values])))
+        start_portfolio['start_mark'] = start_portfolio['attribution'].apply(lambda f: start_mark[f])
+        start_portfolio['end_mark'] = start_portfolio['attribution'].apply(lambda f: end_mark[f])
+        start_portfolio['inflow'] *= start_portfolio['end_mark']-start_portfolio['start_mark']
+        cash_flows = cash_flows.append(start_portfolio, ignore_index=True)
 
-    cash_flows.to_excel('allplex.xlsx')
+    return cash_flows
 
-    return None
+if True:
+    exchange = open_exchange('ftx_david', '')
 
-if False:
-    exchange=open_exchange('ftx','')
-    starting_portfolio = fetch_portfolio(exchange, start=datetime.now()-timedelta(weeks=5))
-    plex(exchange,start=datetime.now()-timedelta(weeks=5),end=datetime.now().replace(microsecond=0,second=0,minute=0),starting_portfolio=starting_portfolio)#margintest
+    filename="Runtime/portfolio_history.xlsx"
+    if not os.path.isfile(filename):
+        risk_history = pd.DataFrame()
+        pnl_history = pd.DataFrame()
+        end_time = datetime.now()
+        end_portfolio = fetch_portfolio(exchange, end_time)  # it's live in fact, end_time just there for records
+        with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
+            risk_history.append(end_portfolio, ignore_index=True).to_excel(writer, sheet_name='risk')
+            pnl_history.to_excel(writer, sheet_name='pnl')
+
+    risk_history = pd.read_excel(filename,sheet_name='risk',index_col=0)
+    pnl_history = pd.read_excel(filename, sheet_name='pnl', index_col=0)
+    start_time = risk_history['time'].max()
+    start_portfolio = risk_history[risk_history['time']==start_time]
+
+    end_time = datetime.now()
+    end_portfolio = fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
+    pnl=plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio)#margintest
+
+    with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
+        risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
+        pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
+
+
