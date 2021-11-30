@@ -148,7 +148,7 @@ def forecast(exchange, input_futures, hy_history,
                   filename=''):             # use external rather than order book
     futures=pd.DataFrame(input_futures)
     ### remove blanks for this
-    hy_history = hy_history.fillna(method='ffill',limit=2,inplace=False)
+    hy_history = hy_history.fillna(method='ffill',limit=2,inplace=False).dropna()
     # TODO: check hy_history is hourly
     holding_hours = int(holding_period.total_seconds() / 3600)
 
@@ -186,10 +186,10 @@ def forecast(exchange, input_futures, hy_history,
                                 intShortCarry[col],
                                 E_long[col],
                                 E_short[col]],axis = 1)
-            all.columns = ['intLongCarry', 'E_long', 'intShortCarry','E_short']
-            all['intUSDborrow']=intUSDborrow
-            all['E_intUSDborrow'] = E_intUSDborrow
-            all.to_excel(writer, sheet_name=col)
+                all.columns = ['intLongCarry', 'E_long', 'intShortCarry','E_short']
+                all['intUSDborrow']=intUSDborrow
+                all['E_intUSDborrow'] = E_intUSDborrow
+                all.to_excel(writer, sheet_name=col)
 
     return (intLongCarry,intShortCarry,intUSDborrow,E_long,E_short,E_intUSDborrow)
 

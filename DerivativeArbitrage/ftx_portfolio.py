@@ -273,7 +273,7 @@ def live_risk():
 
     return result
 
-print(live_risk())
+#print(live_risk())
 
 def process_fills(exchange,spot_fills,future_fills):
     if (spot_fills.empty)|(future_fills.empty): return pd.DataFrame()

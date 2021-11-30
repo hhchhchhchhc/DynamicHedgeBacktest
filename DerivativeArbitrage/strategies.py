@@ -66,12 +66,11 @@ def refresh_universe(exchange_name,universe_size):
 
     return futures
 
-def perp_vs_cash_live(equity=EQUITY,
+def perp_vs_cash_live(
                 signal_horizon,
                 holding_period,
                 slippage_override,
                 concentration_limit,
-                exclusion_list=EXCLUSION_LIST,
                 run_dir=''):
     try:
         first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
@@ -79,6 +78,8 @@ def perp_vs_cash_live(equity=EQUITY,
             for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
         else: pass # otherwise do nothing and build_history will use what's there
     except: pass
+    equity = EQUITY
+    exclusion_list = EXCLUSION_LIST
 
     exchange = open_exchange('ftx')
     markets = exchange.fetch_markets()
@@ -163,18 +164,17 @@ def perp_vs_cash_live(equity=EQUITY,
 
 
 def perp_vs_cash_backtest(
-                equity=EQUITY,
                 signal_horizon,
                 holding_period,
                 slippage_override,
                 concentration_limit,
-                exclusion_list=EXCLUSION_LIST,
                 filename='',
                 optional_params=[]):
     exchange=open_exchange('ftx')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
-
+    equity=EQUITY
+    exclusion_list=EXCLUSION_LIST
     # filtering params
     universe = refresh_universe('ftx', 'tight')
     universe = universe[~universe['underlying'].isin(exclusion_list)]
@@ -189,8 +189,8 @@ def perp_vs_cash_backtest(
     slippage_orderbook_depth=1000
 
     # backtest params
-    backtest_start = datetime(2021, 7, 1)
-    backtest_end = datetime(2021, 10, 1)
+    backtest_start = datetime(2021, 5, 15)
+    backtest_end = datetime(2021, 7, 1)
 
     ## ----------- enrich, get history, filter
     enriched=enricher(exchange, pre_filtered, holding_period,equity=float(equity),
@@ -301,7 +301,7 @@ def run_ladder( concentration_limit_list,
     ladder.to_pickle(run_dir + '/ladder.pickle')
 
 def run_benchmark_ladder(
-                concentration_limit_list=,
+                concentration_limit_list,
                 holding_period_list,
                 signal_horizon_list,
                 slippage_override_list,
@@ -310,8 +310,7 @@ def run_benchmark_ladder(
     #### first, pick best basket every hour, ignoring tx costs
     for c in concentration_limit_list:
             for txcost in slippage_override_list:
-                trajectory = perp_vs_cash_backtest(
-                                                   signal_horizon=timedelta(hours=1),
+                trajectory = perp_vs_cash_backtest(signal_horizon=timedelta(hours=1),
                                                    holding_period=timedelta(hours=1),
                                                    slippage_override=txcost,
                                                    concentration_limit=c,
@@ -342,7 +341,7 @@ def run(command_list):
     if 'ladder' in command_list:
         run_ladder( concentration_limit_list=[9,1,0.5],
                     holding_period_list = [timedelta(hours=d) for d in [6,12]] + [timedelta(days=d) for d in [1,2,3,4,5]],
-                    signal_horizon_list = [timedelta(hours=d) for d in [12]] + [timedelta(days=d) for d in [1,2,3,4,5,7,10,30]],
+                    signal_horizon_list = [timedelta(hours=d) for d in [12]] + [timedelta(days=d) for d in [1,2,3,4,5,7,10]],
                     slippage_override = [2e-4,5e-4],
                     run_dir='Runtime/runs')
 
