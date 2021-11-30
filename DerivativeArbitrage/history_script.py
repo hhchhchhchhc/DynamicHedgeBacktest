@@ -53,7 +53,7 @@ def ftx_history(dirname='',
 
     return hy_history
 
-i=0
+i=1
 while i<1:
     try:
         end_time = datetime(2021, 11, 23)  # datetime.today().replace(minute=0,second=0,microsecond=0)

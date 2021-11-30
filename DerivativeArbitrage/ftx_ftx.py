@@ -92,6 +92,7 @@ def fetch_ohlcv(self, symbol, timeframe='1m', start=None, end=None, params={}):
 
 def fetch_spot_or_perp_ohlcv(self, symbol, timeframe='1m', start=None, end=None, params={}):
     if symbol=='USD/USD': return [[0,1,1,1,1,0]]
+    symbol = symbol.replace('_LOCKED','')
     try:
         return fetch_ohlcv(self,symbol, timeframe, start, end, params)
     except:
