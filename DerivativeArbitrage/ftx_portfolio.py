@@ -371,10 +371,7 @@ def fetch_portfolio(exchange,time):
 
 
 def plex(exchange,start,end,start_portfolio):
-    #exchange=pickle.load('exch')
-    markets=exchange.fetch_markets()
-    tickers = exchange.fetch_tickers()
-
+    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=True, includeIndex=True)).set_index('name')
     start_time = start.timestamp()
     end_time = end.timestamp()
     params={'start_time':start_time,'end_time':end_time}
@@ -396,7 +393,7 @@ def plex(exchange,start,end,start_portfolio):
 
     funding = pd.DataFrame(exchange.privateGetFundingPayments(params)['result'], dtype=float)
     if not funding.empty:
-        funding['coin'] = funding['future'].apply(lambda f: tickers[f]['info']['underlying'])
+        funding['coin'] = funding['future'].apply(lambda f: futures.loc[f,'underlying'])
         funding['inflow'] = -funding['payment']
         funding['event_type'] = 'funding'
         cash_flows = cash_flows.append(funding[['time', 'coin', 'inflow', 'event_type']], ignore_index=True)
@@ -453,32 +450,42 @@ def plex(exchange,start,end,start_portfolio):
         txFees['event_type'] = 'txFee'
         cash_flows = cash_flows.append(txFees[['time', 'coin', 'inflow', 'event_type']], ignore_index=True)
 
-    # now compile symbol list and get end prices. TODO: doesn't work for fiat
-    symbol_list=cash_flows['coin'].unique()
-    end_mark = pd.Series(dict(zip(symbol_list,[
-        fetch_spot_or_perp_ohlcv(exchange, f+'/USD',timeframe='15s', start=end.timestamp(), end=15+end.timestamp())[0][1]
-                 for f in symbol_list])))
-    cash_flows['end_mark']=cash_flows['coin'].apply(lambda f: end_mark[f])
-
     # attribute all to coin except futures
     cash_flows['attribution'] = cash_flows['coin']
-    cash_flows.loc[cash_flows['event_type'] == 'future_trade','attribution']=cash_flows.loc[cash_flows['event_type'] == 'future_trade','coin']
-    # rescale inflows, or recompute if needed
-    cash_flows['inflow'] *= cash_flows['end_mark']
+    cash_flows.loc[cash_flows['event_type'] == 'future_trade', 'attribution'] = cash_flows.loc[
+        cash_flows['event_type'] == 'future_trade', 'coin']
 
-    if not trades.empty:
+    # now fetch EOD. TODO: doesn't work for fiat
+    def fetch_EOD(symbol_list,point_in_time):
+        result = pd.DataFrame({'name':symbol_list})
+        result['type'] = result['name'].apply(lambda f: futures.loc[f,'type'])
+        result['expiryTime'] = result['name'].apply(lambda f: futures.loc[f, 'expiryTime'])
+        result['spot'] = result['name'].apply(lambda f:
+                            fetch_spot_or_perp(exchange, futures.loc[f, 'underlying'] + '/USD',point_in_time=end.timestamp()))
+        result.loc[result['type'].isin(['perpetual','future']),'mark'] = result.loc[result['type'].isin(['perpetual','future']),'name'].apply(lambda f:
+                            fetch_spot_or_perp(exchange, f,point_in_time=end.timestamp()))
+        result.loc[result['type']=='perpetual', 'rate'] = \
+            result.loc[result['type']=='perpetual', 'mark']/result.loc[result['type']=='perpetual', 'spot']-1
+        result.loc[result['type']=='future', 'rate'] = calc_basis(
+            result.loc[result['type']=='future', 'mark'],
+            result.loc[result['type']=='future', 'spot'],
+            result.loc[result['type'] == 'future', 'expiryTime'],end)
+        return result
+
+    end_of_day = fetch_EOD(cash_flows['attribution'].unique() + start_portfolio['attribution'].unique(),end)
+
+    # rescale inflows, or recompute if needed
+    cash_flows['end_spot'] = cash_flows['coin'].apply(lambda f: end_of_day.loc[f,'spot'])
+    cash_flows['inflow'] *= cash_flows['end_spot']
+
+    if not future_trades.empty:
         cash_flows.loc[cash_flows['event_type']=='future_trade','inflow']=(\
-            trades['size'] * trades['side'].apply(lambda side: 1 if side == 'buy' else -1)*\
-            (end_mark[trades['coin']].values-trades['price'])).values
+            future_trades['size'] * future_trades['side'].apply(lambda side: 1 if side == 'buy' else -1)*\
+            (end_of_day.loc[future_trades['coin'],'mark'].values-future_trades['price'])).values
     if not start_portfolio.empty:
-        start_mark = pd.Series(dict(zip(start_portfolio['attribution'].values, [
-            fetch_spot_or_perp_ohlcv(exchange, (f if '-' in f else f + '/USD'), timeframe='15s',start=start.timestamp(), end=15 + start.timestamp())[0][1]
-                            for f in start_portfolio['attribution'].values])))
-        end_mark = pd.Series(dict(zip(start_portfolio['attribution'].values, [
-            fetch_spot_or_perp_ohlcv(exchange, (f if '-' in f else f + '/USD'), timeframe='15s', start=end.timestamp(),end=15 + end.timestamp())[0][1]
-                            for f in start_portfolio['attribution'].values])))
-        start_portfolio['start_mark'] = start_portfolio['attribution'].apply(lambda f: start_mark[f])
-        start_portfolio['end_mark'] = start_portfolio['attribution'].apply(lambda f: end_mark[f])
+        start_of_day = fetch_EOD(start_portfolio['attribution'].unique(), start)
+        start_portfolio['start_mark'] = start_portfolio['attribution'].apply(lambda f: start_of_day.loc[f,'mark'])
+        start_portfolio['end_mark'] = start_portfolio['attribution'].apply(lambda f: end_of_day.loc[f,'mark'])
         start_portfolio['inflow'] *= start_portfolio['end_mark']-start_portfolio['start_mark']
         cash_flows = cash_flows.append(start_portfolio, ignore_index=True)
 
