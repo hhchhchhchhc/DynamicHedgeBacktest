@@ -137,8 +137,8 @@ def open_exchange(exchange_name,subaccount=''):
     elif exchange_name == 'ftx_auk':
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
-            'apiKey': '',
-            'secret': '',
+            'apiKey': 'QfeIXSEqTrnAmapqMvqie9lNxCF3WCphGSOV6eh_',
+            'secret': 'SIC7tXVPzRpmtwmgS03Bi-gRXu5SpHC-sEDo2ePy',
         })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
@@ -148,7 +148,7 @@ def open_exchange(exchange_name,subaccount=''):
         'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
     })
     else: print('what exchange?')
-    print('subaccount list: '+ ''.join([r['nickname']+' / ' for r in exchange.privateGetSubaccounts()['result']]))
+    #print('subaccount list: '+ ''.join([r['nickname']+' / ' for r in exchange.privateGetSubaccounts()['result']]))
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
     return exchange
