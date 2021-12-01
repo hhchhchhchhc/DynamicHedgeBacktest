@@ -351,148 +351,161 @@ def fetch_portfolio(exchange,time):
                              dtype=float)  # 'showAvgPrice':True})
     positions = positions[positions['netSize'] != 0.0].fillna(0.0)
     positions['coin'] = 'USD'
-    positions['inflow'] = positions['netSize']
+    positions['coinAmt'] = positions['netSize']
     positions['time']=time
     positions['event_type'] = 'delta'
     positions['attribution'] = positions['future']
 
     balances = pd.DataFrame(exchange.fetch_balance(params={})['info']['result'], dtype=float)  # 'showAvgPrice':True})
     balances = balances[balances['total'] != 0.0].fillna(0.0)
-    balances['inflow'] =balances['total']
-    balances.loc[balances['coin']=='USD','inflow']+= positions['unrealizedPnl'].sum()
+    balances['coinAmt'] =balances['total']
+    balances.loc[balances['coin']=='USD','coinAmt']+= positions['unrealizedPnl'].sum()
     balances['time']=time
     balances['event_type'] = 'delta'
     balances['attribution'] = balances['coin']
 
     return pd.concat([
-        balances[['time','coin','inflow','event_type','attribution']],
-        positions[['time','coin','inflow','event_type','attribution']]],axis=0,ignore_index=True)
+        balances[['time','coin','coinAmt','event_type','attribution']],
+        positions[['time','coin','coinAmt','event_type','attribution']]],axis=0,ignore_index=True)
 
 
 
-def plex(exchange,start,end,start_portfolio):
+def compute_plex(exchange,start,end,start_portfolio):
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=True, includeIndex=True)).set_index('name')
     start_time = start.timestamp()
     end_time = end.timestamp()
     params={'start_time':start_time,'end_time':end_time}
 
-    cash_flows=pd.DataFrame(columns=['time','coin','inflow','event_type'])
+    cash_flows=pd.DataFrame(columns=['time','coin','USDamt','event_type'])
 
     deposits= pd.DataFrame(exchange.privateGetWalletDeposits(params)['result'],dtype=float)
     if not deposits.empty:
         deposits=deposits[deposits['status']=='complete']
-        deposits['inflow']=deposits['size']
+        deposits['USDamt']=deposits['size']
         deposits['event_type'] = 'deposit'
-        cash_flows=cash_flows.append(deposits[['time','coin','inflow','event_type']],ignore_index=True)
+        cash_flows=cash_flows.append(deposits[['time','coin','USDamt','event_type']],ignore_index=True)
     withdrawals = pd.DataFrame(exchange.privateGetWalletWithdrawals(params)['result'],dtype=float)
     if not withdrawals.empty:
         withdrawals = withdrawals[withdrawals['status'] == 'complete']
-        withdrawals['inflow'] = -withdrawals['size']
+        withdrawals['USDamt'] = -withdrawals['size']
         withdrawals['event_type'] = 'withdrawal'
-        cash_flows=cash_flows.append(withdrawals[['time','coin','inflow','event_type']],ignore_index=True)
+        cash_flows=cash_flows.append(withdrawals[['time','coin','USDamt','event_type']],ignore_index=True)
 
     funding = pd.DataFrame(exchange.privateGetFundingPayments(params)['result'], dtype=float)
     if not funding.empty:
         funding['coin'] = funding['future'].apply(lambda f: futures.loc[f,'underlying'])
-        funding['inflow'] = -funding['payment']
+        funding['USDamt'] = -funding['payment']
         funding['event_type'] = 'funding'
-        cash_flows = cash_flows.append(funding[['time', 'coin', 'inflow', 'event_type']], ignore_index=True)
+        cash_flows = cash_flows.append(funding[['time', 'coin', 'USDamt', 'event_type']], ignore_index=True)
 
     borrow= pd.DataFrame(exchange.privateGetSpotMarginBorrowHistory(params)['result'],dtype=float)
     if not borrow.empty:
-        borrow['inflow']=-borrow['cost']
+        borrow['USDamt']=-borrow['cost']
         borrow['event_type'] = 'borrow'
-        cash_flows=cash_flows.append(borrow[['time','coin','inflow','event_type']],ignore_index=True)
+        cash_flows=cash_flows.append(borrow[['time','coin','USDamt','event_type']],ignore_index=True)
     lending = pd.DataFrame(exchange.privateGetSpotMarginLendingHistory(params)['result'],dtype=float)
     if not lending.empty:
-        lending['inflow'] = lending['proceeds']
+        lending['USDamt'] = lending['proceeds']
         lending['event_type'] = 'lending'
-        cash_flows=cash_flows.append(lending[['time','coin','inflow','event_type']],ignore_index=True)
+        cash_flows=cash_flows.append(lending[['time','coin','USDamt','event_type']],ignore_index=True)
 
     airdrops = pd.DataFrame(exchange.privateGetWalletAirdrops(params)['result'],dtype=float)
     if not airdrops.empty:
         airdrops = airdrops[airdrops['status'] == 'complete']
-        airdrops['inflow'] = airdrops['size']
+        airdrops['USDamt'] = airdrops['size']
         airdrops['event_type'] = 'airdrops'
-        cash_flows=cash_flows.append(airdrops[['time','coin','inflow','event_type']],ignore_index=True)
+        cash_flows=cash_flows.append(airdrops[['time','coin','USDamt','event_type']],ignore_index=True)
 
     staking = pd.DataFrame(exchange.privateGetStakingStakingRewards(params)['result'],dtype=float)
     if not staking.empty:
         staking['event_type'] = 'staking'
-        staking['inflow'] = staking['size']
-        cash_flows=cash_flows.append(staking[['time','coin','inflow','event_type']],ignore_index=True)
+        staking['USDamt'] = staking['size']
+        cash_flows=cash_flows.append(staking[['time','coin','USDamt','event_type']],ignore_index=True)
 
     trades = pd.DataFrame(exchange.privateGetFills(params)['result'], dtype=float)
+    future_trades=pd.DataFrame()
     if not trades.empty:
         #trades=trades[trades['type']=='order'] # TODO: dealt with unlock and otc later
         # spot trade first
         base_trades=trades[trades['future'].values == None]
         quote_trades = trades[trades['future'].values == None]
         base_trades['coin'] = base_trades['baseCurrency']
-        base_trades['inflow'] = base_trades['size'] * base_trades['side'].apply(lambda side: 1 if side == 'buy' else -1)
+        base_trades['USDamt'] = base_trades['size'] * base_trades['side'].apply(lambda side: 1 if side == 'buy' else -1)
         quote_trades['coin'] = base_trades['quoteCurrency']
-        quote_trades['inflow'] = - quote_trades['size'] * quote_trades['side'].apply(lambda side: 1 if side == 'buy' else -1) * quote_trades['price']
-        spot_trades= base_trades[['time','coin','inflow']].append(quote_trades[['time','coin','inflow']])
+        quote_trades['USDamt'] = - quote_trades['size'] * quote_trades['side'].apply(lambda side: 1 if side == 'buy' else -1) * quote_trades['price']
+        spot_trades= base_trades[['time','coin','USDamt']].append(quote_trades[['time','coin','USDamt']])
         spot_trades['event_type'] = 'spot_trade'
-        cash_flows = cash_flows.append(spot_trades[['time', 'coin', 'inflow', 'event_type']], ignore_index=True)
+        cash_flows = cash_flows.append(spot_trades[['time', 'coin', 'USDamt', 'event_type']], ignore_index=True)
 
         # futures more tricky
         future_trades=trades[trades['future'].values!=None]
-        future_trades['coin'] = 'USD'
-        future_trades['attribution'] = future_trades['future']
-        future_trades['inflow'] = 0 # when spot available
-        future_trades['event_type'] = 'future_trade'
-        cash_flows=cash_flows.append(future_trades[['time','coin','inflow','event_type','attribution']],ignore_index=True)
+        if not future_trades.empty:
+            future_trades['coin'] = 'USD'
+            future_trades['attribution'] = future_trades['future']
+            future_trades['USDamt'] = 0 # when spot available
+            future_trades['event_type'] = 'future_trade'
+            cash_flows=cash_flows.append(future_trades[['time','coin','USDamt','event_type','attribution']],ignore_index=True)
 
+        # tx Fees
         txFees = trades[trades['fee']>0.00000000001]
         txFees['coin'] = txFees['feeCurrency']
-        txFees['inflow'] = -txFees['fee']
+        txFees['USDamt'] = -txFees['fee']
         txFees['event_type'] = 'txFee'
-        cash_flows = cash_flows.append(txFees[['time', 'coin', 'inflow', 'event_type']], ignore_index=True)
+        cash_flows = cash_flows.append(txFees[['time', 'coin', 'USDamt', 'event_type']], ignore_index=True)
 
     # attribute all to coin except futures
     cash_flows['attribution'] = cash_flows['coin']
     cash_flows.loc[cash_flows['event_type'] == 'future_trade', 'attribution'] = cash_flows.loc[
         cash_flows['event_type'] == 'future_trade', 'coin']
+    cash_flows['time'] = cash_flows['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=None))
 
     # now fetch EOD. TODO: doesn't work for fiat
     def fetch_EOD(symbol_list,point_in_time):
         result = pd.DataFrame({'name':symbol_list})
-        result['type'] = result['name'].apply(lambda f: futures.loc[f,'type'])
-        result['expiryTime'] = result['name'].apply(lambda f: futures.loc[f, 'expiryTime'])
-        result['spot'] = result['name'].apply(lambda f:
-                            fetch_spot_or_perp(exchange, futures.loc[f, 'underlying'] + '/USD',point_in_time=end.timestamp()))
-        result.loc[result['type'].isin(['perpetual','future']),'mark'] = result.loc[result['type'].isin(['perpetual','future']),'name'].apply(lambda f:
-                            fetch_spot_or_perp(exchange, f,point_in_time=end.timestamp()))
-        result.loc[result['type']=='perpetual', 'rate'] = \
-            result.loc[result['type']=='perpetual', 'mark']/result.loc[result['type']=='perpetual', 'spot']-1
-        result.loc[result['type']=='future', 'rate'] = calc_basis(
-            result.loc[result['type']=='future', 'mark'],
-            result.loc[result['type']=='future', 'spot'],
-            result.loc[result['type'] == 'future', 'expiryTime'],end)
-        return result
 
-    end_of_day = fetch_EOD(cash_flows['attribution'].unique() + start_portfolio['attribution'].unique(),end)
+        result.loc[result['name'].isin(futures.index),'spot'] = result.loc[result['name'].isin(futures.index),'name'].apply(lambda f:
+            fetch_spot_or_perp(exchange, futures.loc[f, 'underlying'] + '/USD',point_in_time=point_in_time.timestamp()))
+        result.loc[result['name'].isin(futures.index),'mark'] = result.loc[result['name'].isin(futures.index),'name'].apply(lambda f:
+                            fetch_spot_or_perp(exchange, f,point_in_time=point_in_time.timestamp()))
+
+        result.loc[result['name'].isin(futures.index)==False, 'spot'] = result.loc[result['name'].isin(futures.index)==False, 'name'].apply(lambda f:
+            fetch_spot_or_perp(exchange, f + ('' if '/USD' in f else '/USD'), point_in_time=point_in_time.timestamp()))
+        result.loc[result['name'].isin(futures.index) == False, 'mark'] = result.loc[result['name'].isin(futures.index)==False, 'spot']
+
+        return result.set_index('name')
+
+    end_of_day = fetch_EOD(cash_flows['attribution'].append(start_portfolio['attribution']).unique(),end)
 
     # rescale inflows, or recompute if needed
-    cash_flows['end_spot'] = cash_flows['coin'].apply(lambda f: end_of_day.loc[f,'spot'])
-    cash_flows['inflow'] *= cash_flows['end_spot']
+    cash_flows['end_mark'] = cash_flows['coin'].apply(lambda f: end_of_day.loc[f,'mark'])
+    cash_flows['USDamt'] *= cash_flows['end_mark']
 
-    if not future_trades.empty:
-        cash_flows.loc[cash_flows['event_type']=='future_trade','inflow']=(\
+    if not future_trades.empty:# TODO: below code relies on trades ordering being preserved to this point :(
+        cash_flows.loc[cash_flows['event_type']=='future_trade','USDamt']=(\
             future_trades['size'] * future_trades['side'].apply(lambda side: 1 if side == 'buy' else -1)*\
             (end_of_day.loc[future_trades['coin'],'mark'].values-future_trades['price'])).values
     if not start_portfolio.empty:
         start_of_day = fetch_EOD(start_portfolio['attribution'].unique(), start)
+        start_portfolio['end_mark'] = start_portfolio['attribution'].apply(lambda f: end_of_day.loc[f, 'mark'])
         start_portfolio['start_mark'] = start_portfolio['attribution'].apply(lambda f: start_of_day.loc[f,'mark'])
-        start_portfolio['end_mark'] = start_portfolio['attribution'].apply(lambda f: end_of_day.loc[f,'mark'])
-        start_portfolio['inflow'] *= start_portfolio['end_mark']-start_portfolio['start_mark']
-        cash_flows = cash_flows.append(start_portfolio, ignore_index=True)
+        start_portfolio['end_spot'] = start_portfolio['attribution'].apply(lambda f: end_of_day.loc[f, 'spot'])
+        start_portfolio['start_spot'] = start_portfolio['attribution'].apply(lambda f: start_of_day.loc[f, 'spot'])
+
+        delta_pnl = start_portfolio['coinAmt'] * (start_portfolio['end_spot'] - start_portfolio['start_spot'])
+        premium_pnl = start_portfolio['coinAmt'] * (start_portfolio['end_mark'] - start_portfolio['start_mark']) - delta_pnl
+
+        start_portfolio['USDamt']=delta_pnl
+        start_portfolio['event_type']='delta'
+        cash_flows = cash_flows.append(start_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
+
+        start_portfolio['USDamt'] = premium_pnl
+        start_portfolio['event_type'] = 'IR01'
+        cash_flows = cash_flows.append(start_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
     return cash_flows
 
-if True:
-    exchange = open_exchange('ftx_david', '')
+def run_plex(exchange_name,account):
+    exchange = open_exchange(exchange_name,account)
 
     filename="Runtime/portfolio_history.xlsx"
     if not os.path.isfile(filename):
@@ -509,12 +522,12 @@ if True:
     start_time = risk_history['time'].max()
     start_portfolio = risk_history[risk_history['time']==start_time]
 
-    end_time = datetime.now()
+    end_time = datetime.now()-timedelta(seconds=16)# 16s is to avoid looking into the future to fetch prices
     end_portfolio = fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
-    pnl=plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio)#margintest
+    pnl=compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio)#margintest
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
         pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
 
-
+if True: run_plex('ftx_david', '')

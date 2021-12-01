@@ -93,11 +93,15 @@ def fetch_ohlcv(self, symbol, timeframe='1m', start=None, end=None, params={}):
 def fetch_spot_or_perp(self, symbol, point_in_time, params={}):
     if symbol=='USD/USD': return 1
     symbol = symbol.replace('_LOCKED','')
-    try:
-        return fetch_ohlcv(self,symbol, timeframe='15s', start=point_in_time, end=point_in_time+15, params)[0][1]
-    except:
-        perp_symbol=symbol.split('/')[0]+'-PERP'
-        return fetch_ohlcv(self,perp_symbol, timeframe='15s', start=point_in_time, end=point_in_time+15, params)[0][1]
+    self.load_markets()
+    market, marketId = self.get_market_params(symbol, 'market_name', params)
+    if not market is None:
+        result=fetch_ohlcv(self,symbol, timeframe='15s', start=point_in_time, end=point_in_time+15, params=params)
+        return result[0][1]
+    else:
+        perp_symbol = symbol.split('/')[0] + '-PERP'
+        result= fetch_ohlcv(self,perp_symbol, timeframe='15s', start=point_in_time, end=point_in_time+15, params=params)
+        return result[0][1]
 
 def fetch_my_borrows(exchange,coin,params={}):
     request = {
