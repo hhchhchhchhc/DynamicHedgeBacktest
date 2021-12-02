@@ -68,8 +68,8 @@ def open_exchange(exchange_name,subaccount=''):
     elif exchange_name == 'ftx_auk':
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
-            'apiKey': 'QfeIXSEqTrnAmapqMvqie9lNxCF3WCphGSOV6eh_',
-            'secret': 'SIC7tXVPzRpmtwmgS03Bi-gRXu5SpHC-sEDo2ePy',
+            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
         })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
@@ -84,9 +84,8 @@ def open_exchange(exchange_name,subaccount=''):
     #exchange['secret']='none of your buisness'
     return exchange
 
-
 def live_risk():
-    exchange = open_exchange('ftx','CashAndCarry')
+    exchange = open_exchange('ftx_auk','')#CashAndCarry
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 
