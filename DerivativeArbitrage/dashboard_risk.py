@@ -85,7 +85,7 @@ def open_exchange(exchange_name,subaccount=''):
     return exchange
 
 def live_risk():
-    exchange = open_exchange('ftx_auk','')#CashAndCarry
+    exchange = open_exchange('ftx_auk','CashAndCarry')#CashAndCarry
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 
