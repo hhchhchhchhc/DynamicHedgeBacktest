@@ -352,7 +352,7 @@ def fetch_portfolio(exchange,time):
     positions = positions[positions['netSize'] != 0.0].fillna(0.0)
     positions['coin'] = 'USD'
     positions['coinAmt'] = positions['netSize']
-    positions['time']=time
+    positions['time']=time.replace(tzinfo=None)
     positions['event_type'] = 'delta'
     positions['attribution'] = positions['future']
 
@@ -360,7 +360,7 @@ def fetch_portfolio(exchange,time):
     balances = balances[balances['total'] != 0.0].fillna(0.0)
     balances['coinAmt'] =balances['total']
     balances.loc[balances['coin']=='USD','coinAmt']+= positions['unrealizedPnl'].sum()
-    balances['time']=time
+    balances['time']=time.replace(tzinfo=None)
     balances['event_type'] = 'delta'
     balances['attribution'] = balances['coin']
 
@@ -491,16 +491,41 @@ def compute_plex(exchange,start,end,start_portfolio):
         start_portfolio['end_spot'] = start_portfolio['attribution'].apply(lambda f: end_of_day.loc[f, 'spot'])
         start_portfolio['start_spot'] = start_portfolio['attribution'].apply(lambda f: start_of_day.loc[f, 'spot'])
 
-        delta_pnl = start_portfolio['coinAmt'] * (start_portfolio['end_spot'] - start_portfolio['start_spot'])
-        premium_pnl = start_portfolio['coinAmt'] * (start_portfolio['end_mark'] - start_portfolio['start_mark']) - delta_pnl
-
-        start_portfolio['USDamt']=delta_pnl
+        # all have delta
+        start_portfolio['delta_pnl'] = start_portfolio['coinAmt'] * (start_portfolio['end_spot'] - start_portfolio['start_spot'])
+        start_portfolio['USDamt'] = start_portfolio['delta_pnl']
         start_portfolio['event_type']='delta'
         cash_flows = cash_flows.append(start_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
-        start_portfolio['USDamt'] = premium_pnl
-        start_portfolio['event_type'] = 'IR01'
-        cash_flows = cash_flows.append(start_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
+        # all derivs have premium -> IR01
+        perp_portfolio = start_portfolio[start_portfolio['attribution'].isin(futures[futures['type'] == 'perpetual'].index)]
+        perp_portfolio['premium_pnl'] = perp_portfolio['coinAmt'] * (perp_portfolio['end_mark'] - perp_portfolio['start_mark']) - perp_portfolio['delta_pnl']
+        perp_portfolio['USDamt'] = perp_portfolio['premium_pnl']
+        perp_portfolio['event_type'] = 'IR01'
+        cash_flows = cash_flows.append(perp_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],ignore_index=True)
+
+        # futures have premium -> IR01 + decay -> funding
+        future_portfolio = start_portfolio[start_portfolio['attribution'].isin(futures[futures['type'] == 'future'].index)]
+
+        future_portfolio['avg_mark']=(future_portfolio['start_mark']+future_portfolio['end_mark'])/2
+        future_portfolio['avg_spot'] = (future_portfolio['start_spot'] + future_portfolio['end_spot']) / 2
+        future_portfolio['T'] = futures.loc[future_portfolio['attribution'],'expiryTime'].values
+        future_portfolio['avg_t'] = start+timedelta(seconds=(end-start).total_seconds()/2)
+        dt=(end-start).total_seconds()/365.25/24/3600
+        future_portfolio['pull_to_par'] = future_portfolio.apply(lambda f:
+                            -f['coinAmt']* f['avg_mark'] * calc_basis(f['avg_mark'],f['avg_spot'],f['T'],f['avg_t'])*dt,
+                                                                 axis=1)
+
+        future_portfolio['USDamt']=future_portfolio['pull_to_par']
+        future_portfolio['event_type']='funding'
+        cash_flows = cash_flows.append(future_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
+
+        future_portfolio['premium_pnl'] = future_portfolio['coinAmt'] * (future_portfolio['end_mark'] - future_portfolio['start_mark']) \
+                    - future_portfolio['delta_pnl'] \
+                    - future_portfolio['pull_to_par']
+        future_portfolio['USDamt']=future_portfolio['premium_pnl']
+        future_portfolio['event_type']='IR01'
+        cash_flows = cash_flows.append(future_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
     return cash_flows
 
