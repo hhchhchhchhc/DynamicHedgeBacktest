@@ -217,7 +217,7 @@ def price_history(symbol,exchange,
         parquet_filename = dirname +'/' + symbol.replace('/USD','') + '_price.parquet'
         if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
 
-    max_mark_data = int(5000)
+    max_mark_data = int(1500)
     resolution = exchange.describe()['timeframes'][timeframe]
     print('price_history: ' + symbol)
 
