@@ -559,6 +559,6 @@ def run_plex(exchange_name,account):
         risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
         pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
 
-if True:
+if False:
     live_risk('ftx_auk', '')#CashAndCarry
     run_plex('ftx_auk', '')#CashAndCarry
