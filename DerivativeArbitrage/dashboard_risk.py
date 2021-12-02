@@ -51,18 +51,25 @@ def fetch_futures(exchange,includeExpired=False,params={}):
     return result
 
 def open_exchange(exchange_name,subaccount=''):
-    if exchange_name=='ftx':
+    if exchange_name=='ftx_david':
         exchange = ccxt.ftx({ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
-    elif exchange_name == 'ftx_benoit':
+    elif exchange_name == 'ftx':
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
             'apiKey': 'yJp-MCMT5wJW65CbD8myjkAZsAbUqlnXF3EeeZsZ',
             'secret': '6s2vWNcZrwoMc8otJN4h4semrdHyKBLohqaq2H3w',
+        })
+        if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
+    elif exchange_name == 'ftx_auk':
+        exchange = ccxt.ftx({  ## Benoit personnal
+            'enableRateLimit': True,
+            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
         })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
@@ -72,13 +79,13 @@ def open_exchange(exchange_name,subaccount=''):
         'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
     })
     else: print('what exchange?')
-    print('subaccount list: '+ ''.join([r['nickname']+' / ' for r in exchange.privateGetSubaccounts()['result']]))
+    #print('subaccount list: '+ ''.join([r['nickname']+' / ' for r in exchange.privateGetSubaccounts()['result']]))
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
     return exchange
 
 def live_risk():
-    exchange = open_exchange('ftx_benoit','CashAndCarry')
+    exchange = open_exchange('ftx_auk','')#CashAndCarry
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 

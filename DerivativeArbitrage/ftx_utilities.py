@@ -120,18 +120,25 @@ def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':Fals
             data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange_name + datatype + "copy.xlsx")
 
 def open_exchange(exchange_name,subaccount=''):
-    if exchange_name=='ftx':
+    if exchange_name=='ftx_david':
         exchange = ccxt.ftx({ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
-    elif exchange_name == 'ftx_benoit':
+    elif exchange_name == 'ftx':
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
             'apiKey': 'yJp-MCMT5wJW65CbD8myjkAZsAbUqlnXF3EeeZsZ',
             'secret': '6s2vWNcZrwoMc8otJN4h4semrdHyKBLohqaq2H3w',
+        })
+        if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
+    elif exchange_name == 'ftx_auk':
+        exchange = ccxt.ftx({  ## Benoit personnal
+            'enableRateLimit': True,
+            'apiKey': 'QfeIXSEqTrnAmapqMvqie9lNxCF3WCphGSOV6eh_',
+            'secret': 'SIC7tXVPzRpmtwmgS03Bi-gRXu5SpHC-sEDo2ePy',
         })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
@@ -141,7 +148,7 @@ def open_exchange(exchange_name,subaccount=''):
         'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
     })
     else: print('what exchange?')
-    print('subaccount list: '+ ''.join([r['nickname']+' / ' for r in exchange.privateGetSubaccounts()['result']]))
+    #print('subaccount list: '+ ''.join([r['nickname']+' / ' for r in exchange.privateGetSubaccounts()['result']]))
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     #exchange['secret']='none of your buisness'
-    return  exchange
+    return exchange

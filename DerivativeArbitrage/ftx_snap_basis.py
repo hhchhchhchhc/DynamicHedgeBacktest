@@ -4,7 +4,7 @@ from scipy.stats import norm
 from pandas.tseries.frequencies import to_offset
 
 from ftx_utilities import *
-from ftx_portfolio import *
+from ftx_portfolio import ExcessMargin
 from ftx_history import *
 from ftx_ftx import *
 
@@ -147,6 +147,7 @@ def forecast(exchange, input_futures, hy_history,
                   signal_horizon,  # historical window for expectations
                   filename=''):             # use external rather than order book
     futures=pd.DataFrame(input_futures)
+    dated = futures[futures['type'] == 'future']
     ### remove blanks for this
     hy_history = hy_history.fillna(method='ffill',limit=2,inplace=False).dropna()
     # TODO: check hy_history is hourly
@@ -154,25 +155,30 @@ def forecast(exchange, input_futures, hy_history,
 
     #---------- compute max leveraged \int{carry moments}, long and short. To find direction, not weights.
     # for perps, compute carry history to estimate moments.
-    # for future, funding is deterministic because rate change is compensated by carry change (well, modulo borrow...)
     # TODO: we no longer have tx costs in carries # 0*f['bid_rate_slippage']
     # TODO: doesn't work with futures (needs point in time argument)
     LongCarry = futures.apply(lambda f:
                     (- hy_history['USD/rate/borrow']+
-                        hy_history[f.name + '/rate/funding']),
+                        hy_history[f.name + '/rate/' + ('funding' if f['type']=='perpetual' else 'c')]),
                         axis=1).T
     LongCarry.columns=futures.index.tolist()
-    intLongCarry = LongCarry.rolling(holding_hours).mean()
-    E_long= intLongCarry.rolling(int(signal_horizon.total_seconds()/3600)).median()
 
     ShortCarry = futures.apply(lambda f:
                     (- hy_history['USD/rate/borrow']+
-                        hy_history[f.name + '/rate/funding']
+                        hy_history[f.name + '/rate/' + ('funding' if f['type']=='perpetual' else 'c')]
                      + hy_history[f['underlying'] + '/rate/borrow']),
                         axis=1).T
     ShortCarry.columns = futures.index.tolist()
+
+    intLongCarry = LongCarry.rolling(holding_hours).mean()
+    intLongCarry[dated.index]= LongCarry[dated.index]
+    E_long = intLongCarry.rolling(int(signal_horizon.total_seconds()/3600)).median()
+    E_long[dated.index] = intLongCarry[dated.index]
+
     intShortCarry = ShortCarry.rolling(holding_hours).mean()
+    intShortCarry[dated.index] = ShortCarry[dated.index]
     E_short = intShortCarry.rolling(int(signal_horizon.total_seconds()/3600)).median()
+    E_short[dated.index] = intShortCarry[dated.index]
 
     USDborrow = hy_history['USD/rate/borrow']
     intUSDborrow = USDborrow.rolling(holding_hours).mean()
