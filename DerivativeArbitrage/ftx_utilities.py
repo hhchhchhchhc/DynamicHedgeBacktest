@@ -137,8 +137,8 @@ def open_exchange(exchange_name,subaccount=''):
     elif exchange_name == 'ftx_auk':
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
-            'apiKey': 'QfeIXSEqTrnAmapqMvqie9lNxCF3WCphGSOV6eh_',
-            'secret': 'SIC7tXVPzRpmtwmgS03Bi-gRXu5SpHC-sEDo2ePy',
+            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
         })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
