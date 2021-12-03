@@ -38,6 +38,7 @@ HOLDING_PERIOD = pd.Timedelta(static_params.loc['HOLDING_PERIOD','value'])
 SLIPPAGE_OVERRIDE = float(static_params.loc['SLIPPAGE_OVERRIDE','value'])
 CONCENTRATION_LIMIT = float(static_params.loc['CONCENTRATION_LIMIT','value'])
 EXCLUSION_LIST = [c for c in static_params.loc['EXCLUSION_LIST','value'].split('+')]
+DELTA_BLOWUP_ALERT = float(static_params.loc['DELTA_BLOWUP_ALERT','value'])
 print('read static_params')
 
 ########## only for dated futures
@@ -120,20 +121,13 @@ def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':Fals
             data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange_name + datatype + "copy.xlsx")
 
 def open_exchange(exchange_name,subaccount=''):
-    if exchange_name=='ftx_david':
+    if exchange_name=='ftx':
         exchange = ccxt.ftx({ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
-    elif exchange_name == 'ftx':
-        exchange = ccxt.ftx({  ## Benoit personnal
-            'enableRateLimit': True,
-            'apiKey': 'yJp-MCMT5wJW65CbD8myjkAZsAbUqlnXF3EeeZsZ',
-            'secret': '6s2vWNcZrwoMc8otJN4h4semrdHyKBLohqaq2H3w',
-        })
-        if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'ftx_auk':
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
