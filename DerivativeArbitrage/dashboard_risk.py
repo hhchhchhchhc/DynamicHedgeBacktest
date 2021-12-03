@@ -93,21 +93,16 @@ def live_risk():
 
     greeks=balances.join(positions,how='outer')
     greeks['futureDelta'] = positions.apply(lambda f: f['netSize'] * futures.loc[f['future'], 'mark'], axis=1)
-    greeks['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if 'USD' in f.name else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
+    greeks['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
     result=greeks[['futureDelta','spotDelta']].fillna(0.0)
     result['netDelta'] = result['futureDelta'] + result['spotDelta']
     result['futureMark'] = positions.apply(lambda f: futures.loc[f['future'], 'mark'], axis=1)
     result['futureIndex'] = positions.apply(lambda f: futures.loc[f['future'], 'index'], axis=1)
     result['spotMark'] = balances.apply(lambda f: (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
-    # total excludes coins containing 'USD'
-    result.loc['total ex-USD', ['futureDelta', 'spotDelta', 'netDelta']] = result.drop([f for f in result.index if 'USD' in f])[['futureDelta', 'spotDelta', 'netDelta']].sum()
 
     # TODO: gotta assume that first line the main account and second line is the relevant subaccount :(
-    account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[-1][['totalAccountValue','marginFraction','maintenanceMarginRequirement']]
+    account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[-1][['totalAccountValue','totalPositionSize','marginFraction','maintenanceMarginRequirement']]
     result.loc['total', account_info.index] = account_info.values
-    # TODO: naively accounts for 10% spot move only
-    result.loc['total', 'ShockedMarginBuffer'] = float(account_info['totalAccountValue'])-\
-                                                 result.drop('USD')['netDelta'].apply(abs).sum()*DELTA_BLOWUP_ALERT
 
     return result
 
