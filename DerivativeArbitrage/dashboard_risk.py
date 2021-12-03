@@ -51,20 +51,13 @@ def fetch_futures(exchange,includeExpired=False,params={}):
     return result
 
 def open_exchange(exchange_name,subaccount=''):
-    if exchange_name=='ftx_david':
+    if exchange_name=='ftx':
         exchange = ccxt.ftx({ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
-    elif exchange_name == 'ftx':
-        exchange = ccxt.ftx({  ## Benoit personnal
-            'enableRateLimit': True,
-            'apiKey': 'yJp-MCMT5wJW65CbD8myjkAZsAbUqlnXF3EeeZsZ',
-            'secret': '6s2vWNcZrwoMc8otJN4h4semrdHyKBLohqaq2H3w',
-        })
-        if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'ftx_auk':
         exchange = ccxt.ftx({  ## Benoit personnal
             'enableRateLimit': True,
@@ -85,7 +78,7 @@ def open_exchange(exchange_name,subaccount=''):
     return exchange
 
 def live_risk():
-    exchange = open_exchange('ftx_auk','CashAndCarry')#CashAndCarry
+    exchange = open_exchange('ftx_auk','CashAndCarry')#
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 
@@ -106,8 +99,11 @@ def live_risk():
     result['spotMark'] = balances.apply(lambda f: (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
     result.loc['total', ['futureDelta', 'spotDelta', 'netDelta']] = result[['futureDelta', 'spotDelta', 'netDelta']].sum()
 
-    account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[0, 1:8]
+    account_info = pd.DataFrame(exchange.privateGetAccount()['result'])['totalAccountValue','marginFraction','maintenanceMarginRequirement']
     result.loc['total', account_info.index] = account_info.values
+    # TODO: naively accounts for 10% spot move only
+    result.loc['total', 'ShockedMarginBuffer'] = account_info.values['totalAccountValue']-\
+                                                 result['netDelta'].apply(abs).sum()*.1
 
     return result
 
