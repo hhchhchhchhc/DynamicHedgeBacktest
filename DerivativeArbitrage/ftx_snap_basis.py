@@ -1,3 +1,4 @@
+import dateutil.parser
 import pandas as pd
 import scipy.optimize
 from scipy.stats import norm
@@ -81,7 +82,7 @@ def enricher(exchange,input_futures,holding_period,equity,
     return futures.drop(columns=['carryLong','carryShort'])
 
 def update(input_futures,point_in_time,history,equity,
-           intLongCarry, intShortCarry, intUSDborrow,E_long,E_short,E_intUSDborrow):
+           intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow):
     futures=pd.DataFrame(input_futures)
 
     ####### spot quantities. Not used by optimizer. Careful about foresight bias when using those !
@@ -98,10 +99,12 @@ def update(input_futures,point_in_time,history,equity,
         lambda f:history.loc[point_in_time,f.name+'/mark/o'],axis=1)
     futures['index'] = futures.apply(
         lambda f: history.loc[point_in_time, f.name + '/indexes/open'],axis=1)
-    futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future','underlying'].apply(
+    futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future','symbol'].apply(
         lambda f: history.loc[point_in_time, f + '/rate/T'])
     futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
-        lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], point_in_time), axis=1)
+        lambda f: calc_basis(f['mark'], f['index'],
+                             dateutil.parser.isoparse(f['expiry']).replace(tzinfo=None),
+                             point_in_time), axis=1)
 
     # spot carries
     futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
@@ -117,9 +120,11 @@ def update(input_futures,point_in_time,history,equity,
     # carry expectation at point_in_time. # TODO: no need for -1h to avoid foresight, as funding is a TWAP
     futures['intLongCarry']  = intLongCarry.loc[point_in_time]
     futures['intShortCarry'] = intShortCarry.loc[point_in_time]
+    futures['intBorrow'] = intBorrow.loc[point_in_time]
     futures['intUSDborrow']  = intUSDborrow.loc[point_in_time]
     futures['E_long']        = E_long.loc[point_in_time]
     futures['E_short']       = E_short.loc[point_in_time]
+    futures['E_intBorrow'] = E_intBorrow.loc[point_in_time]
     futures['E_intUSDborrow']= E_intUSDborrow.loc[point_in_time]
 
     ##### assume direction only depends on sign(E[long]-E[short]), no integral.
@@ -157,6 +162,8 @@ def forecast(exchange, input_futures, hy_history,
     # for perps, compute carry history to estimate moments.
     # TODO: we no longer have tx costs in carries # 0*f['bid_rate_slippage']
     # TODO: doesn't work with futures (needs point in time argument)
+
+    # 1: spot time series
     LongCarry = futures.apply(lambda f:
                     (- hy_history['USD/rate/borrow']+
                         hy_history[f.name + '/rate/' + ('funding' if f['type']=='perpetual' else 'c')]),
@@ -170,6 +177,12 @@ def forecast(exchange, input_futures, hy_history,
                         axis=1).T
     ShortCarry.columns = futures.index.tolist()
 
+    Borrow = futures.apply(lambda f: hy_history[f['underlying'] + '/rate/borrow'],
+                               axis=1).T
+    Borrow.columns = futures.index.tolist()
+    USDborrow = hy_history['USD/rate/borrow']
+
+    # 2: integrals, and their median.
     intLongCarry = LongCarry.rolling(holding_hours).mean()
     intLongCarry[dated.index]= LongCarry[dated.index]
     E_long = intLongCarry.rolling(int(signal_horizon.total_seconds()/3600)).median()
@@ -180,10 +193,12 @@ def forecast(exchange, input_futures, hy_history,
     E_short = intShortCarry.rolling(int(signal_horizon.total_seconds()/3600)).median()
     E_short[dated.index] = intShortCarry[dated.index]
 
-    USDborrow = hy_history['USD/rate/borrow']
+    intBorrow = Borrow.rolling(holding_hours).mean()
+    E_intBorrow = intBorrow.rolling(int(signal_horizon.total_seconds()/3600)).median()
+
     intUSDborrow = USDborrow.rolling(holding_hours).mean()
     E_intUSDborrow = intUSDborrow.rolling(int(signal_horizon.total_seconds()/3600)).median()
-    
+
     if filename!='':
         with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter') as writer:
             futures.to_excel(writer, sheet_name='futureinfo')
@@ -191,13 +206,15 @@ def forecast(exchange, input_futures, hy_history,
                 all = pd.concat([intLongCarry[col],
                                 intShortCarry[col],
                                 E_long[col],
-                                E_short[col]],axis = 1)
-                all.columns = ['intLongCarry', 'E_long', 'intShortCarry','E_short']
+                                E_short[col],
+                                 intBorrow[col],
+                                 E_intBorrow[col]],axis = 1)
+                all.columns = ['intLongCarry', 'intShortCarry', 'E_long','E_short','intBorrow','E_intBorrow']
                 all['intUSDborrow']=intUSDborrow
                 all['E_intUSDborrow'] = E_intUSDborrow
                 all.to_excel(writer, sheet_name=col)
 
-    return (intLongCarry,intShortCarry,intUSDborrow,E_long,E_short,E_intUSDborrow)
+    return (intLongCarry,intShortCarry,intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow)
 
 #-------------------- transaction costs---------------
 # add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
