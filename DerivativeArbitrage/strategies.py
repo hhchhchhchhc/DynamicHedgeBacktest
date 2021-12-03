@@ -113,12 +113,12 @@ def perp_vs_cash_live(
                                    dirname='Runtime/Live_parquets')
 
         # ------- build derived data history
-        (intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow) = forecast(
+        (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
             exchange, enriched, hy_history,
             holding_period,  # to convert slippage into rate
-            signal_horizon)  # historical window for expectations)
+            signal_horizon,filename='history')  # historical window for expectations)
         updated, marginFunc = update(enriched, point_in_time, hy_history, equity,
-                                     intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
+                                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
         # final filter, needs some history and good avg volumes
         pre_filtered = updated[
             (~np.isnan(updated['E_intCarry']))
@@ -129,7 +129,7 @@ def perp_vs_cash_live(
         # run a trajectory
         optimized = pre_filtered
         updated, marginFunc = update(optimized, point_in_time, hy_history, equity,
-                                     intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
+                                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
         previous_weights_df = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx', sheet_name='optimized', index_col=0)['optimalWeight']
 
         optimized=cash_carry_optimizer(exchange,updated,marginFunc,
@@ -330,16 +330,16 @@ def run(command_list):
     if 'live' in command_list:
         perp_vs_cash_live(
                     concentration_limit=[CONCENTRATION_LIMIT],
-                    signal_horizon = [SIGNAL_HORIZON],
-                    holding_period = [HOLDING_PERIOD],
+                    signal_horizon = [HOLDING_PERIOD],
+                    holding_period = [SIGNAL_HORIZON],
                     slippage_override = [SLIPPAGE_OVERRIDE],
                     run_dir='Runtime/Live_parquets')
         #s3_upload_file('Runtime/live_parquets/optimal_live.xlsx', 'gof.crypto.shared', 'ftx_optimal_cash_carry_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx')
     if 'benchmark' in command_list:
         run_benchmark_ladder(
                     concentration_limit_list=[.5],
-                    holding_period_list=[timedelta(days=d) for d in [2]],
-                    signal_horizon_list=[timedelta(days=d) for d in [2, 5, 7, 30]],
+                    holding_period_list=[HOLDING_PERIOD],
+                    signal_horizon_list=[SIGNAL_HORIZON],
                     slippage_override_list=[SLIPPAGE_OVERRIDE],
                     run_dir='Runtime/cost_blind')
     if 'ladder' in command_list:
