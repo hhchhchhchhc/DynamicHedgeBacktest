@@ -514,7 +514,7 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     def fetch_EOD(symbol_list,point_in_time,portfolio):
         result = pd.DataFrame({'name':symbol_list}).set_index('name')
         # read what you can
-        result=result.join(portfolio.set_index('attribution'),how='inner').reset_index()
+        result=result.join(portfolio.set_index('attribution'),how='outer').reset_index()
 
         # fetch the rest
         missing=result[(result['spot']==None)&(result['event_type']=='delta')]
@@ -608,22 +608,28 @@ def run_plex(exchange_name,account):
 
     end_time = datetime.now() - timedelta(seconds=16)  # 16s is to avoid looking into the future to fetch prices
 
-    filename="Runtime/RiskPnL/portfolio_history_"+account+".xlsx"
+    filename="Runtime/RiskPnL/portfolio_history_"+exchange_name+'_'+account+".xlsx"
     if not os.path.isfile(filename):
         risk_history = pd.DataFrame()
+        risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
+            zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
+                [datetime(2021, 1, 1), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
+        risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
+            zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
+                [datetime(2021, 1, 1), 'USD', 0.0, 'totalAccountValue', 'USD', 1.0, 1.0]))))
+        risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
+            zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
+                [datetime(2021, 1, 1), 'USD', 1.0, 'MarginFraction', 'USD', 1.0, 1.0]))))
         pnl_history = pd.DataFrame()
-        start_time=end_time
-        start_portfolio = fetch_portfolio(exchange, end_time)
-        end_portfolio = start_portfolio  # it's live in fact, end_time just there for records
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
-            risk_history.append(end_portfolio, ignore_index=True).to_excel(writer, sheet_name='risk')
+            risk_history.to_excel(writer, sheet_name='risk')
             pnl_history.to_excel(writer, sheet_name='pnl')
-    else:
-        risk_history = pd.read_excel(filename,sheet_name='risk',index_col=0)
-        pnl_history = pd.read_excel(filename, sheet_name='pnl', index_col=0)
-        start_time = risk_history['time'].max()
-        start_portfolio = risk_history[risk_history['time']==start_time]
-        end_portfolio = fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
+
+    risk_history = pd.read_excel(filename,sheet_name='risk',index_col=0)
+    pnl_history = pd.read_excel(filename, sheet_name='pnl', index_col=0)
+    start_time = risk_history['time'].max()
+    start_portfolio = risk_history[risk_history['time']==start_time]
+    end_portfolio = fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
 
     pnl=compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
 
@@ -631,6 +637,9 @@ def run_plex(exchange_name,account):
         risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
         pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
 
-if False:
+if True:
 #    live_risk('ftx_auk', 'CashAndCarry')#
-    run_plex('ftx_auk', 'CashAndCarry')#
+    run_plex('ftx', 'margintest')
+    run_plex('ftx', '')
+    run_plex('ftx_auk', 'CashAndCarry')
+    run_plex('ftx_auk', '')#
