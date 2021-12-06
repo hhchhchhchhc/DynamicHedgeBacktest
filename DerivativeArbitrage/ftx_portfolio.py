@@ -10,7 +10,6 @@ from ftx_history import price_history
 ## calc various margins for a cash and carry.
 # weights is position size, not %
 # note: weight.shape = futures.shape, but returns a shape = futures.shape+1 !
-# TODO: speed up with nd.array
 class ExcessMargin:
     def __init__(self,futures,equity,
                     long_blowup=LONG_BLOWUP,short_blowup=SHORT_BLOWUP,nb_blowups=NB_BLOWUPS,params={'positive_carry_on_balances': False}):
@@ -53,7 +52,7 @@ class ExcessMargin:
             abs(x[i]) * max(1.0 / self._account_leverage, self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
             for i in range(n)])
         mm_fut = np.array([
-            max([0.03 * x[i], 0.6 * im_fut[i]])
+            max([0.03 * x[i], 0.6 * im_fut[i]])# TODO: doesn't reconcile with account_details...
             for i in range(n)])
 
         return (collateral,im_short,mm_short,im_fut,mm_fut)
@@ -375,14 +374,14 @@ def fetch_portfolio(exchange,time):
     balances['spot'] = balances['coin'].apply(lambda f: 1.0 if f == 'USD' else float(markets.loc[f + '/USD', 'price']))
     balances['mark'] = balances['spot']
 
-    account_info = pd.DataFrame(exchange.privateGetAccount()['result'])[['totalAccountValue','marginFraction']].iloc[0].astype(float)
-    account_info = account_info.T.reset_index()
-    account_info.columns= ['event_type','coinAmt']
-    account_info['time'] = time.replace(tzinfo=None)
-    account_info['coin'] = 'USD'
-    account_info['attribution'] = 'USD'
-    account_info['spot'] = 1.0
-    account_info['mark'] = 1.0
+    account_info = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
+    account_info.loc['total','time'] = time.replace(tzinfo=None)
+    account_info.loc['total','coin'] = 'USD'
+    account_info.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + positions['unrealizedPnl'].sum()
+    account_info.loc['total','event_type'] = 'PV'
+    account_info.loc['total','attribution'] = 'USD'
+    account_info.loc['total','spot'] = 1.0
+    account_info.loc['total','mark'] = 1.0
 
     return pd.concat([
         balances[['time','coin','coinAmt','event_type','attribution','spot','mark']],
@@ -510,7 +509,7 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
                 txFees['event_type'] = 'txFee'
                 cash_flows = cash_flows.append(txFees[['time', 'coin', 'USDamt', 'event_type','attribution']], ignore_index=True)
 
-    # now fetch EOD. TODO: doesn't work for fiat
+    # now fetch EOD.
     def fetch_EOD(symbol_list,point_in_time,portfolio):
         # read what you can
         result = portfolio.loc[portfolio['attribution'].isin(symbol_list), ['attribution', 'spot', 'mark']]
@@ -573,25 +572,26 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             future_portfolio['T'] = futures.loc[future_portfolio['attribution'],'expiryTime'].values
             future_portfolio['avg_t'] = future_portfolio['T'].apply(lambda t: start+timedelta(seconds=(min([t,end])-start).total_seconds()/2))
             dt=(end-start).total_seconds()/365.25/24/3600
-            future_portfolio['pull_to_par'] = future_portfolio.apply(lambda f:
+            future_portfolio['rolldown'] = future_portfolio.apply(lambda f:
                                 -f['coinAmt']* f['avg_mark'] * calc_basis(f['avg_mark'],f['avg_spot'],f['T'],f['avg_t'])*dt,
                                                                      axis=1)
 
-            future_portfolio['USDamt']=future_portfolio['pull_to_par']
+            future_portfolio['delta_pnl'] = future_portfolio['coinAmt'] * (future_portfolio['end_spot'] / future_portfolio['start_spot'] - 1.0) * future_portfolio['start_mark']
+
+            future_portfolio['USDamt']=future_portfolio['rolldown']
             future_portfolio['event_type']='funding'
             cash_flows = cash_flows.append(future_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
             future_portfolio['premium_pnl'] = future_portfolio['coinAmt'] * (future_portfolio['end_mark'] - future_portfolio['start_mark']) \
                         - future_portfolio['delta_pnl'] \
-                        - future_portfolio['pull_to_par']
+                        - future_portfolio['rolldown']
             future_portfolio['USDamt']=future_portfolio['premium_pnl']
             future_portfolio['event_type']='IR01'
             cash_flows = cash_flows.append(future_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
-    # TODO: awaiting FTX answer on totalAccountValue
-    unexplained=pd.DataFrame(columns=['time','coin','USDamt','event_type','attribution'])
-    unexplained['USDamt']=end_portfolio.loc[end_portfolio['event_type']=='totalAccountValue','coinAmt'].values - \
-                start_portfolio.loc[start_portfolio['event_type']=='totalAccountValue','coinAmt'].values - \
+    unexplained=pd.DataFrame()
+    unexplained['USDamt']=end_portfolio.loc[end_portfolio['event_type']=='PV','coinAmt'].values - \
+                start_portfolio.loc[start_portfolio['event_type']=='PV','coinAmt'].values - \
                 cash_flows['USDamt'].sum()
     unexplained['coin'] = 'USD'
     unexplained['attribution'] = None
@@ -609,7 +609,7 @@ def run_plex(exchange_name,account):
 
     end_time = datetime.now() - timedelta(seconds=16)  # 16s is to avoid looking into the future to fetch prices
 
-    filename="Runtime/RiskPnL/portfolio_history_"+exchange_name+'_'+account+".xlsx"
+    filename="Runtime/RiskPnL/portfolio_history_"+exchange_name+'_'+account+'.xlsx'
     if not os.path.isfile(filename):
         risk_history = pd.DataFrame()
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
@@ -617,10 +617,7 @@ def run_plex(exchange_name,account):
                 [datetime(2021, 1, 1), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
-                [datetime(2021, 1, 1), 'USD', 0.0, 'totalAccountValue', 'USD', 1.0, 1.0]))))
-        risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
-            zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
-                [datetime(2021, 1, 1), 'USD', 1.0, 'MarginFraction', 'USD', 1.0, 1.0]))))
+                [datetime(2021, 1, 1), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
         pnl_history = pd.DataFrame()
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             risk_history.to_excel(writer, sheet_name='risk')
@@ -637,10 +634,13 @@ def run_plex(exchange_name,account):
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
         pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
+    with pd.ExcelWriter("Runtime/RiskPnL/Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx", engine='xlsxwriter') as writer:
+        risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
+        pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
 
-if False:
-#    live_risk('ftx_auk', 'CashAndCarry')#
-   # run_plex('ftx', 'margintest')
-   # run_plex('ftx', '')
+if True:
+    run_plex('ftx_auk', 'SystematicPerp')#
+    run_plex('ftx_auk', '')
     run_plex('ftx_auk', 'CashAndCarry')
-   # run_plex('ftx_auk', '')#
+    run_plex('ftx', '')
+    run_plex('ftx', 'margintest')
