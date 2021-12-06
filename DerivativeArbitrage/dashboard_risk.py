@@ -79,31 +79,61 @@ def open_exchange(exchange_name,subaccount=''):
     #exchange['secret']='none of your buisness'
     return exchange
 
+def open_all_subaccounts(exchange_name):
+    if exchange_name=='ftx':
+        exchange = ccxt.ftx({ ## David personnal
+            'enableRateLimit': True,
+            'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
+            'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
+        })
+    elif exchange_name == 'ftx_auk':
+        exchange = ccxt.ftx({  ## Benoit personnal
+            'enableRateLimit': True,
+            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
+        })
+    else: print('what exchange?')
+
+    subaccount_list = pd.DataFrame(exchange.privateGetSubaccounts()['result'])['nickname'].values
+    return [open_exchange(exchange_name,subaccount) for subaccount in subaccount_list]
+
 def live_risk():
-    exchange = open_exchange('ftx_auk','CashAndCarry')#
+    all_subaccounts = open_all_subaccounts('ftx_auk')
+    exchange = open_exchange('ftx_auk','')#
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 
-    positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],dtype=float)#'showAvgPrice':True})
-    positions['coin'] = positions['future'].apply(lambda f: f.split('-')[0])
-    positions = positions[positions['netSize'] != 0.0].set_index('coin').fillna(0.0)
+    risk_sum = pd.DataFrame()
+    metrics_list = pd.DataFrame()
+    for exchange in all_subaccounts:
+        positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],dtype=float)#'showAvgPrice':True})
+        positions['coin'] = positions['future'].apply(lambda f: f.split('-')[0])
+        positions = positions[positions['netSize'] != 0.0].set_index('coin').fillna(0.0)
 
-    balances=pd.DataFrame(exchange.fetch_balance(params={})['info']['result'],dtype=float)#'showAvgPrice':True})
-    balances=balances[balances['total']!=0.0].set_index('coin').fillna(0.0)
+        balances=pd.DataFrame(exchange.fetch_balance(params={})['info']['result'],dtype=float)#'showAvgPrice':True})
+        balances=balances[balances['total']!=0.0].set_index('coin').fillna(0.0)
 
-    greeks=balances.join(positions,how='outer')
-    greeks['futureDelta'] = positions.apply(lambda f: f['netSize'] * futures.loc[f['future'], 'mark'], axis=1)
-    greeks['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
-    result=greeks[['futureDelta','spotDelta']].fillna(0.0)
-    result['netDelta'] = result['futureDelta'] + result['spotDelta']
-    result['futureMark'] = positions.apply(lambda f: futures.loc[f['future'], 'mark'], axis=1)
-    result['futureIndex'] = positions.apply(lambda f: futures.loc[f['future'], 'index'], axis=1)
-    result['spotMark'] = balances.apply(lambda f: (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
+        greeks=balances.join(positions,how='outer')
+        greeks['futureDelta'] = 0 if positions.empty else positions.apply(lambda f: f['netSize'] * futures.loc[f['future'], 'mark'], axis=1)
+        greeks['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
+        result = greeks[['futureDelta','spotDelta']].fillna(0.0)
+        result['netDelta'] = result['futureDelta'] + result['spotDelta']
+        result['futureMark'] = 0 if positions.empty else positions.apply(lambda f: futures.loc[f['future'], 'mark'], axis=1)
+        result['futureIndex'] = 0 if positions.empty else positions.apply(lambda f: futures.loc[f['future'], 'index'], axis=1)
+        result['spotMark'] = balances.apply(lambda f: (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
 
-    # TODO: gotta assume that first line the main account and second line is the relevant subaccount :(
-    account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[-1][['totalAccountValue','totalPositionSize','marginFraction','maintenanceMarginRequirement']]
-    result.loc['total', account_info.index] = account_info.values
+        risk_sum = risk_sum.add(result[['futureDelta','spotDelta','netDelta']],fill_value=0.0)
 
-    return result
+        metrics=pd.DataFrame(index=[exchange.headers['FTX-SUBACCOUNT']])
+        metrics['PV'] = (balances['total']*result['spotMark']).sum()+ (0 if positions.empty else positions['unrealizedPnl'].sum())
+        account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[-1][
+            ['totalAccountValue', 'totalPositionSize', 'marginFraction', 'maintenanceMarginRequirement','initialMarginRequirement']].astype(float)
+        metrics['GrossPosition'] = account_info['totalPositionSize']
+        metrics['IM/position'] = account_info['marginFraction']-account_info['initialMarginRequirement']
+        metrics['MM/position'] = account_info['marginFraction']-account_info['maintenanceMarginRequirement']
+
+        metrics_list = metrics_list.append(metrics)
+
+    return (risk_sum,metrics_list)
 
 print(live_risk())
