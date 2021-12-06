@@ -135,6 +135,13 @@ def open_exchange(exchange_name,subaccount=''):
             'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
         })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
+    elif exchange_name == 'ftx_raj':
+        exchange = ccxt.ftx({  ## Benoit personnal
+            'enableRateLimit': True,
+            'apiKey': 'HdXWK4kNDpeCA0m-_quL3ZPwml_5B9DXpGiXiQCN',
+            'secret': 'DeDqbFBfhhujtB3yGlANrJfYxlFr2kzJo8sV-c6v',
+        })
+        if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
         exchange = ccxt.binance({
         'enableRateLimit': True,
@@ -142,7 +149,35 @@ def open_exchange(exchange_name,subaccount=''):
         'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
     })
     else: print('what exchange?')
-    #print('subaccount list: '+ ''.join([r['nickname']+' / ' for r in exchange.privateGetSubaccounts()['result']]))
     exchange.checkRequiredCredentials()  # raises AuthenticationError
-    #exchange['secret']='none of your buisness'
     return exchange
+
+def open_all_subaccounts(exchange_name):
+    if exchange_name=='ftx':
+        exchange = ccxt.ftx({ ## David personnal
+            'enableRateLimit': True,
+            'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
+            'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
+        })
+    elif exchange_name == 'ftx_auk':
+        exchange = ccxt.ftx({  ## Benoit personnal
+            'enableRateLimit': True,
+            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
+        })
+    elif exchange_name == 'ftx_raj':
+        exchange = ccxt.ftx({  ## Munraj personnal
+            'enableRateLimit': True,
+            'apiKey': 'HdXWK4kNDpeCA0m-_quL3ZPwml_5B9DXpGiXiQCN',
+            'secret': 'DeDqbFBfhhujtB3yGlANrJfYxlFr2kzJo8sV-c6v',
+        })
+    elif exchange_name == 'binance':
+        exchange = ccxt.binance({
+        'enableRateLimit': True,
+        'apiKey': 'pMaBWUoEVqsRJXZJoQ31JkA13QJHNRZyb6N0uZSAlwJscBMXprjgDQqKAfOLdGPK',
+        'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
+    })
+    else: print('what exchange?')
+
+    subaccount_list = pd.DataFrame(exchange.privateGetSubaccounts()['result'])
+    return [open_exchange(exchange_name,subaccount) for subaccount in subaccount_list]
