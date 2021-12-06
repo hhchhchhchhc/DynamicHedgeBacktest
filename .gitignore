@@ -13,3 +13,4 @@
 *.csv
 *.parquet
 **/__pycache__
+/PairsMarketMaking/JupyterNotebooks/.ipynb_checkpoints/
