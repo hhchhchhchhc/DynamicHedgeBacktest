@@ -100,7 +100,9 @@ def fetch_spot_or_perp(self, symbol, point_in_time, params={}):
         return result[0][1]
     else:
         perp_symbol = symbol.split('/')[0] + '-PERP'
-        result= fetch_ohlcv(self,perp_symbol, timeframe='15s', start=point_in_time, end=point_in_time+15, params=params)
+        try:
+            result= fetch_ohlcv(self,perp_symbol, timeframe='15s', start=point_in_time, end=point_in_time+15, params=params)
+        except: return None
         return result[0][1]
 
 def fetch_my_borrows(exchange,coin,params={}):
