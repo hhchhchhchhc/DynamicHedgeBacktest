@@ -4,7 +4,11 @@ import ccxt
 import numpy as np
 import pandas as pd
 
-DELTA_BLOWUP_ALERT = 0.1 # also defined in config but not read from there :(
+# TODO: also defined in config but not read from there :(
+NB_BLOWUPS = 3
+SHORT_BLOWUP = 0.3
+LONG_BLOWUP = 0.15
+DELTA_BLOWUP_ALERT = 0.5
 
 def fetch_futures(exchange,includeExpired=False,params={}):
     response = exchange.publicGetFutures(params)
@@ -97,7 +101,7 @@ def open_all_subaccounts(exchange_name):
     subaccount_list = pd.DataFrame(exchange.privateGetSubaccounts()['result'])['nickname'].values
     return [open_exchange(exchange_name,subaccount) for subaccount in subaccount_list]
 
-def live_risk():
+def live_risk(stablecoin_list):
     all_subaccounts = open_all_subaccounts('ftx_auk')
     exchange = open_exchange('ftx_auk','')#
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
@@ -129,11 +133,18 @@ def live_risk():
         account_info = pd.DataFrame(exchange.privateGetAccount()['result']).iloc[-1][
             ['totalAccountValue', 'totalPositionSize', 'marginFraction', 'maintenanceMarginRequirement','initialMarginRequirement']].astype(float)
         metrics['GrossPosition'] = account_info['totalPositionSize']
-        metrics['IM/position'] = account_info['marginFraction']-account_info['initialMarginRequirement']
-        metrics['MM/position'] = account_info['marginFraction']-account_info['maintenanceMarginRequirement']
+        metrics['excess IM'] = (account_info['marginFraction']-account_info['initialMarginRequirement'])*account_info['totalPositionSize']
+        metrics['excess MM'] = (account_info['marginFraction']-account_info['maintenanceMarginRequirement'])*account_info['totalPositionSize']
+
+        # trigger alert using DELTA_BLOWUP_ALERT and long/short/nb_blowup just like in the MM constraint. excl stablecoins.
+        premium_blowup_futures = result[~result.index.isin(stablecoin_list)].sort_values(by='futureDelta',key=np.abs,ascending=False).head(NB_BLOWUPS)
+        premium_blowup = premium_blowup_futures.apply(lambda f: f['futureDelta']*(-LONG_BLOWUP if f['futureDelta']<0 else SHORT_BLOWUP),axis=1).sum()
+        delta_blowup = DELTA_BLOWUP_ALERT * result.loc[~result.index.isin(stablecoin_list),'netDelta'].apply(abs).sum()
+        metrics['stop adding'] = (metrics['excess MM'] < premium_blowup)|(metrics['excess IM']<0)
+        metrics['liquidation on shock'] = (metrics['excess MM'] < delta_blowup + premium_blowup)
 
         metrics_list = metrics_list.append(metrics)
 
     return (risk_sum,metrics_list)
 
-print(live_risk())
+print(live_risk(['USD']))
