@@ -349,19 +349,32 @@ if False:
         all_fills.to_excel(writer,sheet_name='all_fills')
 
 def fetch_portfolio(exchange,time):
+    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()],
+                             dtype=float).set_index('name')
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=True,includeIndex=True)).set_index('name')
-    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 
-    positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],
-                             dtype=float)  # 'showAvgPrice':True})
-    positions = positions[positions['netSize'] != 0.0].fillna(0.0)
-    positions['coin'] = 'USD'
-    positions['coinAmt'] = positions['netSize']
-    positions['time']=time.replace(tzinfo=None)
-    positions['event_type'] = 'delta'
-    positions['attribution'] = positions['future']
-    positions['mark'] = positions['attribution'].apply(lambda f: futures.loc[f,'mark'])
-    positions['spot'] = positions['attribution'].apply(lambda f: futures.loc[f, 'index'])
+    positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={'showAvgPrice':True})],
+                             dtype=float)  # )
+    if not positions.empty:
+        positions = positions[positions['netSize'] != 0.0].fillna(0.0)
+        positions['coin'] = 'USD'
+        positions['coinAmt'] = positions['netSize']
+        positions['time']=time.replace(tzinfo=None)
+        positions['event_type'] = 'delta'
+        positions['attribution'] = positions['future']
+        positions['mark'] = positions['attribution'].apply(lambda f: markets.loc[f,'price'])
+        positions['spot'] = positions['attribution'].apply(lambda f: markets.loc[markets.loc[f, 'underlying']+'/USD','price'])
+        positions['usdAmt'] = positions['coinAmt'] * positions['mark']
+
+        perp_positions = positions[positions['attribution'].isin(futures[futures['type'] == 'perpetual'].index)]
+        if not perp_positions.empty:
+            perp_positions['rate'] = perp_positions['mark']-perp_positions['spot']
+
+        futures_positions=positions[positions['attribution'].isin(futures[futures['type']=='future'].index)]
+        if not futures_positions.empty:
+            futures_positions['rate']= futures_positions.apply(lambda f:
+                    calc_basis(f['mark'], f['spot'],futures.loc[f['future'],'expiryTime'], time)
+                                                           ,axis=1)
 
     balances = pd.DataFrame(exchange.fetch_balance(params={})['info']['result'], dtype=float)  # 'showAvgPrice':True})
     balances = balances[balances['total'] != 0.0].fillna(0.0)
@@ -373,23 +386,36 @@ def fetch_portfolio(exchange,time):
     balances['coin'] = balances['coin'].apply(lambda f:f.replace('_LOCKED', ''))
     balances['spot'] = balances['coin'].apply(lambda f: 1.0 if f == 'USD' else float(markets.loc[f + '/USD', 'price']))
     balances['mark'] = balances['spot']
+    balances['usdAmt'] = balances['coinAmt'] * balances['mark']
 
-    account_info = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
-    account_info.loc['total','time'] = time.replace(tzinfo=None)
-    account_info.loc['total','coin'] = 'USD'
-    account_info.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + positions['unrealizedPnl'].sum()
-    account_info.loc['total','event_type'] = 'PV'
-    account_info.loc['total','attribution'] = 'USD'
-    account_info.loc['total','spot'] = 1.0
-    account_info.loc['total','mark'] = 1.0
+    PV = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
+    PV.loc['total','time'] = time.replace(tzinfo=None)
+    PV.loc['total','coin'] = 'USD'
+    PV.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + positions['unrealizedPnl'].sum()
+    PV.loc['total','event_type'] = 'PV'
+    PV.loc['total','attribution'] = 'USD'
+    PV.loc['total','spot'] = 1.0
+    PV.loc['total','mark'] = 1.0
+    PV.loc['total', 'usdAmt'] = PV.loc['total','coinAmt']
+
+    account_data = pd.DataFrame(exchange.privateGetAccount()['result'])[['marginFraction','totalPositionSize','initialMarginRequirement']].iloc[0].astype(float)
+    IM = pd.DataFrame(index=['total'],
+                      columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
+    IM.loc['total','time'] = time.replace(tzinfo=None)
+    IM.loc['total','coin'] = 'USD'
+    IM.loc['total','coinAmt'] = PV.loc['total','coinAmt'] - account_data['marginFraction']*account_data['totalPositionSize'] -account_data['initialMarginRequirement']*account_data['totalPositionSize']
+    IM.loc['total','event_type'] = 'IM'
+    IM.loc['total','attribution'] = 'USD'
+    IM.loc['total','spot'] = 1.0
+    IM.loc['total','mark'] = 1.0
+    IM.loc['total', 'usdAmt'] = IM.loc['total','coinAmt']
 
     return pd.concat([
-        balances[['time','coin','coinAmt','event_type','attribution','spot','mark']],
-        positions[['time','coin','coinAmt','event_type','attribution','spot','mark']],
-        account_info[['time','coin','coinAmt','event_type','attribution','spot','mark']]
+        balances[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],
+        positions[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','rate']],
+        PV[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],
+        IM[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']]
     ],axis=0,ignore_index=True)
-
-
 
 def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=True, includeIndex=True)).set_index('name')
@@ -492,7 +518,7 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
                                            ignore_index=True)
 
         # futures more tricky
-        future_trades=trades[trades['future'].values!=None]
+        future_trades=trades[trades['future'].apply(pd.api.types.is_string_dtype)]
         if not future_trades.empty:
             future_trades['coin'] = 'USD'
             future_trades['attribution'] = future_trades['future']
@@ -516,11 +542,12 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
         # fetch the rest
         for f in set(symbol_list)-set(result['attribution']):
+            if type(f)!=str: continue
             if f in futures.index:
                 spot_ticker = futures.loc[f, 'underlying'] + '/USD'
                 mark_ticker = f
             else:
-                spot_ticker = f + ('' if '/USD' in f else '/USD')
+                spot_ticker = f + ('' if ('/USD' in f) else '/USD')
                 mark_ticker = spot_ticker
 
             result=result.append(pd.Series({'attribution':f,
@@ -543,50 +570,78 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             (end_of_day.loc[future_trades['future'],'mark'].values-future_trades['price'])).values
     if not start_portfolio.empty:
         start_of_day = fetch_EOD(start_portfolio['attribution'].unique(), start,start_portfolio)
-        delta = start_portfolio.copy()
 
-        delta['end_spot'] = delta['attribution'].apply(lambda f: end_of_day.loc[f, 'spot'])
-        delta['start_spot'] = delta['attribution'].apply(lambda f: start_of_day.loc[f, 'spot'])
-        delta['end_mark'] = delta['attribution'].apply(lambda f: end_of_day.loc[f, 'mark' if f in futures.index else 'spot'])
-        delta['start_mark'] = delta['attribution'].apply(lambda f: start_of_day.loc[f,'mark' if f in futures.index else 'spot'])
-        # all have delta
-        delta['delta_pnl'] = delta['coinAmt'] * (delta['end_spot'] - delta['start_spot'])
-        delta['USDamt'] = delta['delta_pnl']
-        delta['event_type']='delta'
-        delta['time']=end
-        cash_flows = cash_flows.append(delta[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
+        mkt_risk = start_portfolio.copy()
+        mkt_risk['end_spot'] = mkt_risk['attribution'].apply(lambda f: end_of_day.loc[f, 'spot'])
+        mkt_risk['start_spot'] = mkt_risk['attribution'].apply(lambda f: start_of_day.loc[f, 'spot'])
+        mkt_risk['end_mark'] = mkt_risk['attribution'].apply(lambda f: end_of_day.loc[f, 'mark' if f in futures.index else 'spot'])
+        mkt_risk['start_mark'] = mkt_risk['attribution'].apply(lambda f: start_of_day.loc[f,'mark' if f in futures.index else 'spot'])
+        mkt_risk['time']=end
 
-        # all derivs have premium -> IR01
-        perp_portfolio = delta[delta['attribution'].isin(futures[futures['type'] == 'perpetual'].index)]
+        # spots have delta
+        spots = mkt_risk[~mkt_risk['attribution'].isin(futures.index)]
+        if not spots.empty:
+            spots['delta_pnl'] = spots['coinAmt'] * (spots['end_spot'] - spots['start_spot'])
+            spots['USDamt'] = spots['delta_pnl']
+            spots['event_type']='delta'
+            spots=spots[spots['USDamt']!=0.0]
+            cash_flows = cash_flows.append(spots[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
+
+        # perps also have premium -> IR01
+        perp_portfolio = mkt_risk[mkt_risk['attribution'].isin(futures[futures['type'] == 'perpetual'].index)]
         if not perp_portfolio.empty:
+            perp_portfolio['delta_pnl'] = perp_portfolio['coinAmt'] * (perp_portfolio['end_spot'] - perp_portfolio['start_spot'])
+            perp_portfolio['USDamt'] = perp_portfolio['delta_pnl']
+            perp_portfolio['event_type'] = 'delta'
+            cash_flows = cash_flows.append(perp_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
+                                           ignore_index=True)
+
             perp_portfolio['premium_pnl'] = perp_portfolio['coinAmt'] * (perp_portfolio['end_mark'] - perp_portfolio['start_mark']) - perp_portfolio['delta_pnl']
             perp_portfolio['USDamt'] = perp_portfolio['premium_pnl']
             perp_portfolio['event_type'] = 'IR01'
             cash_flows = cash_flows.append(perp_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],ignore_index=True)
 
-        # futures have premium -> IR01 + decay -> funding
-        future_portfolio = delta[delta['attribution'].isin(futures[futures['type'] == 'future'].index)]
+        # futures also rolldown, and IR01 = totalpnl-mkt_risk-rolldown
+        future_portfolio = mkt_risk[mkt_risk['attribution'].isin(futures[futures['type'] == 'future'].index)]
         if not future_portfolio.empty:
             future_portfolio['avg_mark']=(future_portfolio['start_mark']+future_portfolio['end_mark'])/2
-            future_portfolio['avg_spot'] = (future_portfolio['start_spot'] + future_portfolio['end_spot']) / 2
             future_portfolio['T'] = futures.loc[future_portfolio['attribution'],'expiryTime'].values
             future_portfolio['avg_t'] = future_portfolio['T'].apply(lambda t: start+timedelta(seconds=(min([t,end])-start).total_seconds()/2))
+            future_portfolio['start_rate'] = future_portfolio.apply(lambda f:
+                        calc_basis(f['start_mark'],f['start_spot'],f['T'],start)
+                                                                   ,axis=1)
+            future_portfolio['end_rate'] = future_portfolio.apply(lambda f:
+                        calc_basis(f['end_mark'],f['end_spot'],f['T'],end)
+                                                                   ,axis=1)
             dt=(end-start).total_seconds()/365.25/24/3600
-            future_portfolio['rolldown'] = future_portfolio.apply(lambda f:
-                                -f['coinAmt']* f['avg_mark'] * calc_basis(f['avg_mark'],f['avg_spot'],f['T'],f['avg_t'])*dt,
-                                                                     axis=1)
-
-            future_portfolio['delta_pnl'] = future_portfolio['coinAmt'] * (future_portfolio['end_spot'] / future_portfolio['start_spot'] - 1.0) * future_portfolio['start_mark']
+            future_portfolio['rolldown'] = - future_portfolio['coinAmt']*future_portfolio['avg_mark']* \
+                                           (future_portfolio['end_rate']+future_portfolio['start_rate'])*dt/2
 
             future_portfolio['USDamt']=future_portfolio['rolldown']
             future_portfolio['event_type']='funding'
             cash_flows = cash_flows.append(future_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
-            future_portfolio['premium_pnl'] = future_portfolio['coinAmt'] * (future_portfolio['end_mark'] - future_portfolio['start_mark']) \
+            future_portfolio['delta_pnl'] = future_portfolio['coinAmt'] * (future_portfolio['end_spot'] / future_portfolio['start_spot'] - 1.0) * future_portfolio['start_mark']
+            future_portfolio['USDamt'] = future_portfolio['delta_pnl']
+            future_portfolio['event_type'] = 'delta'
+            cash_flows = cash_flows.append(future_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
+                                           ignore_index=True)
+
+            future_portfolio['IR01'] = future_portfolio['coinAmt']*future_portfolio['avg_mark']* \
+                                       (future_portfolio['end_rate']-future_portfolio['start_rate'])* \
+                                       (future_portfolio['T']-future_portfolio['avg_t']).apply(lambda t: t.total_seconds())/365.25/24/3600
+            future_portfolio['USDamt'] = future_portfolio['IR01']
+            future_portfolio['event_type'] = 'IR01'
+            cash_flows = cash_flows.append(
+                future_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
+                ignore_index=True)
+
+            future_portfolio['FX-IR_gamma'] = future_portfolio['coinAmt'] * (future_portfolio['end_mark'] - future_portfolio['start_mark']) \
                         - future_portfolio['delta_pnl'] \
-                        - future_portfolio['rolldown']
-            future_portfolio['USDamt']=future_portfolio['premium_pnl']
-            future_portfolio['event_type']='IR01'
+                        - future_portfolio['rolldown'] \
+                        - future_portfolio['IR01']
+            future_portfolio['USDamt']=future_portfolio['FX-IR_gamma']
+            future_portfolio['event_type']='cross_effect' # includes xgamma
             cash_flows = cash_flows.append(future_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
     unexplained=pd.DataFrame()
@@ -594,13 +649,18 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
                 start_portfolio.loc[start_portfolio['event_type']=='PV','coinAmt'].values - \
                 cash_flows['USDamt'].sum()
     unexplained['coin'] = 'USD'
-    unexplained['attribution'] = None
+    unexplained['attribution'] = 'USD'
     unexplained['event_type'] = 'unexplained'
     unexplained['time']=end
-    unexplained['end_mark'] = None
+    unexplained['end_mark'] = 1.0
     cash_flows = cash_flows.append(unexplained[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']], ignore_index=True)
 
     cash_flows['time'] = cash_flows['time'].apply(lambda t: t if type(t)!=str else dateutil.parser.isoparse(t).replace(tzinfo=None))
+    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()],
+                           dtype=float).set_index('name')
+    cash_flows['underlying'] = cash_flows['attribution'].apply(lambda f:
+                            futures.loc[f,'underlying'] if f in futures.index
+                            else f)
 
     return cash_flows.sort_values(by='time',ascending=True)
 
@@ -630,17 +690,23 @@ def run_plex(exchange_name,account):
     end_portfolio = fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
 
     pnl=compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
+    summary=pnl[pnl['time']==end_time].pivot_table(values='USDamt',
+                            index='underlying',
+                            columns='event_type',
+                            aggfunc='sum',
+                            fill_value=0.0)
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
         pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
-    with pd.ExcelWriter("Runtime/RiskPnL/Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx", engine='xlsxwriter') as writer:
-        risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
-        pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
+        summary.to_excel(writer, sheet_name='summary')
+
+    shutil.copy2(filename,
+        "Runtime/RiskPnL/Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
 
 if True:
     run_plex('ftx_auk', 'SystematicPerp')#
-    run_plex('ftx_auk', '')
     run_plex('ftx_auk', 'CashAndCarry')
-    run_plex('ftx', '')
-    run_plex('ftx', 'margintest')
+    run_plex('ftx_auk', '')
+    # run_plex('ftx', '')
+    #run_plex('ftx', 'margintest')
