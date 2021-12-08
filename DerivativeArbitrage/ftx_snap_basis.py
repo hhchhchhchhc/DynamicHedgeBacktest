@@ -384,7 +384,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
 
     def summarize():
         summary=pd.DataFrame()
-        summary['spotBenchmark']=futures['mark']/futures['spot']-1.0
+        summary['spotBenchmark']=futures['mark']/futures['index']-1.0
         summary['PremiumBenchmark']=(E_intCarry+E_intUSDborrow- futures['direction'].apply(lambda  f: 0 if f>0 else 1.0).values*E_intBorrow)/365.25
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
@@ -396,7 +396,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary['transactionCost']=weight_move*futures['buy_slippage']
         summary.loc[weight_move<0, 'transactionCost'] = weight_move[weight_move < 0] * sell_slippage[weight_move < 0]
 
-        summary.loc['USD', 'spotBenchmark'] = intUSDborrow
+        summary.loc['USD', 'spotBenchmark'] = futures.iloc[0]['quote_borrow']
         summary.loc['USD', 'PremiumBenchmark'] = E_intUSDborrow
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
@@ -405,7 +405,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary.loc['USD', 'excessMM'] = excess_margin.call(res['x'])['totalMM']-sum(excess_margin.call(res['x'])['MM'])
         summary.loc['USD', 'transactionCost'] = 0
 
-        summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark']
+        summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark'].mean()
         summary.loc['total', 'PremiumBenchmark'] = (E_intCarry+E_intUSDborrow).mean()
         summary.loc['total', 'optimalWeight'] = summary['optimalWeight'].sum() ## 000....
         summary.loc['total', 'ExpectedCarry'] = summary['ExpectedCarry'].sum()
