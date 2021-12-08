@@ -117,7 +117,7 @@ def update(input_futures,point_in_time,history,equity,
 
     ####### expectations. This is what optimizer uses.
 
-    # carry expectation at point_in_time. # TODO: no need for -1h to avoid foresight, as funding is a TWAP
+    # carry expectation at point_in_time. no need for -1h to avoid foresight, as funding is a TWAP
     futures['intLongCarry']  = intLongCarry.loc[point_in_time]
     futures['intShortCarry'] = intShortCarry.loc[point_in_time]
     futures['intBorrow'] = intBorrow.loc[point_in_time]
@@ -198,6 +198,18 @@ def forecast(exchange, input_futures, hy_history,
 
     intUSDborrow = USDborrow.rolling(holding_hours).mean()
     E_intUSDborrow = intUSDborrow.rolling(int(signal_horizon.total_seconds()/3600)).median()
+
+    # TODO:3: spot premium (approximated using last funding) assumed to converge to median -> IR01 pnl
+    # specifically, assume IR01 pnl of f-E[f] and then yield E[f]. More conservative than f stays better than E[f]...as long as holding>1d.
+    # E[f] = E_long + E_usdBorrow
+    #E_long += futures.apply(lambda f:
+    #                    (hy_history[f.name + '/rate/funding']-E_long-E_intUSDborrow)*365.25*24*3600/holding_period.total_seconds() if f['type']=='perpetual' else
+    #                    (hy_history[f.name + '/rate/c']-E_long-E_intUSDborrow)*365.25*24*3600/holding_period.total_seconds(),
+    #                        axis=1)
+    #E_short += futures.apply(lambda f:
+    #                    (hy_history[f.name + '/rate/funding'] - E_long - E_intUSDborrow) * 365.25 * 24 * 3600 / holding_period.total_seconds() if f['type'] == 'perpetual' else
+    #                    (hy_history[f.name + '/rate/c'] - E_long - E_intUSDborrow) * 365.25 * 24 * 3600 / holding_period.total_seconds(),
+    #                        axis=1)
 
     if filename!='':
         with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter') as writer:
@@ -291,8 +303,10 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     ###### then use in convex optimiziation
     # https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
     intCarry=futures['intCarry'].values
+    intBorrow = futures['intBorrow'].values
     intUSDborrow=futures['intUSDborrow'].values[0]
     E_intCarry = futures['E_intCarry'].values
+    E_intBorrow = futures['E_intBorrow'].values
     E_intUSDborrow=futures['E_intUSDborrow'].values[0]
     buy_slippage=futures['buy_slippage'].values
     sell_slippage = futures['sell_slippage'].values
@@ -370,8 +384,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
 
     def summarize():
         summary=pd.DataFrame()
-        summary['spotCarry']=futures['carry_mid']
-        summary['CarryEstimator']=E_intCarry+E_intUSDborrow
+        summary['spotBenchmark']=futures['mark']/futures['spot']-1.0
+        summary['PremiumBenchmark']=(E_intCarry+E_intUSDborrow- futures['direction'].apply(lambda  f: 0 if f>0 else 1.0).values*E_intBorrow)/365.25
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
         summary['RealizedCarry'] = xt*(intCarry+intUSDborrow)
@@ -382,8 +396,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary['transactionCost']=weight_move*futures['buy_slippage']
         summary.loc[weight_move<0, 'transactionCost'] = weight_move[weight_move < 0] * sell_slippage[weight_move < 0]
 
-        summary.loc['USD', 'spotCarry'] = futures['quote_borrow'].values[0]
-        summary.loc['USD', 'CarryEstimator'] = E_intUSDborrow
+        summary.loc['USD', 'spotBenchmark'] = intUSDborrow
+        summary.loc['USD', 'PremiumBenchmark'] = E_intUSDborrow
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
         summary.loc['USD', 'RealizedCarry'] = np.min([0,equity-previous_weights.sum()])* intUSDborrow
@@ -391,8 +405,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary.loc['USD', 'excessMM'] = excess_margin.call(res['x'])['totalMM']-sum(excess_margin.call(res['x'])['MM'])
         summary.loc['USD', 'transactionCost'] = 0
 
-        summary.loc['total', 'spotCarry'] = summary['spotCarry'].mean()
-        summary.loc['total', 'CarryEstimator'] = summary['CarryEstimator'].mean()
+        summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark']
+        summary.loc['total', 'PremiumBenchmark'] = (E_intCarry+E_intUSDborrow).mean()
         summary.loc['total', 'optimalWeight'] = summary['optimalWeight'].sum() ## 000....
         summary.loc['total', 'ExpectedCarry'] = summary['ExpectedCarry'].sum()
         summary.loc['total', 'RealizedCarry'] = summary['RealizedCarry'].sum()

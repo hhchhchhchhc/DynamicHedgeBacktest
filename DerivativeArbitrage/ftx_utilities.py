@@ -1,4 +1,5 @@
 import os
+import shutil
 from typing import Tuple
 import ccxt
 import numpy as np
