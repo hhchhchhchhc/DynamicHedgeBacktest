@@ -74,7 +74,8 @@ def perp_vs_cash_live(
                 concentration_limit,
                 equity=EQUITY,
                 exclusion_list=EXCLUSION_LIST,
-                run_dir=''):
+                run_dir='',
+                currentWeights_file=[]):
     try:
         first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
         if max(first_history.index)<datetime.now().replace(minute=0,second=0,microsecond=0):
@@ -82,11 +83,12 @@ def perp_vs_cash_live(
         else: pass # otherwise do nothing and build_history will use what's there
     except: pass
 
-    exchange = open_exchange('ftx')
+    exchange = open_exchange('ftx_auk','SystematicPerp')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
 
-    point_in_time = (datetime.now()-timedelta(hours=0)).replace(minute=0,second=0,microsecond=0)
+    now_time = datetime.now()
+    point_in_time = now_time.replace(minute=0,second=0,microsecond=0)
 
     # filtering params
     universe=refresh_universe('ftx','wide')
@@ -130,8 +132,14 @@ def perp_vs_cash_live(
         optimized = pre_filtered
         updated, marginFunc = update(optimized, point_in_time, hy_history, equity,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
-        previous_weights_df = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx', sheet_name='optimized', index_col=0)['optimalWeight']
 
+        if currentWeights_file==[]:
+            start_portfolio = fetch_portfolio(exchange, now_time)
+            previous_weights_df = -start_portfolio.loc[
+                start_portfolio['attribution'].isin(pre_filtered.index),['attribution','usdAmt']
+                                                ].set_index('attribution').rename(columns={'usdAmt':'optimalWeight'})
+        else:
+            previous_weights_df = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx', sheet_name='optimized', index_col=0)['optimalWeight']
         optimized=cash_carry_optimizer(exchange,updated,marginFunc,
                                     previous_weights_df=previous_weights_df,
                                     holding_period = holding_period,
@@ -355,4 +363,4 @@ def run(command_list):
     #            slippage_override = [2e-4,5e-4],
     #            run_dir='Runtime/runs')
 
-#run(['live'])
+run(['live'])
