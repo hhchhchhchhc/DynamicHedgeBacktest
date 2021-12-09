@@ -37,7 +37,8 @@ def enricher(exchange,input_futures,holding_period,equity,
         lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
 
     #### need borrow to be present
-    futures = futures[futures['funding_volume']>0]
+    #futures = futures[futures['funding_volume']>0]
+    futures[futures['spotMargin']==False,'borrow']=futures[futures['spotMargin']==False,'borrow']*0+999
 
     # spot carries
     futures['carryLong']=futures['basis_mid']-futures['quote_borrow']

@@ -37,6 +37,8 @@ def build_history(futures,exchange,
                                    )]]
     else:
         borrow_data=pd.concat([borrow_history(f, exchange, end, start,dirname)
+                               if f['spotMargin']==True
+                               else spot_price_data[f+'/price/volume']*0+999
                for f in futures['underlying'].unique()]
                           +[borrow_history('USD',exchange,end,start,dirname)],
               join='outer',axis=1)
@@ -161,7 +163,11 @@ def rate_history(future,exchange,
         end_time = (datetime.fromtimestamp(start_time) - timedelta(seconds=int(resolution))).timestamp()
         start_time = (datetime.fromtimestamp(end_time) - timedelta(
             seconds=max_mark_data * int(resolution))).timestamp()
-    if ((len(indexes) == 0) | (len(mark) == 0)): return pd.DataFrame()
+    if ((len(indexes) == 0) | (len(mark) == 0)):
+        return pd.DataFrame(columns=
+                         [future['symbol'] + '/mark/' + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
+                        +[future['symbol'] + '/indexes/'  + c for c in ['t', 'open', 'high', 'low', 'close', 'volume']]
+                        +[future['symbol'] + '/rate/' + c for c in ['T','c','h','l']])
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
     ###### indexes

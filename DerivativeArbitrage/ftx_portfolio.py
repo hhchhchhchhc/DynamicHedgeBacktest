@@ -349,7 +349,7 @@ if False:
         all_fills.to_excel(writer,sheet_name='all_fills')
 
 def fetch_portfolio(exchange,time):
-    mark_used='price'
+    mark_used='mark'
 
     # fetch mark,spot and balances as closely as possible. order matters.
     markets = fetch_markets(exchange)
@@ -370,7 +370,7 @@ def fetch_portfolio(exchange,time):
         positions['time']=time.replace(tzinfo=None)
         positions['event_type'] = 'delta'
         positions['attribution'] = positions['future']
-        positions['mark'] = positions['attribution'].apply(lambda f: futures.loc[f,'mark_used']
+        positions['mark'] = positions['attribution'].apply(lambda f: futures.loc[f,'mark']
                                             if mark_used == 'mark' else markets.loc[markets.loc[f, 'underlying']+'/USD','price'])
         positions['spot'] = positions['attribution'].apply(lambda f: markets.loc[markets.loc[f, 'underlying']+'/USD','price'])
         positions['usdAmt'] = positions['coinAmt'] * positions['mark']
@@ -730,7 +730,7 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
 #    shutil.copy2(filename,
 #        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
 
-if True:
+if False:
     #run_plex('ftx_auk', 'SystematicPerp')#
     run_plex('ftx_auk', 'CashAndCarry')
     run_plex('ftx_auk', '')

@@ -242,7 +242,7 @@ def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):
             'fiat':coin_details.loc[underlying,'fiat'] if not includeIndex else 'coin_details not found',
             'expiryTime':dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None)
                             if exchange.safe_string(market, 'type') == 'future' else np.NaN,
-            'time_received': response
+            'time_received': time_received
         })
     return result
 

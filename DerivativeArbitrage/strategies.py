@@ -20,13 +20,13 @@ def refresh_universe(exchange_name,universe_size):
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets=exchange.fetch_markets()
 
-    universe_start = datetime(2021, 6, 1)
-    universe_end = datetime(2021, 11, 1)
+    universe_start = datetime(2021, 9, 1)
+    universe_end = datetime(2021, 12, 1)
     borrow_decile = 0.1
     #type_allowed=['perpetual']
     screening_params=pd.DataFrame(
         index=['future_volume_threshold','spot_volume_threshold','borrow_volume_threshold'],
-        data={'max':[5e4,5e4,5e4],
+        data={'max':[5e4,5e4,-1],
               'wide':[2e5,2e5,2e5],# important that wide is first :(
               'tight':[5e5,5e5,5e5]})
 
@@ -34,15 +34,16 @@ def refresh_universe(exchange_name,universe_size):
     futures = futures[
         (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
         & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
-        & (futures['tokenizedEquity'] != True)
-        & (futures['spotMargin'] == True)]
+        & (futures['tokenizedEquity'] != True)]
+        #& (futures['spotMargin'] == True)]
 
     # volume screening
     hy_history = build_history(futures, exchange,
                                timeframe='1h', end=universe_end, start=universe_start,
                                dirname='Runtime/Configs/universe_history')
     universe_filter_window=hy_history[universe_start:universe_end].index
-    futures['borrow_volume_decile'] = futures.apply(lambda f:
+    futures['borrow_volume_decile'] =0
+    futures.loc[futures['spotMargin']==True,'borrow_volume_decile'] = futures[futures['spotMargin']==True].apply(lambda f:
                             (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']*hy_history.loc[universe_filter_window,f.name+'/mark/o']).quantile(q=borrow_decile),axis=1)
     futures['spot_volume_avg'] = futures.apply(lambda f:
                             (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean(),axis=1)
@@ -91,7 +92,7 @@ def perp_vs_cash_live(
     point_in_time = now_time.replace(minute=0,second=0,microsecond=0)
 
     # filtering params
-    universe=refresh_universe('ftx','wide')
+    universe=refresh_universe('ftx','max')
     universe=universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = ['perpetual']
     max_nb_coins = 99
@@ -356,10 +357,10 @@ def run(command_list):
                     slippage_override_list=[SLIPPAGE_OVERRIDE],
                     run_dir='Runtime/cost_blind')
     if 'ladder' in command_list:
-        run_ladder( concentration_limit_list=[9,1,0.5],
-                    holding_period_list = [timedelta(hours=d) for d in [6,12]] + [timedelta(days=d) for d in [1,2,3,4,5]],
-                    signal_horizon_list = [timedelta(hours=d) for d in [12]] + [timedelta(days=d) for d in [1,2,3,4,5,7,10,30]],
-                    slippage_override = [2e-4,5e-4],
+        run_ladder( concentration_limit_list=[0.5],
+                    holding_period_list = [timedelta(days=d) for d in [1]],
+                    signal_horizon_list = [timedelta(hours=d) for d in [1,3,6,12]] + [timedelta(days=d) for d in [1,2]],
+                    slippage_override = [0,2e-4],
                     run_dir='Runtime/runs')
 
     #run_ladder( concentration_limit_list=[9, 1, .5],
@@ -368,4 +369,4 @@ def run(command_list):
     #            slippage_override = [2e-4,5e-4],
     #            run_dir='Runtime/runs')
 
-run(['live'])
+run(['ladder'])
