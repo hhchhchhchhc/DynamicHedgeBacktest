@@ -72,7 +72,7 @@ def perp_vs_cash_live(
                 holding_period,
                 slippage_override,
                 concentration_limit,
-                equity=EQUITY,
+                #equity=EQUITY, uses previous weights
                 exclusion_list=EXCLUSION_LIST,
                 run_dir='',
                 currentWeights_file=[]):
@@ -100,6 +100,18 @@ def perp_vs_cash_live(
     # fee estimation params
     slippage_scaler = 1
     slippage_orderbook_depth = 10000
+
+    # previous book
+    if currentWeights_file == []:
+        start_portfolio = fetch_portfolio(exchange, now_time)
+        previous_weights_df = -start_portfolio.loc[
+            start_portfolio['attribution'].isin(futures.index), ['attribution', 'usdAmt']
+        ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
+        equity = start_portfolio.loc[start_portfolio['event_type']=='PV','usdAmt'].values
+    else:
+        previous_weights_df = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx', sheet_name='optimized', index_col=0)['optimalWeight']
+        equity = previous_weights_df.loc['total','optimalWeight'].values
+        previous_weights_df=previous_weights_df.drop(['USD','total'])
 
     for (holding_period,signal_horizon,slippage_override,concentration_limit) in [(hp,sh,sl,c) for hp in holding_period for sh in signal_horizon for sl in slippage_override for c in concentration_limit]:
 
@@ -133,15 +145,8 @@ def perp_vs_cash_live(
         updated, marginFunc = update(optimized, point_in_time, hy_history, equity,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
 
-        if currentWeights_file==[]:
-            start_portfolio = fetch_portfolio(exchange, now_time)
-            previous_weights_df = -start_portfolio.loc[
-                start_portfolio['attribution'].isin(pre_filtered.index),['attribution','usdAmt']
-                                                ].set_index('attribution').rename(columns={'usdAmt':'optimalWeight'})
-        else:
-            previous_weights_df = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx', sheet_name='optimized', index_col=0)['optimalWeight']
         optimized=cash_carry_optimizer(exchange,updated,marginFunc,
-                                    previous_weights_df=previous_weights_df,
+                                    previous_weights_df=previous_weights_df[previous_weights_df.index.isin(pre_filtered.index)],
                                     holding_period = holding_period,
                                     signal_horizon=signal_horizon,
                                     concentration_limit=concentration_limit,
