@@ -183,6 +183,8 @@ def collateralWeightInitial(future):# TODO: API call to collateralWeight(Initial
 ### get all static fields
 def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):
     response = exchange.publicGetFutures(params)
+    time_received= datetime.now().replace(tzinfo=None).timestamp()
+
     expired = exchange.publicGetExpiredFutures(params) if includeExpired==True else []
     coin_details = fetch_coin_details(exchange)
 
@@ -239,6 +241,182 @@ def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):
             'usdFungible':coin_details.loc[underlying,'usdFungible'] if not includeIndex else 'coin_details not found',
             'fiat':coin_details.loc[underlying,'fiat'] if not includeIndex else 'coin_details not found',
             'expiryTime':dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None)
-                            if exchange.safe_string(market, 'type') == 'future' else np.NaN
+                            if exchange.safe_string(market, 'type') == 'future' else np.NaN,
+            'time_received': response
         })
     return result
+
+def fetch_balance(exchange, params={}):
+    exchange.load_markets()
+    response = exchange.privateGetWalletBalances(params)
+    time_received = datetime.now().replace(tzinfo=None).timestamp()
+    #
+    #     {
+    #         "success": True,
+    #         "result": [
+    #             {
+    #                 "coin": "USDTBEAR",
+    #                 "free": 2320.2,
+    #                 "total": 2340.2
+    #             },
+    #         ],
+    #     }
+    #
+    result = {
+        'info': response
+    }
+    balances = exchange.safe_value(response, 'result', [])
+    for i in range(0, len(balances)):
+        balance = balances[i]
+        code = exchange.safe_currency_code(exchange.safe_string(balance, 'coin'))
+        account = exchange.account()
+        account['free'] = exchange.safe_string_2(balance, 'availableWithoutBorrow', 'free')
+        account['total'] = exchange.safe_string(balance, 'total')
+        result[code] = account
+    res = exchange.parse_balance(result)
+    for c in res['info']['result']:
+        c['time_received']=time_received
+    return res
+
+def fetch_markets(exchange, params={}):
+    response = exchange.publicGetMarkets(params)
+    time_received=datetime.now().replace(tzinfo=None).timestamp()
+    #     {
+    #         'success': True,
+    #         "result": [
+    #             {
+    #                 "ask":170.37,
+    #                 "baseCurrency":null,
+    #                 "bid":170.31,
+    #                 "change1h":-0.019001554672655036,
+    #                 "change24h":-0.024841165359738997,
+    #                 "changeBod":-0.03816406029469881,
+    #                 "enabled":true,
+    #                 "last":170.37,
+    #                 "name":"ETH-PERP",
+    #                 "price":170.37,
+    #                 "priceIncrement":0.01,
+    #                 "quoteCurrency":null,
+    #                 "quoteVolume24h":7742164.59889,
+    #                 "sizeIncrement":0.001,
+    #                 "type":"future",
+    #                 "underlying":"ETH",
+    #                 "volumeUsd24h":7742164.59889
+    #             },
+    #             {
+    #                 "ask":170.44,
+    #                 "baseCurrency":"ETH",
+    #                 "bid":170.41,
+    #                 "change1h":-0.018485459257126403,
+    #                 "change24h":-0.023825887743413515,
+    #                 "changeBod":-0.037605872388481086,
+    #                 "enabled":true,
+    #                 "last":172.72,
+    #                 "name":"ETH/USD",
+    #                 "price":170.44,
+    #                 "priceIncrement":0.01,
+    #                 "quoteCurrency":"USD",
+    #                 "quoteVolume24h":382802.0252,
+    #                 "sizeIncrement":0.001,
+    #                 "type":"spot",
+    #                 "underlying":null,
+    #                 "volumeUsd24h":382802.0252
+    #             },
+    #         ],
+    #     }
+    #
+    result = []
+    markets = exchange.safe_value(response, 'result', [])
+    for i in range(0, len(markets)):
+        market = markets[i]
+        market['time_received'] = time_received
+        id = exchange.safe_string(market, 'name')
+        baseId = exchange.safe_string_2(market, 'baseCurrency', 'underlying')
+        quoteId = exchange.safe_string(market, 'quoteCurrency', 'USD')
+        type = exchange.safe_string(market, 'type')
+        base = exchange.safe_currency_code(baseId)
+        quote = exchange.safe_currency_code(quoteId)
+        # check if a market is a spot or future market
+        symbol = exchange.safe_string(market, 'name') if (type == 'future') else (base + '/' + quote)
+        active = exchange.safe_value(market, 'enabled')
+        sizeIncrement = exchange.safe_number(market, 'sizeIncrement')
+        priceIncrement = exchange.safe_number(market, 'priceIncrement')
+        precision = {
+            'amount': sizeIncrement,
+            'price': priceIncrement,
+        }
+        result.append({
+            'id': id,
+            'symbol': symbol,
+            'base': base,
+            'quote': quote,
+            'baseId': baseId,
+            'quoteId': quoteId,
+            'type': type,
+            'future': (type == 'future'),
+            'spot': (type == 'spot'),
+            'active': active,
+            'precision': precision,
+            'limits': {
+                'amount': {
+                    'min': sizeIncrement,
+                    'max': None,
+                },
+                'price': {
+                    'min': priceIncrement,
+                    'max': None,
+                },
+                'cost': {
+                    'min': None,
+                    'max': None,
+                },
+                'leverage': {
+                    'min': 1,
+                    'max': 20,
+                },
+            },
+            'info': market,
+        })
+    return result
+
+def fetch_positions(exchange, symbols=None, params={}):
+    exchange.load_markets()
+    request = {
+        'showAvgPrice': True,
+    }
+    response = exchange.privateGetPositions(exchange.extend(request, params))
+    time_received = datetime.now().replace(tzinfo=None).timestamp()
+    #
+    #     {
+    #         "success": True,
+    #         "result": [
+    #             {
+    #                 "cost": -31.7906,
+    #                 "entryPrice": 138.22,
+    #                 "estimatedLiquidationPrice": 152.1,
+    #                 "future": "ETH-PERP",
+    #                 "initialMarginRequirement": 0.1,
+    #                 "longOrderSize": 1744.55,
+    #                 "maintenanceMarginRequirement": 0.04,
+    #                 "netSize": -0.23,
+    #                 "openSize": 1744.32,
+    #                 "realizedPnl": 3.39441714,
+    #                 "shortOrderSize": 1732.09,
+    #                 "recentAverageOpenPrice": 278.98,
+    #                 "recentPnl": 2.44,
+    #                 "recentBreakEvenPrice": 278.98,
+    #                 "side": "sell",
+    #                 "size": 0.23,
+    #                 "unrealizedPnl": 0,
+    #                 "collateralUsed": 3.17906
+    #             }
+    #         ]
+    #     }
+    #
+    result = exchange.safe_value(response, 'result', [])
+    results = []
+    for i in range(0, len(result)):
+        parsed = exchange.parse_position(result[i])
+        parsed['info']['time_received']=time_received
+        results.append(parsed)
+    return results

@@ -349,16 +349,19 @@ if False:
         all_fills.to_excel(writer,sheet_name='all_fills')
 
 def fetch_portfolio(exchange,time):
-    # fetch mark,spot and balances as closely as possible
-    markets = exchange.fetch_markets()
-    balances = exchange.fetch_balance(params={})['info']['result']
-    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=True, includeIndex=True)).set_index('name')
+    mark_used='price'
+
+    # fetch mark,spot and balances as closely as possible. order matters.
+    markets = fetch_markets(exchange)
+    balances = fetch_balance(exchange,params={})
+    futures = fetch_futures(exchange, includeExpired=True, includeIndex=True)
+    positions = fetch_positions(exchange,params={'showAvgPrice': True})
 
     markets = pd.DataFrame([r['info'] for r in markets], dtype=float).set_index('name')
-    balances=pd.DataFrame(balances, dtype=float)
+    balances= pd.DataFrame(balances['info']['result'], dtype=float)
+    futures = pd.DataFrame(futures).set_index('name')
+    positions = pd.DataFrame([r['info'] for r in positions],dtype=float)  # )
 
-    positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={'showAvgPrice':True})],
-                             dtype=float)  # )
     if not positions.empty:
         positions = positions[positions['netSize'] != 0.0].fillna(0.0)
         unrealizedPnL= positions['unrealizedPnl'].sum()
@@ -367,7 +370,8 @@ def fetch_portfolio(exchange,time):
         positions['time']=time.replace(tzinfo=None)
         positions['event_type'] = 'delta'
         positions['attribution'] = positions['future']
-        positions['mark'] = positions['attribution'].apply(lambda f: markets.loc[f,'price'])
+        positions['mark'] = positions['attribution'].apply(lambda f: futures.loc[f,'mark_used']
+                                            if mark_used == 'mark' else markets.loc[markets.loc[f, 'underlying']+'/USD','price'])
         positions['spot'] = positions['attribution'].apply(lambda f: markets.loc[markets.loc[f, 'underlying']+'/USD','price'])
         positions['usdAmt'] = positions['coinAmt'] * positions['mark']
 
@@ -377,26 +381,36 @@ def fetch_portfolio(exchange,time):
         positions.loc[positions['attribution'].isin(futures[futures['type'] == 'perpetual'].index),'mark']/ \
         positions.loc[positions['attribution'].isin(futures[futures['type'] == 'perpetual'].index),'spot']-1.0
 
-        positions.loc[positions['attribution'].isin(futures[futures['type']=='future'].index),'additional']= \
+        positions.loc[positions['attribution'].isin(futures[futures['type']=='future'].index),'rate']= \
         positions.loc[positions['attribution'].isin(futures[futures['type']=='future'].index)].apply(lambda f:
                     calc_basis(f['mark'], f['spot'],futures.loc[f['future'],'expiryTime'], time)
                                                            ,axis=1)
+
+        positions['price'] = positions['attribution'].apply(lambda f: markets.loc[f, 'price'])
+        positions['unrealizedPnL'] = unrealizedPnL
+        positions['unrealizedPnl_received'] = positions['time_received']
+        positions['price_received'] = markets['time_received']
+        positions['mark_received'] = futures['time_received']
+
     else: unrealizedPnL=0.0
 
     balances = balances[balances['total'] != 0.0].fillna(0.0)
     balances['coinAmt'] =balances['total']
     balances.loc[balances['coin']=='USD','coinAmt'] += unrealizedPnL
     balances['time']=time.replace(tzinfo=None)
+    balances['balance_received'] = balances['time_received']
+    balances['price_received'] = markets['time_received']
     balances['event_type'] = 'delta'
     balances['attribution'] = balances['coin']
     balances['coin'] = balances['coin'].apply(lambda f:f.replace('_LOCKED', ''))
     balances['spot'] = balances['coin'].apply(lambda f: 1.0 if f == 'USD' else float(markets.loc[f + '/USD', 'price']))
     balances['mark'] = balances['spot']
     balances['usdAmt'] = balances['coinAmt'] * balances['mark']
-    balances['additional'] = unrealizedPnL
 
     PV = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
     PV.loc['total','time'] = time.replace(tzinfo=None)
+    PV.loc['total', 'balance_received'] = balances.iloc[0]['time_received']
+    PV.loc['total', 'price_received'] = markets.iloc[0]['time_received']
     PV.loc['total','coin'] = 'USD'
     PV.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + unrealizedPnL
     PV.loc['total','event_type'] = 'PV'
@@ -421,9 +435,9 @@ def fetch_portfolio(exchange,time):
     IM.loc['total', 'usdAmt'] = IM.loc['total','coinAmt']
 
     return pd.concat([
-        balances[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','additional']],#TODO: rate to be removed
-        positions[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','additional']] if not positions.empty else pd.DataFrame(),
-        PV[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],
+        balances[['balance_received','price_received','time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],#TODO: rate to be removed
+        positions[['price_received','mark_received','unrealizedPnl_received','time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','rate','price','unrealizedPnL']] if not positions.empty else pd.DataFrame(),
+        PV[['balance_received','price_received','time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],
         IM[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']]
     ],axis=0,ignore_index=True)
 
@@ -667,8 +681,6 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     cash_flows = cash_flows.append(unexplained[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']], ignore_index=True)
 
     cash_flows['time'] = cash_flows['time'].apply(lambda t: t if type(t)!=str else dateutil.parser.isoparse(t).replace(tzinfo=None))
-    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()],
-                           dtype=float).set_index('name')
     cash_flows['underlying'] = cash_flows['attribution'].apply(lambda f:
                             futures.loc[f,'underlying'] if f in futures.index
                             else f)
@@ -718,8 +730,8 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
 #    shutil.copy2(filename,
 #        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
 
-if False:
-    run_plex('ftx_auk', 'SystematicPerp')#
+if True:
+    #run_plex('ftx_auk', 'SystematicPerp')#
     run_plex('ftx_auk', 'CashAndCarry')
     run_plex('ftx_auk', '')
     # run_plex('ftx', '')
