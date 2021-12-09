@@ -361,6 +361,7 @@ def fetch_portfolio(exchange,time):
                              dtype=float)  # )
     if not positions.empty:
         positions = positions[positions['netSize'] != 0.0].fillna(0.0)
+        unrealizedPnL= positions['unrealizedPnl'].sum()
         positions['coin'] = 'USD'
         positions['coinAmt'] = positions['netSize']
         positions['time']=time.replace(tzinfo=None)
@@ -380,10 +381,11 @@ def fetch_portfolio(exchange,time):
         positions.loc[positions['attribution'].isin(futures[futures['type']=='future'].index)].apply(lambda f:
                     calc_basis(f['mark'], f['spot'],futures.loc[f['future'],'expiryTime'], time)
                                                            ,axis=1)
+    else: unrealizedPnL=0.0
 
     balances = balances[balances['total'] != 0.0].fillna(0.0)
     balances['coinAmt'] =balances['total']
-    balances.loc[balances['coin']=='USD','coinAmt']+= positions['unrealizedPnl'].sum()
+    balances.loc[balances['coin']=='USD','coinAmt'] += unrealizedPnL
     balances['time']=time.replace(tzinfo=None)
     balances['event_type'] = 'delta'
     balances['attribution'] = balances['coin']
@@ -391,24 +393,27 @@ def fetch_portfolio(exchange,time):
     balances['spot'] = balances['coin'].apply(lambda f: 1.0 if f == 'USD' else float(markets.loc[f + '/USD', 'price']))
     balances['mark'] = balances['spot']
     balances['usdAmt'] = balances['coinAmt'] * balances['mark']
-    balances['additional'] = positions['unrealizedPnl'].sum()
+    balances['additional'] = unrealizedPnL
 
     PV = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
     PV.loc['total','time'] = time.replace(tzinfo=None)
     PV.loc['total','coin'] = 'USD'
-    PV.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + positions['unrealizedPnl'].sum()
+    PV.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + unrealizedPnL
     PV.loc['total','event_type'] = 'PV'
     PV.loc['total','attribution'] = 'USD'
     PV.loc['total','spot'] = 1.0
     PV.loc['total','mark'] = 1.0
     PV.loc['total', 'usdAmt'] = PV.loc['total','coinAmt']
 
-    account_data = pd.DataFrame(exchange.privateGetAccount()['result'])[['marginFraction','totalPositionSize','initialMarginRequirement']].iloc[0].astype(float)
     IM = pd.DataFrame(index=['total'],
                       columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
     IM.loc['total','time'] = time.replace(tzinfo=None)
     IM.loc['total','coin'] = 'USD'
-    IM.loc['total','coinAmt'] = PV.loc['total','coinAmt'] - account_data['marginFraction']*account_data['totalPositionSize'] -account_data['initialMarginRequirement']*account_data['totalPositionSize']
+    account_data = pd.DataFrame(exchange.privateGetAccount()['result'])[['marginFraction', 'totalPositionSize', 'initialMarginRequirement']]
+    if not account_data.empty:
+        account_data=account_data.iloc[0].astype(float)
+        IM.loc['total','coinAmt'] = PV.loc['total','coinAmt']- account_data['marginFraction']*account_data['totalPositionSize'] +account_data['initialMarginRequirement']*account_data['totalPositionSize']
+    else:   IM.loc['total','coinAmt'] = 0
     IM.loc['total','event_type'] = 'IM'
     IM.loc['total','attribution'] = 'USD'
     IM.loc['total','spot'] = 1.0
@@ -417,7 +422,7 @@ def fetch_portfolio(exchange,time):
 
     return pd.concat([
         balances[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','additional']],#TODO: rate to be removed
-        positions[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','additional']],
+        positions[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','additional']] if not positions.empty else pd.DataFrame(),
         PV[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],
         IM[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']]
     ],axis=0,ignore_index=True)
