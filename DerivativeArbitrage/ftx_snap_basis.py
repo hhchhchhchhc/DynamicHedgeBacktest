@@ -385,7 +385,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     def summarize():
         summary=pd.DataFrame()
         summary['spotBenchmark']=futures['mark']/futures['index']-1.0
-        summary['PremiumBenchmark']=(E_intCarry+E_intUSDborrow- futures['direction'].apply(lambda  f: 0 if f>0 else 1.0).values*E_intBorrow)/365.25
+        summary['ExpectedBenchmark']=(E_intCarry+E_intUSDborrow- futures['direction'].apply(lambda  f: 0 if f>0 else 1.0).values*E_intBorrow)/365.25
+        summary['FundingBenchmark'] = futures['basis_mid']*futures['mark']/365.25
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
         summary['RealizedCarry'] = xt*(intCarry+intUSDborrow)
@@ -397,7 +398,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary.loc[weight_move<0, 'transactionCost'] = weight_move[weight_move < 0] * sell_slippage[weight_move < 0]
 
         summary.loc['USD', 'spotBenchmark'] = futures.iloc[0]['quote_borrow']
-        summary.loc['USD', 'PremiumBenchmark'] = E_intUSDborrow
+        summary.loc['USD', 'ExpectedBenchmark'] = E_intUSDborrow
+        summary.loc['USD', 'FundingBenchmark'] = futures.iloc[0]['quote_borrow'] /365.25
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
         summary.loc['USD', 'RealizedCarry'] = np.min([0,equity-previous_weights.sum()])* intUSDborrow
@@ -406,7 +408,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary.loc['USD', 'transactionCost'] = 0
 
         summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark'].mean()
-        summary.loc['total', 'PremiumBenchmark'] = (E_intCarry+E_intUSDborrow).mean()
+        summary.loc['total', 'ExpectedBenchmark'] = (E_intCarry+E_intUSDborrow).mean()
+        summary.loc['total', 'FundingBenchmark'] = summary['FundingBenchmark'].mean()
         summary.loc['total', 'optimalWeight'] = summary['optimalWeight'].sum() ## 000....
         summary.loc['total', 'ExpectedCarry'] = summary['ExpectedCarry'].sum()
         summary.loc['total', 'RealizedCarry'] = summary['RealizedCarry'].sum()

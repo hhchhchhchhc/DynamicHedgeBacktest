@@ -349,9 +349,13 @@ if False:
         all_fills.to_excel(writer,sheet_name='all_fills')
 
 def fetch_portfolio(exchange,time):
-    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()],
-                             dtype=float).set_index('name')
-    futures = pd.DataFrame(fetch_futures(exchange,includeExpired=True,includeIndex=True)).set_index('name')
+    # fetch mark,spot and balances as closely as possible
+    markets = exchange.fetch_markets()
+    balances = exchange.fetch_balance(params={})['info']['result']
+    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=True, includeIndex=True)).set_index('name')
+
+    markets = pd.DataFrame([r['info'] for r in markets], dtype=float).set_index('name')
+    balances=pd.DataFrame(balances, dtype=float)
 
     positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={'showAvgPrice':True})],
                              dtype=float)  # )
@@ -372,12 +376,11 @@ def fetch_portfolio(exchange,time):
         positions.loc[positions['attribution'].isin(futures[futures['type'] == 'perpetual'].index),'mark']/ \
         positions.loc[positions['attribution'].isin(futures[futures['type'] == 'perpetual'].index),'spot']-1.0
 
-        positions.loc[positions['attribution'].isin(futures[futures['type']=='future'].index),'rate']= \
+        positions.loc[positions['attribution'].isin(futures[futures['type']=='future'].index),'additional']= \
         positions.loc[positions['attribution'].isin(futures[futures['type']=='future'].index)].apply(lambda f:
                     calc_basis(f['mark'], f['spot'],futures.loc[f['future'],'expiryTime'], time)
                                                            ,axis=1)
 
-    balances = pd.DataFrame(exchange.fetch_balance(params={})['info']['result'], dtype=float)  # 'showAvgPrice':True})
     balances = balances[balances['total'] != 0.0].fillna(0.0)
     balances['coinAmt'] =balances['total']
     balances.loc[balances['coin']=='USD','coinAmt']+= positions['unrealizedPnl'].sum()
@@ -388,7 +391,7 @@ def fetch_portfolio(exchange,time):
     balances['spot'] = balances['coin'].apply(lambda f: 1.0 if f == 'USD' else float(markets.loc[f + '/USD', 'price']))
     balances['mark'] = balances['spot']
     balances['usdAmt'] = balances['coinAmt'] * balances['mark']
-    balances['rate'] = positions['unrealizedPnl'].sum()
+    balances['additional'] = positions['unrealizedPnl'].sum()
 
     PV = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
     PV.loc['total','time'] = time.replace(tzinfo=None)
@@ -413,8 +416,8 @@ def fetch_portfolio(exchange,time):
     IM.loc['total', 'usdAmt'] = IM.loc['total','coinAmt']
 
     return pd.concat([
-        balances[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','rate']],#TODO: rate to be removed
-        positions[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','rate']],
+        balances[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','additional']],#TODO: rate to be removed
+        positions[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','additional']],
         PV[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],
         IM[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']]
     ],axis=0,ignore_index=True)
@@ -429,12 +432,14 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     deposits= pd.DataFrame(exchange.privateGetWalletDeposits(params)['result'],dtype=float)
     if not deposits.empty:
+        deposits=deposits[deposits['status']=='complete']
         deposits['USDamt']=deposits['size']
         deposits['attribution'] = deposits['coin']
         deposits['event_type'] = 'deposit_'+deposits['status']
         cash_flows=cash_flows.append(deposits[['time','coin','USDamt','event_type','attribution']],ignore_index=True)
     withdrawals = pd.DataFrame(exchange.privateGetWalletWithdrawals(params)['result'],dtype=float)
     if not withdrawals.empty:
+        withdrawals = withdrawals[withdrawals['status'] == 'complete']
         withdrawals['USDamt'] = -withdrawals['size']
         withdrawals['attribution'] = withdrawals['coin']
         withdrawals['event_type'] = 'withdrawal_'+withdrawals['status']
@@ -463,6 +468,7 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     airdrops = pd.DataFrame(exchange.privateGetWalletAirdrops(params)['result'],dtype=float)
     if not airdrops.empty:
+        airdrops = airdrops[airdrops['status'] == 'complete']
         airdrops['USDamt'] = airdrops['size']
         airdrops['attribution'] = airdrops['coin']
         airdrops['event_type'] = 'airdrops'+'_'+airdrops['status']
@@ -671,10 +677,10 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
         risk_history = pd.DataFrame()
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
-                [datetime(2021, 1, 1), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
+                [datetime(2021, 12, 6), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
-                [datetime(2021, 1, 1), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
+                [datetime(2021, 12, 6), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
         pnl_history = pd.DataFrame()
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             risk_history.to_excel(writer, sheet_name='risk')
@@ -695,6 +701,7 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
                             index='underlying',
                             columns='event_type',
                             aggfunc='sum',
+                            margins=True,
                             fill_value=0.0)
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
@@ -702,12 +709,13 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
         pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
         summary.to_excel(writer, sheet_name='summary')
 
+    return pnl
 #    shutil.copy2(filename,
 #        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
 
 if False:
-#    run_plex('ftx_auk', 'SystematicPerp')#
+    run_plex('ftx_auk', 'SystematicPerp')#
     run_plex('ftx_auk', 'CashAndCarry')
-#    run_plex('ftx_auk', '')
+    run_plex('ftx_auk', '')
     # run_plex('ftx', '')
     #run_plex('ftx', 'margintest')

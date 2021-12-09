@@ -180,7 +180,7 @@ def rate_history(future,exchange,
     ########## rates from index to mark
     if future['type'] == 'future':
         expiry_time = dateutil.parser.isoparse(future['expiry']).timestamp()
-        data['rate/T'] = data.apply(lambda t: (expiry_time - int(t.name) / 1000) / 3600 / 24 / 365, axis=1)
+        data['rate/T'] = data.apply(lambda t: (expiry_time - int(t.name) / 1000) / 3600 / 24 / 365.25, axis=1)
 
         data['rate/c'] = data.apply(
             lambda y: calc_basis(y['mark/c'],
