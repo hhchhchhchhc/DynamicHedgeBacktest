@@ -56,7 +56,7 @@ def enricher(exchange,input_futures,holding_period,equity,
     ##### max weights ---> TODO CHECK formulas, short < long no ??
     future_im=futures.apply(lambda f:
             (f['imfFactor'] * np.sqrt(equity / f['mark'])).clip(min=1 / f['account_leverage']),
-                            axis=1)
+                          axis=1)
     futures['MaxLongWeight'] = 1 / (1.1 + (future_im - futures['collateralWeight']))
     futures['MaxShortWeight'] = -1 / (future_im + 1.1 / futures.apply(lambda f:collateralWeightInitial(f),axis=1) - 1)
     ##### using 1d optimization...failed !
@@ -386,7 +386,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary=pd.DataFrame()
         summary['spotBenchmark']=futures['mark']/futures['index']-1.0
         summary['ExpectedBenchmark']=(E_intCarry+E_intUSDborrow- futures['direction'].apply(lambda  f: 0 if f>0 else 1.0).values*E_intBorrow)/365.25
-        summary['FundingBenchmark'] = futures['basis_mid']*futures['mark']/365.25
+        summary['FundingBenchmark'] = futures['basis_mid']/365.25
+        summary['currentWeight'] = previous_weights
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
         summary['RealizedCarry'] = xt*(intCarry+intUSDborrow)
@@ -400,6 +401,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary.loc['USD', 'spotBenchmark'] = futures.iloc[0]['quote_borrow']
         summary.loc['USD', 'ExpectedBenchmark'] = E_intUSDborrow
         summary.loc['USD', 'FundingBenchmark'] = futures.iloc[0]['quote_borrow'] /365.25
+        summary.loc['USD', 'currentWeight'] = equity - sum(previous_weights.values)
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
         summary.loc['USD', 'RealizedCarry'] = np.min([0,equity-previous_weights.sum()])* intUSDborrow
@@ -410,6 +412,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
         summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark'].mean()
         summary.loc['total', 'ExpectedBenchmark'] = (E_intCarry+E_intUSDborrow).mean()
         summary.loc['total', 'FundingBenchmark'] = summary['FundingBenchmark'].mean()
+        summary.loc['total', 'currentWeight'] = equity
         summary.loc['total', 'optimalWeight'] = summary['optimalWeight'].sum() ## 000....
         summary.loc['total', 'ExpectedCarry'] = summary['ExpectedCarry'].sum()
         summary.loc['total', 'RealizedCarry'] = summary['RealizedCarry'].sum()
