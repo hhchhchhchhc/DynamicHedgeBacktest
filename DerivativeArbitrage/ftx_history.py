@@ -1,3 +1,5 @@
+import pandas as pd
+
 from ftx_utilities import *
 from ftx_ftx import *
 
@@ -36,12 +38,14 @@ def build_history(futures,exchange,
                                        coin==c.split('/')[0] for coin in (['USD']+ list(futures['underlying']))
                                    )]]
     else:
-        borrow_data=pd.concat([borrow_history(f, exchange, end, start,dirname)
-                               if f['spotMargin']==True
-                               else spot_price_data[f+'/price/volume']*0+999
-               for f in futures['underlying'].unique()]
-                          +[borrow_history('USD',exchange,end,start,dirname)],
-              join='outer',axis=1)
+        borrow_data1=[borrow_history(f, exchange, end, start,dirname)
+               for f in futures.loc[futures['spotMargin'],'underlying'].unique()]
+        borrow_data2=[pd.DataFrame(index=[],columns=[f + '/rate/size', f + '/rate/borrow'],data=999)
+               for f in futures.loc[~futures['spotMargin'],'underlying'].unique()]
+        borrow_data3 = [borrow_history('USD',exchange,end,start,dirname)]
+
+        borrow_data=pd.concat(borrow_data1+borrow_data2+borrow_data3,join='outer',axis=1)
+
         if dirname!='': borrow_data.to_parquet(parquet_filename)
 
     ## just couldn't figure out pd.concat...
