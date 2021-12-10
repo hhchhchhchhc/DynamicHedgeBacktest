@@ -72,7 +72,6 @@ def perp_vs_cash_live(
                 holding_period,
                 slippage_override,
                 concentration_limit,
-                #equity=EQUITY, uses previous weights
                 exclusion_list=EXCLUSION_LIST,
                 run_dir='',
                 currentWeights_file=[]):
@@ -83,17 +82,17 @@ def perp_vs_cash_live(
         else: pass # otherwise do nothing and build_history will use what's there
     except: pass
 
-    exchange = open_exchange('ftx_auk','SystematicPerp')
+    exchange = open_exchange('ftx_auk', '')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
 
     now_time = datetime.now()
-    point_in_time = now_time.replace(minute=0,second=0,microsecond=0)
+    point_in_time = now_time.replace(minute=0, second=0, microsecond=0)
 
     # filtering params
-    universe=refresh_universe('ftx','wide')
+    universe=refresh_universe('ftx',UNIVERSE)
     universe=universe[~universe['underlying'].isin(exclusion_list)]
-    type_allowed = ['perpetual']
+    type_allowed = TYPE_ALLOWED
     max_nb_coins = 99
     carry_floor = 0.4
 
@@ -102,16 +101,19 @@ def perp_vs_cash_live(
     slippage_orderbook_depth = 10000
 
     # previous book
-    if currentWeights_file == []:
-        start_portfolio = fetch_portfolio(exchange, now_time)
+    if EQUITY.isnumeric():
+        previous_weights_df = pd.DataFrame(index=futures.index,columns=['optimalWeight'],data=0.0)
+        equity = float(EQUITY)
+    elif '.xlsx' in EQUITY:
+        previous_weights_df = pd.read_excel(EQUITY, sheet_name='optimized', index_col=0)['optimalWeight']
+        equity = previous_weights_df.loc['total']
+        previous_weights_df = previous_weights_df.drop(['USD', 'total'])
+    else:
+        start_portfolio = fetch_portfolio(open_exchange('ftx_auk', EQUITY), now_time)
         previous_weights_df = -start_portfolio.loc[
             start_portfolio['attribution'].isin(futures.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
-        equity = start_portfolio.loc[start_portfolio['event_type']=='PV','usdAmt'].values
-    else:
-        previous_weights_df = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx', sheet_name='optimized', index_col=0)['optimalWeight']
-        equity = previous_weights_df.loc['total','optimalWeight'].values
-        previous_weights_df=previous_weights_df.drop(['USD','total'])
+        equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values
 
     for (holding_period,signal_horizon,slippage_override,concentration_limit) in [(hp,sh,sl,c) for hp in holding_period for sh in signal_horizon for sl in slippage_override for c in concentration_limit]:
 
@@ -159,13 +161,18 @@ def perp_vs_cash_live(
             'run_date':datetime.today(),
             'exclusion_list': exclusion_list,
             'type_allowed': type_allowed,
+            'signal_horizon': signal_horizon,
+            'holding_period': holding_period,
+            'slippage_override':slippage_override,
+            'concentration_limit': concentration_limit,
+            'equity':equity,
             'max_nb_coins': max_nb_coins,
             'carry_floor': carry_floor,
-            'slippage_override': slippage_override,
             'slippage_scaler': slippage_scaler,
             'slippage_orderbook_depth': slippage_orderbook_depth})
         optimized.to_excel(writer,sheet_name='optimized')
         parameters.to_excel(writer,sheet_name='parameters')
+        updated.to_excel(writer, sheet_name='snapshot')
 
     display=optimized[['optimalWeight','ExpectedCarry','transactionCost']]
     display['absWeight']=display['optimalWeight'].apply(abs)
@@ -191,9 +198,9 @@ def perp_vs_cash_backtest(
     futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
 
     # filtering params
-    universe = refresh_universe('ftx', 'tight')
+    universe = refresh_universe('ftx', UNIVERSE)
     universe = universe[~universe['underlying'].isin(exclusion_list)]
-    type_allowed=['perpetual']
+    type_allowed=TYPE_ALLOWED
     max_nb_coins = 99
     pre_filtered=futures[
                 (futures['type'].isin(type_allowed))
