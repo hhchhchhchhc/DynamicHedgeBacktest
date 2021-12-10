@@ -389,8 +389,6 @@ def fetch_portfolio(exchange,time):
         positions['price'] = positions['attribution'].apply(lambda f: markets.loc[f, 'price'])
         positions['unrealizedPnL'] = unrealizedPnL
         positions['unrealizedPnl_received'] = positions['time_received']
-        positions['price_received'] = markets['time_received']
-        positions['mark_received'] = futures['time_received']
 
     else: unrealizedPnL=0.0
 
@@ -398,8 +396,6 @@ def fetch_portfolio(exchange,time):
     balances['coinAmt'] =balances['total']
     balances.loc[balances['coin']=='USD','coinAmt'] += unrealizedPnL
     balances['time']=time.replace(tzinfo=None)
-    balances['balance_received'] = balances['time_received']
-    balances['price_received'] = markets['time_received']
     balances['event_type'] = 'delta'
     balances['attribution'] = balances['coin']
     balances['coin'] = balances['coin'].apply(lambda f:f.replace('_LOCKED', ''))
@@ -410,7 +406,8 @@ def fetch_portfolio(exchange,time):
     PV = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
     PV.loc['total','time'] = time.replace(tzinfo=None)
     PV.loc['total', 'balance_received'] = balances.iloc[0]['time_received']
-    PV.loc['total', 'price_received'] = markets.iloc[0]['time_received']
+    PV.loc['total', 'price_balance_lag'] = markets.iloc[0]['time_received']-balances.iloc[0]['time_received']
+    PV.loc['total', 'mark_balance_lag'] = futures.iloc[0]['time_received'] - balances.iloc[0]['time_received']
     PV.loc['total','coin'] = 'USD'
     PV.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + unrealizedPnL
     PV.loc['total','event_type'] = 'PV'
@@ -435,9 +432,9 @@ def fetch_portfolio(exchange,time):
     IM.loc['total', 'usdAmt'] = IM.loc['total','coinAmt']
 
     return pd.concat([
-        balances[['balance_received','price_received','time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],#TODO: rate to be removed
-        positions[['price_received','mark_received','unrealizedPnl_received','time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','rate','price','unrealizedPnL']] if not positions.empty else pd.DataFrame(),
-        PV[['balance_received','price_received','time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],
+        balances[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],#TODO: rate to be removed
+        positions[['unrealizedPnl_received','time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt','rate','price','unrealizedPnL']] if not positions.empty else pd.DataFrame(),
+        PV[['balance_received','price_balance_lag','mark_balance_lag','time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']],
         IM[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']]
     ],axis=0,ignore_index=True)
 
