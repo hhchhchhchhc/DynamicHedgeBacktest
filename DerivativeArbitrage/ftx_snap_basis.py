@@ -155,7 +155,7 @@ def forecast(exchange, input_futures, hy_history,
     futures=input_futures.copy()
     dated = futures[futures['type'] == 'future']
     ### remove blanks for this
-    hy_history = hy_history.fillna(method='ffill',limit=2,inplace=False).dropna()
+    hy_history = hy_history.fillna(method='ffill',limit=2).dropna(axis=1,how='all')
     # TODO: check hy_history is hourly
     holding_hours = int(holding_period.total_seconds() / 3600)
 
