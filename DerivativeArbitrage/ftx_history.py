@@ -38,9 +38,9 @@ def build_history(futures,exchange,
                                        coin==c.split('/')[0] for coin in (['USD']+ list(futures['underlying']))
                                    )]]
     else:
-        borrow_data1=[borrow_history(f, exchange, end, start,dirname)
+        borrow_data1= [borrow_history(f, exchange, end, start,dirname)
                for f in futures.loc[futures['spotMargin'],'underlying'].unique()]
-        borrow_data2=[pd.DataFrame(index=[],columns=[f + '/rate/size', f + '/rate/borrow'],data=999)
+        borrow_data2= [pd.DataFrame(index=spot_price_data.index,columns=[f + '/rate/size', f + '/rate/borrow'],data=999)
                for f in futures.loc[~futures['spotMargin'],'underlying'].unique()]
         borrow_data3 = [borrow_history('USD',exchange,end,start,dirname)]
 
@@ -63,7 +63,8 @@ def borrow_history(spot,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                    dirname='Runtime/temporary_parquets'):
     parquet_filename = dirname+'/allborrows.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+    if os.path.isfile(parquet_filename):
+         return from_parquet(parquet_filename)[[spot+'/rate/borrow',spot+'/rate/size']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
     print('borrow_history: '+spot)
@@ -101,7 +102,7 @@ def funding_history(future,exchange,
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                     dirname='Runtime/temporary_parquets'):
     parquet_filename=dirname+'/allfundings.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)[[future+'/rate/funding']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
     print('funding_history: ' + future['symbol'])
