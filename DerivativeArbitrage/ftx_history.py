@@ -1,3 +1,5 @@
+import pandas as pd
+
 from ftx_utilities import *
 from ftx_ftx import *
 
@@ -36,10 +38,14 @@ def build_history(futures,exchange,
                                        coin==c.split('/')[0] for coin in (['USD']+ list(futures['underlying']))
                                    )]]
     else:
-        borrow_data=pd.concat([borrow_history(f, exchange, end, start,dirname)
-               for f in futures['underlying'].unique()]
-                          +[borrow_history('USD',exchange,end,start,dirname)],
-              join='outer',axis=1)
+        borrow_data1= [borrow_history(f, exchange, end, start,dirname)
+               for f in futures.loc[futures['spotMargin'],'underlying'].unique()]
+        borrow_data2= [pd.DataFrame(index=spot_price_data.index,columns=[f + '/rate/size', f + '/rate/borrow'],data=999)
+               for f in futures.loc[~futures['spotMargin'],'underlying'].unique()]
+        borrow_data3 = [borrow_history('USD',exchange,end,start,dirname)]
+
+        borrow_data=pd.concat(borrow_data1+borrow_data2+borrow_data3,join='outer',axis=1)
+
         if dirname!='': borrow_data.to_parquet(parquet_filename)
 
     ## just couldn't figure out pd.concat...
@@ -57,7 +63,8 @@ def borrow_history(spot,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                    dirname='Runtime/temporary_parquets'):
     parquet_filename = dirname+'/allborrows.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+    if os.path.isfile(parquet_filename):
+         return from_parquet(parquet_filename)[[spot+'/rate/borrow',spot+'/rate/size']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
     print('borrow_history: '+spot)
@@ -95,7 +102,7 @@ def funding_history(future,exchange,
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                     dirname='Runtime/temporary_parquets'):
     parquet_filename=dirname+'/allfundings.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)[[future+'/rate/funding']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
     print('funding_history: ' + future['symbol'])
@@ -161,7 +168,11 @@ def rate_history(future,exchange,
         end_time = (datetime.fromtimestamp(start_time) - timedelta(seconds=int(resolution))).timestamp()
         start_time = (datetime.fromtimestamp(end_time) - timedelta(
             seconds=max_mark_data * int(resolution))).timestamp()
-    if ((len(indexes) == 0) | (len(mark) == 0)): return pd.DataFrame()
+    if ((len(indexes) == 0) | (len(mark) == 0)):
+        return pd.DataFrame(columns=
+                         [future['symbol'] + '/mark/' + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
+                        +[future['symbol'] + '/indexes/'  + c for c in ['t', 'open', 'high', 'low', 'close', 'volume']]
+                        +[future['symbol'] + '/rate/' + c for c in ['T','c','h','l']])
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
     ###### indexes

@@ -13,7 +13,7 @@ from ftx_ftx import *
 def enricher(exchange,input_futures,holding_period,equity,
              slippage_override= -999, slippage_orderbook_depth= 0,
              slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':['perpetual'],'fee_mode':'retail'}):
-    futures=pd.DataFrame(input_futures)
+    futures=input_futures.copy()
     markets=exchange.fetch_markets()
 
     # basic screening
@@ -37,7 +37,8 @@ def enricher(exchange,input_futures,holding_period,equity,
         lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
 
     #### need borrow to be present
-    futures = futures[futures['borrow']>=-999]
+    #futures = futures[futures['funding_volume']>0]
+    futures.loc[~futures['spotMargin'],'borrow']=999
 
     # spot carries
     futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
@@ -83,7 +84,7 @@ def enricher(exchange,input_futures,holding_period,equity,
 
 def update(input_futures,point_in_time,history,equity,
            intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow):
-    futures=pd.DataFrame(input_futures)
+    futures=input_futures.copy()
 
     ####### spot quantities. Not used by optimizer. Careful about foresight bias when using those !
     # add borrows
@@ -151,10 +152,10 @@ def forecast(exchange, input_futures, hy_history,
                   holding_period,  # to convert slippage into rate
                   signal_horizon,  # historical window for expectations
                   filename=''):             # use external rather than order book
-    futures=pd.DataFrame(input_futures)
+    futures=input_futures.copy()
     dated = futures[futures['type'] == 'future']
     ### remove blanks for this
-    hy_history = hy_history.fillna(method='ffill',limit=2,inplace=False).dropna()
+    hy_history = hy_history.fillna(method='ffill',limit=2).dropna(axis=1,how='all')
     # TODO: check hy_history is hourly
     holding_hours = int(holding_period.total_seconds() / 3600)
 
@@ -235,7 +236,7 @@ def forecast(exchange, input_futures, hy_history,
 def fetch_rate_slippage(input_futures, exchange: Exchange,holding_period,
                             slippage_override: int = -999, slippage_orderbook_depth: float = 0,
                             slippage_scaler: float = 1.0,params={'override_slippage':True,'fee_mode':'retail'}) -> None:
-    futures=pd.DataFrame(input_futures)
+    futures=input_futures.copy()
     point_in_time=datetime.now()
     markets=exchange.fetch_markets()
     if params['override_slippage']==True:
@@ -298,7 +299,7 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
                   concentration_limit,
                   equity,# for markovitz
                   optional_params=[]):             # use external rather than order book
-    futures=pd.DataFrame(input_futures)
+    futures=input_futures.copy()
 
     ###### then use in convex optimiziation
     # https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
