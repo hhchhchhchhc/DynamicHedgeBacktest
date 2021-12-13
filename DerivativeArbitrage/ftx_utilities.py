@@ -5,11 +5,10 @@ import ccxt
 import numpy as np
 import pandas as pd
 import pickle
-import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import xlsxwriter
-from s3 import *
+#from s3 import *
 import matplotlib
 import cufflinks as cf
 cf.go_offline()
@@ -131,19 +130,19 @@ def open_exchange(exchange_name,subaccount=''):
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
-    elif exchange_name == 'ftx_auk':
-        exchange = ccxt.ftx({  ## Benoit personnal
-            'enableRateLimit': True,
-            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
-            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
-        })
+#    elif exchange_name == 'ftx_auk':
+#        exchange = ccxt.ftx({  ## Benoit personnal
+#            'enableRateLimit': True,
+#            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+#            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
+#        })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
-    elif exchange_name == 'ftx_raj':
-        exchange = ccxt.ftx({  ## Benoit personnal
-            'enableRateLimit': True,
-            'apiKey': 'HdXWK4kNDpeCA0m-_quL3ZPwml_5B9DXpGiXiQCN',
-            'secret': 'DeDqbFBfhhujtB3yGlANrJfYxlFr2kzJo8sV-c6v',
-        })
+ #   elif exchange_name == 'ftx_raj':
+ #       exchange = ccxt.ftx({  ## Benoit personnal
+ #           'enableRateLimit': True,
+ #           'apiKey': 'HdXWK4kNDpeCA0m-_quL3ZPwml_5B9DXpGiXiQCN',
+ #           'secret': 'DeDqbFBfhhujtB3yGlANrJfYxlFr2kzJo8sV-c6v',
+ #       })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
         exchange = ccxt.binance({
@@ -162,18 +161,18 @@ def open_all_subaccounts(exchange_name):
             'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
-    elif exchange_name == 'ftx_auk':
-        exchange = ccxt.ftx({  ## Benoit personnal
-            'enableRateLimit': True,
-            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
-            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
-        })
-    elif exchange_name == 'ftx_raj':
-        exchange = ccxt.ftx({  ## Munraj personnal
-            'enableRateLimit': True,
-            'apiKey': 'HdXWK4kNDpeCA0m-_quL3ZPwml_5B9DXpGiXiQCN',
-            'secret': 'DeDqbFBfhhujtB3yGlANrJfYxlFr2kzJo8sV-c6v',
-        })
+#    elif exchange_name == 'ftx_auk':
+#        exchange = ccxt.ftx({  ## Benoit personnal
+#            'enableRateLimit': True,
+#            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+#            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
+#        })
+#    elif exchange_name == 'ftx_raj':
+#        exchange = ccxt.ftx({  ## Munraj personnal
+#            'enableRateLimit': True,
+#            'apiKey': 'HdXWK4kNDpeCA0m-_quL3ZPwml_5B9DXpGiXiQCN',
+#            'secret': 'DeDqbFBfhhujtB3yGlANrJfYxlFr2kzJo8sV-c6v',
+#        })
     elif exchange_name == 'binance':
         exchange = ccxt.binance({
         'enableRateLimit': True,

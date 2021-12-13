@@ -82,7 +82,7 @@ def perp_vs_cash_live(
         else: pass # otherwise do nothing and build_history will use what's there
     except: pass
 
-    exchange = open_exchange('ftx_auk', '')
+    exchange = open_exchange('ftx', '')
     markets = exchange.fetch_markets()
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
 
@@ -109,7 +109,7 @@ def perp_vs_cash_live(
         equity = previous_weights_df.loc['total']
         previous_weights_df = previous_weights_df.drop(['USD', 'total'])
     else:
-        start_portfolio = fetch_portfolio(open_exchange('ftx_auk', EQUITY), now_time)
+        start_portfolio = fetch_portfolio(open_exchange('ftx', EQUITY), now_time)
         previous_weights_df = -start_portfolio.loc[
             start_portfolio['attribution'].isin(futures.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
@@ -174,12 +174,17 @@ def perp_vs_cash_live(
         parameters.to_excel(writer,sheet_name='parameters')
         updated.to_excel(writer, sheet_name='snapshot')
 
-    display=optimized[['optimalWeight','ExpectedCarry','transactionCost']]
-    display['absWeight']=display['optimalWeight'].apply(abs)
-    display.loc['total','absWeight']=display.drop(index='total')['absWeight'].sum()
-    display=display.sort_values(by='absWeight',ascending=True)
-    display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
-    print(display)
+        display=optimized[['optimalWeight','ExpectedCarry','transactionCost']]
+        display['absWeight']=display['optimalWeight'].apply(abs)
+        display.loc['total','absWeight']=display.drop(index='total')['absWeight'].sum()
+        display=display.sort_values(by='absWeight',ascending=True)
+        display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
+        print(display)
+
+
+        #build_history(optimized[display.index], exchange,
+        #              timeframe='5m', end=datetime.now(), start=datetime.now() - timedelta(weeks=1)
+        #              ).to_excel(writer,sheet_name='history')
 
     return optimized
 

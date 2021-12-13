@@ -64,13 +64,13 @@ def open_exchange(exchange_name,subaccount=''):
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
-    elif exchange_name == 'ftx_auk':
-        exchange = ccxt.ftx({  ## Benoit personnal
-            'enableRateLimit': True,
-            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
-            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
-        })
-        if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
+ #   elif exchange_name == 'ftx_auk':
+ #       exchange = ccxt.ftx({  ## Benoit personnal
+ #           'enableRateLimit': True,
+ #           'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+ #           'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
+ #       })
+ #       if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
         exchange = ccxt.binance({
         'enableRateLimit': True,
@@ -90,20 +90,20 @@ def open_all_subaccounts(exchange_name):
             'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
             'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
         })
-    elif exchange_name == 'ftx_auk':
-        exchange = ccxt.ftx({  ## Benoit personnal
-            'enableRateLimit': True,
-            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
-            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
-        })
+ #   elif exchange_name == 'ftx_auk':
+ #       exchange = ccxt.ftx({  ## Benoit personnal
+ #           'enableRateLimit': True,
+ #           'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
+ #           'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
+ #       })
     else: print('what exchange?')
 
     subaccount_list = pd.DataFrame(exchange.privateGetSubaccounts()['result'])['nickname'].values
     return [open_exchange(exchange_name,subaccount) for subaccount in subaccount_list]
 
 def live_risk(stablecoin_list):
-    all_subaccounts = open_all_subaccounts('ftx_auk')
-    exchange = open_exchange('ftx_auk','')#
+    all_subaccounts = open_all_subaccounts('ftx')
+    exchange = open_exchange('ftx','')#
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
 
