@@ -74,8 +74,7 @@ def perp_vs_cash_live(
                 slippage_override,
                 concentration_limit,
                 exclusion_list=EXCLUSION_LIST,
-                run_dir='',
-                currentWeights_file=[]):
+                run_dir=''):
     try:
         first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
         if max(first_history.index)<datetime.now().replace(minute=0,second=0,microsecond=0):

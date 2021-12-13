@@ -717,8 +717,10 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
 #        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
 
 if False:
-    #run_plex('ftx_auk', 'SystematicPerp')#
+    run_plex('ftx_auk', 'SystematicPerp')
     run_plex('ftx_auk', 'CashAndCarry')
     run_plex('ftx_auk', '')
+    run_plex('ftx_auk', 'Lending')
+    run_plex('ftx_auk', 'FTTStaking')
     # run_plex('ftx', '')
     #run_plex('ftx', 'margintest')
