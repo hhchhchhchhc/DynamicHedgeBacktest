@@ -4,9 +4,10 @@ pyarrow>=5.0.0
 python-dateutil>=2.8.2
 #ccxt==1.50.70
 ccxt>=1.58.64
-seaborn>=0.11.2
+#seaborn>=0.11.2
 cufflinks
 #shutil
 #pickle
 xlsxwriter
 openpyxl
+scipy
