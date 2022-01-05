@@ -55,11 +55,12 @@ def enricher(exchange,input_futures,holding_period,equity,
     futures = futures.join(costs, how = 'outer')
 
     ##### max weights ---> TODO CHECK formulas, short < long no ??
-    future_im=futures.apply(lambda f:
+    future_im = futures.apply(lambda f:
             (f['imfFactor'] * np.sqrt(equity / f['mark'])).clip(min=1 / f['account_leverage']),
                           axis=1)
     futures['MaxLongWeight'] = 1 / (1.1 + (future_im - futures['collateralWeight']))
     futures['MaxShortWeight'] = -1 / (future_im + 1.1 / futures.apply(lambda f:collateralWeightInitial(f),axis=1) - 1)
+    futures.loc[~futures['spotMargin'],'MaxShortWeight']=0
     ##### using 1d optimization...failed !
 #    IM_constraint=futures.apply(lambda f:
 #                {'type': 'ineq','fun':(lambda w: excessMargin(pd.DataFrame(f).T,w)['IM'])},
@@ -131,9 +132,9 @@ def update(input_futures,point_in_time,history,equity,
     ##### assume direction only depends on sign(E[long]-E[short]), no integral.
     # Freeze direction into Carry_t and assign max weights.
     futures['direction'] = 1
-    futures.loc[
-        futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] < 0,
+    futures.loc[futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] < 0,
         'direction'] = -1
+    futures.loc[~futures['spotMargin'],'direction'] = 1
 
     # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
     futures['intCarry']=futures['intLongCarry']

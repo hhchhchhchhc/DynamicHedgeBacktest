@@ -4,12 +4,12 @@ from ftx_utilities import *
 from ftx_snap_basis import enricher,forecast
 
 def ftx_read_history(dirname='',coin_list=[]):
-    exchange = open_exchange('ftx')
-    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
-    if coin_list!=[]: futures=futures[futures['underlying'].isin(coin_list)]
+    #exchange = open_exchange('ftx')
+    #futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
+   # if coin_list!=[]: futures=futures[futures['underlying'].isin(coin_list)]
 
     # pass timeframe=np.NaN to avoid recreating history....
-    return build_history(futures, exchange, dirname=dirname, timeframe=np.NaN).dropna()
+    return 0#build_history(futures, exchange, dirname=dirname, timeframe=np.NaN).dropna()
 
 def ftx_history(dirname='',
                        start=datetime(2021, 9, 20),
@@ -19,7 +19,7 @@ def ftx_history(dirname='',
                         ):
     exchange = open_exchange('ftx')
     markets = exchange.fetch_markets()
-    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
+    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=True)).set_index('name')
     if coin_list!=[]: futures=futures[futures['underlying'].isin(coin_list)]
 
     # filtering params
@@ -43,9 +43,9 @@ def ftx_history(dirname='',
 
     #### get history ( this is sloooow)
     hy_history = build_history(enriched, exchange, timeframe=timeframe, end=end, start=start,dirname=dirname)
-    for (i,f) in enriched[enriched['type']=='perpetual'].iterrows():
-        hy_history[f['underlying']+'/CarryLong'] = - hy_history['USD/rate/borrow'] + hy_history[f.name+'/rate/funding']
-        hy_history[f['underlying'] + '/CarryShort'] = -hy_history[f['underlying']+'/rate/borrow'] - hy_history[f.name + '/rate/funding']
+#    for (i,f) in enriched[enriched['type']=='perpetual'].iterrows():
+#        hy_history[f['underlying']+'/CarryLong'] = - hy_history['USD/rate/borrow'] + hy_history[f['underlying']+'/rate/funding']
+#        hy_history[f['underlying']+'/CarryShort'] = - hy_history[f['underlying']+'/rate/borrow'] - hy_history[f['underlying'] +'/rate/funding']
 
     if dirname!='':
         hy_history.to_parquet(dirname+'/history.parquet')
@@ -56,10 +56,10 @@ def ftx_history(dirname='',
 i=1
 while i<1:
     try:
-        end_time = datetime(2021, 11, 23)  # datetime.today().replace(minute=0,second=0,microsecond=0)
-        start_time = datetime(2021, 11, 18)
-        coins = ['OKB']
-        ftx_history(dirname='',start=start_time,end=end_time,timeframe='5m',coin_list=coins)
+        end_time = datetime(2021, 12, 13)  # datetime.today().replace(minute=0,second=0,microsecond=0)
+        start_time = datetime(2020, 12, 13)
+        coins = ['1INCH','AAVE','BAL','BCH','BNB','BTC','BTC','CHZ','COMP','DOGE','EDEN','ETH','ETH','GRT','LINK','LTC','OKB','OMG','REEF','SOL','SUSHI','SXP','TRX','UNI','USDT','WAVES','XRP','YFI']
+        ftx_history(dirname='Runtime/temporary_parquets',start=start_time,end=end_time,timeframe='1h',coin_list=coins)
     except:
         sleep(5)
     i=i+1

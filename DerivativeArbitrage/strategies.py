@@ -115,10 +115,13 @@ def perp_vs_cash_live(
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
         equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values
 
+    filtered = futures[(futures['type'].isin(type_allowed))
+                     & (futures['symbol'].isin(universe.index))]
+
     for (holding_period,signal_horizon,slippage_override,concentration_limit) in [(hp,sh,sl,c) for hp in holding_period for sh in signal_horizon for sl in slippage_override for c in concentration_limit]:
 
         ## ----------- enrich, get history, filter
-        enriched = enricher(exchange, futures, holding_period, equity=equity,
+        enriched = enricher(exchange, filtered, holding_period, equity=equity,
                             slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                             slippage_scaler=slippage_scaler,
                             params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
@@ -136,19 +139,16 @@ def perp_vs_cash_live(
         updated, marginFunc = update(enriched, point_in_time, hy_history, equity,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
         # final filter, needs some history and good avg volumes
-        pre_filtered = updated[
-            (~np.isnan(updated['E_intCarry']))
-            & (updated['type'].isin(type_allowed))
-            & (updated['symbol'].isin(universe.index))]
-        pre_filtered = pre_filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
+        filtered = updated[~np.isnan(updated['E_intCarry'])]
+        filtered = filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
 
         # run a trajectory
-        optimized = pre_filtered
+        optimized = filtered
         updated, marginFunc = update(optimized, point_in_time, hy_history, equity,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
 
         optimized=cash_carry_optimizer(exchange,updated,marginFunc,
-                                    previous_weights_df=previous_weights_df[previous_weights_df.index.isin(pre_filtered.index)],
+                                    previous_weights_df=previous_weights_df[previous_weights_df.index.isin(filtered.index)],
                                     holding_period = holding_period,
                                     signal_horizon=signal_horizon,
                                     concentration_limit=concentration_limit,
@@ -182,19 +182,19 @@ def perp_vs_cash_live(
         print(display)
 
 
-        #build_history(optimized[display.index], exchange,
-        #              timeframe='5m', end=datetime.now(), start=datetime.now() - timedelta(weeks=1)
-        #              ).to_excel(writer,sheet_name='history')
+        build_history(updated.loc[display.drop(index=['total']).index], exchange,
+                      timeframe='5m', end=datetime.now(), start=datetime.now() - timedelta(weeks=1),
+                      dirname='Runtime/live_parquets/manual_validation'
+                      ).to_excel(writer,sheet_name='history_5m')
 
     return optimized
-
 
 def perp_vs_cash_backtest(
                 signal_horizon,
                 holding_period,
                 slippage_override,
                 concentration_limit,
-                equity=EQUITY,
+                equity=100000,
                 exclusion_list=EXCLUSION_LIST,
                 filename='',
                 optional_params=[]):
