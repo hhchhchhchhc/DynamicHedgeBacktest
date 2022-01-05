@@ -126,8 +126,8 @@ def open_exchange(exchange_name,subaccount=''):
     if exchange_name=='ftx':
         exchange = ccxt.ftx({ ## David personnal
             'enableRateLimit': True,
-            'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
-            'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
+            'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
+            'secret': 'RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
 #    elif exchange_name == 'ftx_auk':
@@ -145,11 +145,24 @@ def open_exchange(exchange_name,subaccount=''):
  #       })
         if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
     elif exchange_name == 'binance':
-        exchange = ccxt.binance({
+        exchange = ccxt.binance({# subaccount convexity
         'enableRateLimit': True,
-        'apiKey': 'pMaBWUoEVqsRJXZJoQ31JkA13QJHNRZyb6N0uZSAlwJscBMXprjgDQqKAfOLdGPK',
-        'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
+        'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
+        'secret': '1rUn4jITdmck2vSSsnTDtR9vBS3oqLkNzx70SV1mijmr3BcVR2lwOkzWHpbULWc7',
     })
+    elif exchange_name == 'okex':
+        exchange = ccxt.okex5({
+            'enableRateLimit': True,
+            'apiKey': '6a72779d-0a4a-4554-a283-f28a17612747',
+            'secret': '1F0CA69C0766727542A11EE602163883',
+        })
+    elif exchange_name == 'deribit':
+        exchange = ccxt.okex5({
+            'enableRateLimit': True,
+            'apiKey': '4vc_41O4',
+            'secret': 'viEFbpRQpQLgUAujPrwWleL6Xutq9I8YVUVMkEfQG1E',
+        })
+
     else: print('what exchange?')
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     return exchange
