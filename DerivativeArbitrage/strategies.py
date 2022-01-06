@@ -156,7 +156,8 @@ def perp_vs_cash_live(
                                     optional_params= ['verbose']
                                   )
 
-    with pd.ExcelWriter('Runtime/ApprovedRuns/ftx_optimal_cash_carry_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx', engine='xlsxwriter') as writer:
+    filename = 'Runtime/ApprovedRuns/ftx_optimal_cash_carry_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
+    with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         parameters = pd.Series({
             'run_date':datetime.today(),
             'exclusion_list': exclusion_list,
@@ -174,18 +175,20 @@ def perp_vs_cash_live(
         parameters.to_excel(writer,sheet_name='parameters')
         updated.to_excel(writer, sheet_name='snapshot')
 
-        display=optimized[['optimalWeight','ExpectedCarry','transactionCost']]
-        display['absWeight']=display['optimalWeight'].apply(abs)
-        display.loc['total','absWeight']=display.drop(index='total')['absWeight'].sum()
-        display=display.sort_values(by='absWeight',ascending=True)
-        display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
-        print(display)
+    shutil.copy2(filename,'Runtime/ApprovedRuns/current_weights.xlsx')
+
+    display=optimized[['optimalWeight','ExpectedCarry','transactionCost']]
+    display['absWeight']=display['optimalWeight'].apply(abs)
+    display.loc['total','absWeight']=display.drop(index='total')['absWeight'].sum()
+    display=display.sort_values(by='absWeight',ascending=True)
+    display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
+    print(display)
 
 
-        build_history(updated.loc[display.drop(index=['total']).index], exchange,
-                      timeframe='5m', end=datetime.now(), start=datetime.now() - timedelta(weeks=1),
-                      dirname='Runtime/live_parquets/manual_validation'
-                      ).to_excel(writer,sheet_name='history_5m')
+        #build_history(updated.loc[display.drop(index=['total']).index], exchange,
+        #              timeframe='5m', end=datetime.now(), start=datetime.now() - timedelta(weeks=1),
+        #              dirname='Runtime/live_parquets/manual_validation'
+        #              ).to_excel(writer,sheet_name='history_5m')
 
     return optimized
 
