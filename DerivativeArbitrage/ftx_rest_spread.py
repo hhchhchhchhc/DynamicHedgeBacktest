@@ -116,20 +116,46 @@ async def slice_spread_trade(exchange, buy_ticker, sell_ticker, weight):
 
     return execution_report
 
+def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
+    # open file
+    future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
+    future_weights = future_weights[(future_weights['name'] != 'USD') & (future_weights['name'] != 'total')]
+    cash_weights = future_weights.copy()
+    cash_weights['name']=cash_weights['name'].apply(lambda x: x.split('-')[0]+'/USD')
+    cash_weights['optimalWeight'] *= -1
+    target = future_weights.append(cash_weights)
+
+    # get portfolio in USD
+    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
+    positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],
+                             dtype=float).rename(columns={'future':'name','netSize':'total'})  # 'showAvgPrice':True})
+    balances=pd.DataFrame(exchange.fetch_balance(params={})['info']['result'],dtype=float)#'showAvgPrice':True})
+    balances=balances[balances['coin']!='USD']
+    balances['name']=balances['coin']+'/USD'
+
+    current=positions.append(balances)[['name','total']]
+    current['current'] = current.apply(lambda f:
+                    f['total'] * float(markets.loc[f['name'], 'price']), axis=1)
+
+    # join
+    diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['current']],how='outer')
+    diffs=diffs.fillna(0.0).reset_index()
+    diffs['diff']=diffs['optimalWeight']-diffs['current']
+
+    return diffs
+
 async def execute_weights(filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
     exchange = open_exchange('ftx','SysPerp')
-    weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
-    equity = weights.loc[weights['name']=='total','optimalWeight'].values
-    weights=weights[(weights['name']!='USD')&(weights['name']!='total')].sort_values(by='ExpectedCarry',ascending=False)
+    weights = diff_portoflio(exchange,filename)
 
     weights['spot']=weights['name'].apply(lambda x: x.split('-')[0]+'/USD')
     weights['buy_ticker'] = weights['spot']
-    weights.loc[weights['optimalWeight']<0,'buy_ticker'] = weights.loc[weights['optimalWeight']<0,'name']
+    weights.loc[weights['diff']<0,'buy_ticker'] = weights.loc[weights['diff']<0,'name']
     weights['sell_ticker'] = weights['name']
-    weights.loc[weights['optimalWeight']<0,'sell_ticker'] = weights.loc[weights['optimalWeight']<0,'spot']
-    weights['optimalWeight'] = weights['optimalWeight'].apply(np.abs)
+    weights.loc[weights['diff']<0,'sell_ticker'] = weights.loc[weights['diff']<0,'spot']
+    weights['diff'] = weights['diff'].apply(np.abs)
 
-    exec_report = await asyncio.gather(*[slice_spread_trade(exchange, d['buy_ticker'], d['sell_ticker'], d['optimalWeight']) for (i,d) in weights.iterrows() if d['optimalWeight']>0.01*equity])
+    exec_report = await asyncio.gather(*[slice_spread_trade(exchange, d['buy_ticker'], d['sell_ticker'], d['diff']) for (i,d) in weights.iterrows() if d['diff']>1.0])
 
         #leftover_delta =
         #if leftover_delta>slice_sizeUSD/slice_factor:
