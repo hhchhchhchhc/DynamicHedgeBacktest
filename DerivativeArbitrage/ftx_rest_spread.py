@@ -13,7 +13,7 @@ amend_speed = 10.
 amend_tolerance = 5.
 taker_trigger = 0.002
 slice_factor = int(10) # integer>1
-from_tob = 1.001
+from_tob = 0.0001
 audit = []
 
 def timer(func):
@@ -26,7 +26,7 @@ def timer(func):
         run_time = end_time - start_time    # 3
 
         global audit
-        audit += {'audit_type':'timer','func':func.__name__,'start_time':start_time,'run_time':run_time}
+        audit += [{'audit_type': 'timer', 'func': func.__name__, 'start_time': start_time, 'run_time': run_time}]
         return value
     return wrapper_timer
 
@@ -40,7 +40,7 @@ async def sure_cancel(exchange: Exchange,order: str) -> int:
         order_status = exchange.fetch_order(order['id'])
         attempt += 1
         global audit
-        audit += {'audit_type':'cancel','id': order['id'], 'cancel_attempt': attempt}
+        audit += [{'audit_type': 'cancel', 'id': order['id'], 'cancel_attempt': attempt}]
 
     return attempt
 
@@ -50,21 +50,25 @@ async def sure_postOnly(exchange: Exchange,
                         side: str,
                         size: float  # in coin
                         ) -> dict:
+    if size<=0:
+        return dict()
     attempt = 0
-    remaining_size = size
-    while remaining_size>0:
+    status = 'canceled'
+    while status == 'canceled':
         top_of_book = exchange.fetch_ticker(ticker)['bid' if side == 'buy' else 'ask']
-        order = exchange.createOrder(ticker, 'limit', side, remaining_size, price=top_of_book*from_tob,
+        limit_price=top_of_book*(1-(1 if 'buy' else -1)*attempt*from_tob)
+        order = exchange.createOrder(ticker, 'limit', side, size,
+                                     price=limit_price,
                                      params={'postOnly': True})
         await asyncio.sleep(placement_latency)
         order_status = exchange.fetch_order(order['id'])
-        remaining_size = order_status['remaining']
+        status = order_status['status']
         global audit
-        audit+={'audit_type':'postOnly',
-                'id':order['id'],
-                'place_attempt': attempt,
-                'status':order_status['status'],
-                'top_of_book': top_of_book}
+        audit+=[{'audit_type': 'postOnly',
+                 'id': order['id'],
+                 'place_attempt': attempt,
+                 'status': order_status['status'],
+                 'top_of_book': top_of_book}]
         attempt+=1
     return order
 
@@ -83,7 +87,7 @@ async def chase(exchange: Exchange,order: str, taker_trigger: float) -> dict:
             if await sure_cancel(exchange, order)>0:# if it was somehow gone
                 stop_order = exchange.createOrder(symbol, 'market', side, order_status['remaining']) ## TODO: what if fail ?
                 global audit
-                audit+={'audit_type':'market','id':order['id'],'top_of_book': top_of_book}
+                audit+=[{'audit_type': 'market', 'id': order['id'], 'top_of_book': top_of_book}]
             return stop_order
 
         # if move is material, chase
@@ -126,7 +130,7 @@ def most_illiquid(exchange,ticker_buy,ticker_sell):
 
 # size are + or -, in USD
 @timer
-async def execute_spread(exchange: Exchange, ticker_buy: str, ticker_sell: str, size: float) -> pd.DataFrame:# size in USD
+async def execute_spread(exchange: Exchange, ticker_buy: str, ticker_sell: str, size: float) -> None:# size in USD
     assert (float(exchange.fetch_ticker(ticker_buy)['info']['sizeIncrement']))
     assert (float(exchange.fetch_ticker(ticker_sell)['info']['sizeIncrement']))
 
@@ -152,22 +156,25 @@ async def execute_spread(exchange: Exchange, ticker_buy: str, ticker_sell: str, 
 #    exchange.cancel_all_orders(symbol=first_ticker)
 #    exchange.cancel_all_orders(symbol=second_ticker)
 
-    first_recap = pd.DataFrame(exchange.fetch_orders(first_ticker))
-    #first_recap['createdAt']=first_recap['info'].apply(lambda x: x['createdAt'])
-    second_recap = pd.DataFrame(exchange.fetch_orders(second_ticker))
-    #second_recap['createdAt'] = second_recap['info'].apply(lambda x: x['createdAt'])
-    return first_recap.append(second_recap)
+    return None
 
 # size are + or -, in USD
-async def slice_spread_trade(exchange: Exchange, ticker1: str, ticker2: str, size1: float, size2: float)->dict:
+async def slice_spread_order(exchange: Exchange, ticker1: str, ticker2: str, size1: float, size2: float)->None:
     fetched1 = exchange.fetch_ticker(ticker1)['info']
     increment1 = float(fetched1['sizeIncrement']) * float(fetched1['price'])
     fetched2 = exchange.fetch_ticker(ticker2)['info']
     increment2 = float(fetched2['sizeIncrement']) * float(fetched2['price'])
     slice_size = max(increment1, increment2) * slice_factor
 
+    # if same side, single order
+    if (size2 * size1 >= 0):
+        await slice_single_order(exchange,ticker1,size1)
+        await slice_single_order(exchange, ticker2, size2)
+    # size too small
+    if ((np.abs(size1)<=increment1)|(np.abs(size2)<=increment2)):
+        return None
+
     # split order into a spread and a residual
-    assert(size2 * size1 <= -increment1*increment2) # needs to be a spread
     (spread_ticker_buy, spread_ticker_sell) = (ticker1, ticker2) if size1 > 0 else (ticker2, ticker1)
     if np.abs(size1) < np.abs(size2):
         spread_size = np.abs(size1)
@@ -182,21 +189,38 @@ async def slice_spread_trade(exchange: Exchange, ticker1: str, ticker2: str, siz
     amount_sliced = 0
     execution_report = pd.DataFrame()
     while amount_sliced + 2 * slice_size < spread_size:
-        temp_report = await execute_spread(exchange, spread_ticker_buy, spread_ticker_sell, slice_size)
-        execution_report = execution_report.append(temp_report)
+        await execute_spread(exchange, spread_ticker_buy, spread_ticker_sell, slice_size)
         amount_sliced += slice_size
-
-    temp_report = await execute_spread(exchange, spread_ticker_buy, spread_ticker_sell, spread_size-amount_sliced)
-    execution_report = execution_report.append(temp_report)
+    await execute_spread(exchange, spread_ticker_buy, spread_ticker_sell, spread_size-amount_sliced)
 
     # do the residual
     increment = increment1 if residual_ticker==ticker1 else increment2
     if residual_size>increment:
-        order = await sure_postOnly(exchange, residual_ticker, residual_side, residual_size / exchange.fetch_ticker(residual_ticker)['close'])
-        execution_report = execution_report.append(await
-            chase(exchange, order, taker_trigger=taker_trigger))  # no trigger for first leg
+        await slice_single_order(exchange,residual_ticker,residual_size)
 
-    return execution_report
+    return None
+
+# size are + or -, in USD
+async def slice_single_order(exchange: Exchange, ticker: str, size: float)->None:
+    fetched = exchange.fetch_ticker(ticker)['info']
+    increment = float(fetched['sizeIncrement']) * float(fetched['price'])
+    slice_size = increment * slice_factor
+
+    # split order into
+    amount_sliced = 0
+    execution_report = pd.DataFrame()
+    while amount_sliced + 2 * slice_size < np.abs(size):
+        order = await sure_postOnly(exchange, ticker, 'buy' if size>0 else 'sell', np.abs(size) / exchange.fetch_ticker(ticker)['close'])
+        order = await chase(exchange,order,taker_trigger=taker_trigger)
+        amount_sliced += slice_size
+
+    residual_size = np.abs(size)-amount_sliced
+    if residual_size > 1.1*increment:
+        order = await sure_postOnly(exchange, ticker, 'buy' if size > 0 else 'sell',
+                                    residual_size / exchange.fetch_ticker(ticker)['close'])
+        order = await chase(exchange, order, taker_trigger=taker_trigger)
+
+    return None
 
 def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
     # open file
@@ -222,27 +246,48 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
     # join, diff, coin
     diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['current']],how='outer')
     diffs=diffs.fillna(0.0).reset_index()
-    diffs['diff']=diffs['optimalWeight']-diffs['current']
+    #todo:/10
+    print('ohalala 10 !!')
+    diffs['diff']=diffs['optimalWeight']/10-diffs['current']
     diffs['underlying'] = diffs['name'].apply(lambda x: x.split('-')[0].split('/USD')[0])
 
     return diffs
 
-async def execute_weights(filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
-    exchange = open_exchange('ftx','SysPerp')
+async def execute_weights(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
     weights = diff_portoflio(exchange,filename)
-    weights=weights[weights['diff'].apply(np.abs)>500]
+    weights=weights[weights['diff'].apply(np.abs)>0]
 
-    exec_report = await asyncio.gather(*[slice_spread_trade(exchange,
-                                    r[1].head(1)['name'].values[0],
-                                    r[1].tail(1)['name'].values[0],
-                                    r[1].head(1)['diff'].values[0],
-                                    r[1].tail(1)['diff'].values[0])
-                                         for r in weights.groupby('underlying')])
+    orders_by_underlying = [r[1] for r in weights.groupby('underlying')]
+    single_orders = [{'ticker':r.head(1)['name'].values[0], 'size':r.head(1)['diff'].values[0]}
+                     for r in orders_by_underlying if r.shape[0]==1]
+    await asyncio.gather(*[slice_single_order(exchange,
+                                    r['ticker'],
+                                    r['size'])
+                                         for r in single_orders])
 
-    print(audit)
+    spread_orders = [{'ticker1':r.head(1)['name'].values[0], 'size1':r.head(1)['diff'].values[0],
+                      'ticker2':r.tail(1)['name'].values[0], 'size2':r.tail(1)['diff'].values[0]}
+                     for r in orders_by_underlying
+                     if (r.shape[0]==2)]
+    await asyncio.gather(*[slice_spread_order(exchange,
+                                           r['ticker1'],
+                                           r['ticker2'],
+                                           r['size1'],
+                                           r['size2'])
+                        for r in spread_orders])
+
+    n_orders = [None for r in orders_by_underlying if r.shape[0]>2]
+    assert(len(n_orders)==0)
+
         #leftover_delta =
         #if leftover_delta>slice_sizeUSD/slice_factor:
         #    exchange.createOrder(future, 'market', order_status['side'], order_status['remaining'])
 
 if True:
-    asyncio.run(execute_weights())
+    try:
+        exchange = open_exchange('ftx', 'SysPerp')
+        asyncio.run(execute_weights(exchange))
+    except Exception as e:
+        print(e)
+        pd.DataFrame(exchange.fetch_orders()).to_excel('bla.xlsx')
+        pd.DataFrame(audit).to_excel('audit.xlsx')
