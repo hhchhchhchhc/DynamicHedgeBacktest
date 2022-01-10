@@ -26,7 +26,7 @@ def timer(func):
         run_time = end_time - start_time    # 3
 
         global audit
-        audit += [{'audit_type': 'timer', 'func': func.__name__, 'start_time': start_time, 'run_time': run_time}]
+        #audit += [{'audit_type': 'timer', 'func': func.__name__, 'start_time': start_time, 'run_time': run_time}]
         return value
     return wrapper_timer
 
@@ -40,7 +40,7 @@ async def sure_cancel(exchange: Exchange,order: str) -> int:
         order_status = exchange.fetch_order(order['id'])
         attempt += 1
         global audit
-        audit += [{'audit_type': 'cancel', 'id': order['id'], 'cancel_attempt': attempt}]
+        audit += [{'audit_type': 'cancel', 'id': order['id'], 'cancel_attempt': attempt}.update(order)]
 
     return attempt
 
@@ -68,7 +68,7 @@ async def sure_postOnly(exchange: Exchange,
                  'id': order['id'],
                  'place_attempt': attempt,
                  'status': order_status['status'],
-                 'top_of_book': top_of_book}]
+                 'top_of_book': top_of_book}.update(order)]
         attempt+=1
     return order
 
@@ -81,13 +81,13 @@ async def chase(exchange: Exchange,order: str, taker_trigger: float) -> dict:
     while order_status['status'] == 'open':
         top_of_book = exchange.fetch_ticker(symbol)['bid' if side=='buy' else 'ask']
 
-        # if loss too big, stop out
+        # if loss too big vs initial level, stop out
         trigger_level = order['price'] * (1 + taker_trigger * (1 if order['side'] == 'buy' else -1))
         if (1 if side=='buy' else -1)*(top_of_book-trigger_level)>0:
-            if await sure_cancel(exchange, order)>0:# if it was somehow gone
-                stop_order = exchange.createOrder(symbol, 'market', side, order_status['remaining']) ## TODO: what if fail ?
-                global audit
-                audit+=[{'audit_type': 'market', 'id': order['id'], 'top_of_book': top_of_book}]
+            await sure_cancel(exchange, order)
+            stop_order = exchange.createOrder(symbol, 'market', side, order_status['remaining']) ## TODO: what if fail ?
+            global audit
+            audit+=[{'audit_type': 'market', 'id': order['id'], 'top_of_book': top_of_book}.update(order)]
             return stop_order
 
         # if move is material, chase
@@ -152,9 +152,16 @@ async def execute_spread(exchange: Exchange, ticker_buy: str, ticker_sell: str, 
     except Exception as e:
         print(e)
 
-    ##TODO: also cancel pre-existing ones :(
-#    exchange.cancel_all_orders(symbol=first_ticker)
-#    exchange.cancel_all_orders(symbol=second_ticker)
+    return None
+
+@timer
+async def clean_dust(exchange: Exchange, dust_ceiling=10.0) -> None:# size in USD
+    current = fetch_balances_positions(exchange)
+    current['abs']=current['current'].apply(np.abs)
+    dust = current[(current['abs']<dust_ceiling)&(current['abs']>0.0)]
+    await asyncio.gather(*[
+        exchange.create_market_order(d['name'],'market','buy' if d['current']<0 else 'sell',d['abs'])
+                        for i,d in dust.iterrows()])
 
     return None
 
@@ -222,6 +229,21 @@ async def slice_single_order(exchange: Exchange, ticker: str, size: float)->None
 
     return None
 
+def fetch_balances_positions(exchange: Exchange)->pd.DataFrame:
+    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
+    positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],
+                             dtype=float).rename(
+        columns={'future': 'name', 'netSize': 'total'})  # 'showAvgPrice':True})
+    balances = pd.DataFrame(exchange.fetch_balance(params={})['info']['result'], dtype=float)  # 'showAvgPrice':True})
+    balances = balances[balances['coin'] != 'USD']
+    balances['name'] = balances['coin'] + '/USD'
+
+    current = positions.append(balances)[['name', 'total']]
+    current['current'] = current.apply(lambda f:
+                                       f['total'] * float(markets.loc[f['name'], 'price']), axis=1)
+
+    return current
+
 def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
     # open file
     future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
@@ -232,16 +254,7 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
     target = future_weights.append(cash_weights)
 
     # get portfolio in USD
-    markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
-    positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],
-                             dtype=float).rename(columns={'future':'name','netSize':'total'})  # 'showAvgPrice':True})
-    balances=pd.DataFrame(exchange.fetch_balance(params={})['info']['result'],dtype=float)#'showAvgPrice':True})
-    balances=balances[balances['coin']!='USD']
-    balances['name']=balances['coin']+'/USD'
-
-    current=positions.append(balances)[['name','total']]
-    current['current'] = current.apply(lambda f:
-                    f['total'] * float(markets.loc[f['name'], 'price']), axis=1)
+    current=fetch_balances_positions(exchange)
 
     # join, diff, coin
     diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['current']],how='outer')
@@ -253,10 +266,7 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
 
     return diffs
 
-async def execute_weights(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
-    weights = diff_portoflio(exchange,filename)
-    weights=weights[weights['diff'].apply(np.abs)>0]
-
+async def execute_weights(exchange,weights):
     orders_by_underlying = [r[1] for r in weights.groupby('underlying')]
     single_orders = [{'ticker':r.head(1)['name'].values[0], 'size':r.head(1)['diff'].values[0]}
                      for r in orders_by_underlying if r.shape[0]==1]
@@ -284,10 +294,18 @@ async def execute_weights(exchange,filename = 'Runtime/ApprovedRuns/current_weig
         #    exchange.createOrder(future, 'market', order_status['side'], order_status['remaining'])
 
 if True:
+    exchange = open_exchange('ftx', 'SysPerp')
+    weights = diff_portoflio(exchange, 'Runtime/ApprovedRuns/current_weights.xlsx')
+    weights = weights[weights['diff'].apply(np.abs) > 0]
+
     try:
-        exchange = open_exchange('ftx', 'SysPerp')
-        asyncio.run(execute_weights(exchange))
+        asyncio.run(execute_weights(exchange,weights))
+        asyncio.run(clean_dust(exchange))
     except Exception as e:
         print(e)
-        pd.DataFrame(exchange.fetch_orders()).to_excel('bla.xlsx')
-        pd.DataFrame(audit).to_excel('audit.xlsx')
+    finally:
+        exchange.cancel_all_orders()
+        with pd.ExcelWriter('Runtime/execution_diagnosis.xlsx', engine='xlsxwriter') as writer:
+            weights.to_excel(writer,sheet_name='weights')
+            pd.DataFrame(exchange.fetch_orders()).to_excel(writer,sheet_name='fills')
+            pd.DataFrame(audit).to_excel(writer,sheet_name='audit')
