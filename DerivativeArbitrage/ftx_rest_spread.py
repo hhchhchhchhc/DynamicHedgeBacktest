@@ -10,9 +10,9 @@ from ftx_utilities import *
 
 placement_latency = 0.1
 amend_speed = 10.
-amend_tolerance = 5.
+amend_trigger = 0.0005
 taker_trigger = 0.002
-slice_factor = int(10) # integer>1
+slice_factor = 1.
 from_tob = 0.0001
 audit = []
 
@@ -50,16 +50,19 @@ async def sure_postOnly(exchange: Exchange,
                         side: str,
                         size: float  # in coin
                         ) -> dict:
-    if size<=0:
+    if (size<float(exchange.fetch_ticker(ticker)['info']['sizeIncrement'])):
         return dict()
-    attempt = 0
+    px_increment = float(exchange.fetch_ticker(ticker)['info']['priceIncrement'])
+    attempt = 1 # start one increment better than opposite side tob
     status = 'canceled'
     while status == 'canceled':
-        top_of_book = exchange.fetch_ticker(ticker)['bid' if side == 'buy' else 'ask']
-        limit_price=top_of_book*(1-(1 if 'buy' else -1)*attempt*from_tob)
+        top_of_book = exchange.fetch_ticker(ticker)['ask' if side == 'buy' else 'bid']
+        # try farther and farther to fight momentum
+        limit_price = top_of_book - (1 if side=='buy' else -1)*attempt*px_increment
         order = exchange.createOrder(ticker, 'limit', side, size,
                                      price=limit_price,
                                      params={'postOnly': True})
+
         await asyncio.sleep(placement_latency)
         order_status = exchange.fetch_order(order['id'])
         status = order_status['status']
@@ -77,12 +80,12 @@ async def chase(exchange: Exchange,order: str, taker_trigger: float) -> dict:
     order_status = exchange.fetch_order(order['id'])
     symbol=order_status['symbol']
     side=order_status['side']
+    trigger_level = order['price'] * (1 + taker_trigger * (1 if order['side'] == 'buy' else -1))
     attempt=0
     while order_status['status'] == 'open':
         top_of_book = exchange.fetch_ticker(symbol)['bid' if side=='buy' else 'ask']
 
         # if loss too big vs initial level, stop out
-        trigger_level = order['price'] * (1 + taker_trigger * (1 if order['side'] == 'buy' else -1))
         if (1 if side=='buy' else -1)*(top_of_book-trigger_level)>0:
             await sure_cancel(exchange, order)
             stop_order = exchange.createOrder(symbol, 'market', side, order_status['remaining']) ## TODO: what if fail ?
@@ -91,16 +94,13 @@ async def chase(exchange: Exchange,order: str, taker_trigger: float) -> dict:
             return stop_order
 
         # if move is material, chase
-        # read recent history
-        end_time = datetime.now().timestamp() * 1000
-        start_time = end_time - 100 * amend_speed * 1000
-        try:
-            volatility = underlying_vol(exchange,symbol, start_time, end_time)
-        except Exception as e:
-            print(e)
-            volatility = top_of_book*0.002/amend_tolerance
-        #not really necessary: top_of_book = exchange.fetch_ticker(symbol)['bid' if side=='buy' else 'ask']
-        if np.abs(top_of_book-order_status['price'])>amend_tolerance*volatility:
+
+        # calibrate amend threshold
+        #end_time = datetime.now().timestamp() * 1000
+        #start_time = end_time - 100 * amend_speed * 1000
+        #volatility = underlying_vol(exchange,symbol, start_time, end_time)
+
+        if np.abs(top_of_book/order_status['price']-1)>amend_trigger:
             # ftx modify order isn't a good deal. cancel.
             await sure_cancel(exchange,order)
             order = await sure_postOnly(exchange, symbol, side, order_status['remaining'])
@@ -168,15 +168,15 @@ async def clean_dust(exchange: Exchange, dust_ceiling=10.0) -> None:# size in US
 # size are + or -, in USD
 async def slice_spread_order(exchange: Exchange, ticker1: str, ticker2: str, size1: float, size2: float)->None:
     fetched1 = exchange.fetch_ticker(ticker1)['info']
-    increment1 = float(fetched1['sizeIncrement']) * float(fetched1['price'])
+    increment1 = (float(fetched1['sizeIncrement']) if ticker1!='BTC-PERP' else 0.01)* float(fetched1['price'])
     fetched2 = exchange.fetch_ticker(ticker2)['info']
-    increment2 = float(fetched2['sizeIncrement']) * float(fetched2['price'])
-    slice_size = max(increment1, increment2) * slice_factor
+    increment2 = (float(fetched2['sizeIncrement']) if ticker2!='BTC-PERP' else 0.01) * float(fetched2['price'])
+    slice_size = max(increment1, increment2,slice_factor)
 
     # if same side, single order
     if (size2 * size1 >= 0):
-        await slice_single_order(exchange,ticker1,size1)
-        await slice_single_order(exchange, ticker2, size2)
+        await asyncio.gather(*[slice_single_order(exchange,ticker1,size1),
+                               slice_single_order(exchange, ticker2, size2)])
     # size too small
     if ((np.abs(size1)<=increment1)|(np.abs(size2)<=increment2)):
         return None
@@ -205,19 +205,20 @@ async def slice_spread_order(exchange: Exchange, ticker1: str, ticker2: str, siz
     if residual_size>increment:
         await slice_single_order(exchange,residual_ticker,residual_size)
 
+    print(f'spread {ticker1}/{ticker2} done in {size1}/{size2}')
+
     return None
 
 # size are + or -, in USD
 async def slice_single_order(exchange: Exchange, ticker: str, size: float)->None:
     fetched = exchange.fetch_ticker(ticker)['info']
-    increment = float(fetched['sizeIncrement']) * float(fetched['price'])
-    slice_size = increment * slice_factor
+    increment = (float(fetched['sizeIncrement']) if ticker!='BTC-PERP' else 0.01) * float(fetched['price'])
+    slice_size = max(increment,slice_factor)
 
     # split order into
     amount_sliced = 0
-    execution_report = pd.DataFrame()
     while amount_sliced + 2 * slice_size < np.abs(size):
-        order = await sure_postOnly(exchange, ticker, 'buy' if size>0 else 'sell', np.abs(size) / exchange.fetch_ticker(ticker)['close'])
+        order = await sure_postOnly(exchange, ticker, 'buy' if size>0 else 'sell', np.abs(slice_size) / exchange.fetch_ticker(ticker)['close'])
         order = await chase(exchange,order,taker_trigger=taker_trigger)
         amount_sliced += slice_size
 
@@ -226,6 +227,8 @@ async def slice_single_order(exchange: Exchange, ticker: str, size: float)->None
         order = await sure_postOnly(exchange, ticker, 'buy' if size > 0 else 'sell',
                                     residual_size / exchange.fetch_ticker(ticker)['close'])
         order = await chase(exchange, order, taker_trigger=taker_trigger)
+
+    print(f'single {ticker} done in {size}')
 
     return None
 
@@ -259,7 +262,6 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
     # join, diff, coin
     diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['current']],how='outer')
     diffs=diffs.fillna(0.0).reset_index()
-    #todo:/10
     print('ohalala 10 !!')
     diffs['diff']=diffs['optimalWeight']/10-diffs['current']
     diffs['underlying'] = diffs['name'].apply(lambda x: x.split('-')[0].split('/USD')[0])
@@ -296,16 +298,20 @@ async def execute_weights(exchange,weights):
 if True:
     exchange = open_exchange('ftx', 'SysPerp')
     weights = diff_portoflio(exchange, 'Runtime/ApprovedRuns/current_weights.xlsx')
-    weights = weights[weights['diff'].apply(np.abs) > 0]
+    weights = weights[weights['diff'].apply(np.abs) > slice_factor]
+    print(weights)
+#    weights = weights[weights['name'].isin(['LINK/USD','LINK-PERP'])]
 
     try:
         asyncio.run(execute_weights(exchange,weights))
-        asyncio.run(clean_dust(exchange))
+        #asyncio.run(clean_dust(exchange))
     except Exception as e:
         print(e)
     finally:
         exchange.cancel_all_orders()
         with pd.ExcelWriter('Runtime/execution_diagnosis.xlsx', engine='xlsxwriter') as writer:
-            weights.to_excel(writer,sheet_name='weights')
             pd.DataFrame(exchange.fetch_orders()).to_excel(writer,sheet_name='fills')
             pd.DataFrame(audit).to_excel(writer,sheet_name='audit')
+
+        stats = fetch_latencyStats(exchange,days=1,subaccount_nickname='SysPerp')
+        print(stats)
