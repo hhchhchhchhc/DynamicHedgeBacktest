@@ -271,3 +271,7 @@ def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):
                             if exchange.safe_string(market, 'type') == 'future' else np.NaN
         })
     return result
+
+def fetch_latencyStats(exchange,days,subaccount_nickname):
+    #stats = exchange.publicGetStatsLatencyStats({'days':days,'subaccount_nickname':subaccount_nickname})
+    return []#stats['result']
