@@ -746,10 +746,12 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
 #        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
 
 if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        sys.argv.extend(['2target'])
     if len(sys.argv) < 4:
         sys.argv.extend(['ftx', 'SysPerp'])
         print(f'using defaults {sys.argv[2]} {sys.argv[3]}')
-    elif sys.argv[1] == 'fills_anaysis':
+    if sys.argv[1] == 'fills_anaysis':
         exchange = open_exchange(sys.argv[2], sys.argv[3])
         (fill_analysis, all_fills) = run_fills_analysis(exchange,
                                                         end=datetime.now(),
@@ -768,3 +770,6 @@ if __name__ == "__main__":
         run_plex(sys.argv[2], sys.argv[3])
     else:
         print(f'commands fills_anaysis,2target,risk,plex')
+
+
+
