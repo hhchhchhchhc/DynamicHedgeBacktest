@@ -273,6 +273,8 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
     # open file
     future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
     future_weights = future_weights[(future_weights['name'] != 'USD') & (future_weights['name'] != 'total')]
+    future_weights['optimalWeight'] *= -1
+
     cash_weights = future_weights.copy()
     cash_weights['name']=cash_weights['name'].apply(lambda x: x.split('-')[0]+'/USD')
     cash_weights['optimalWeight'] *= -1
@@ -374,15 +376,6 @@ def run_fills_analysis(exchange, end = datetime.now(),start = datetime.now()- ti
         fill_analysis[underlying]=result
 
     return (fill_analysis,all_fills)
-
-if False:
-    exchange = open_exchange('ftx','test')
-    (fill_analysis, all_fills)=run_fills_analysis(exchange,
-            end = datetime.now(),
-            start = datetime.now()- timedelta(days=7))
-    with pd.ExcelWriter('fills.xlsx', engine='xlsxwriter') as writer:
-        fill_analysis.to_excel(writer,sheet_name='fill_analysis')
-        all_fills.to_excel(writer,sheet_name='all_fills')
 
 def fetch_portfolio(exchange,time):
     # fetch mark,spot and balances as closely as possible
@@ -752,17 +745,26 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
 #    shutil.copy2(filename,
 #        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
 
-if True:
-    risk=live_risk('ftx', 'SysPerp')
-    risk.to_excel('liverisk.xlsx')
-    print(risk['netDelta'])
-
-if False:
-#    run_plex('ftx_auk', 'SystematicPerp')
-#    run_plex('ftx_auk', 'CashAndCarry')
-#    run_plex('ftx_auk', '')
-#    run_plex('ftx_auk', 'Lending')
-#    run_plex('ftx_auk', 'FTTStaking')
-    run_plex('ftx', '')
-    run_plex('ftx', 'margintest')
-    run_plex('ftx', 'SysPerp')
+if __name__ == "__main__":
+    if len(sys.argv) < 4:
+        sys.argv.extend(['ftx', 'SysPerp'])
+        print(f'using defaults {sys.argv[2]} {sys.argv[3]}')
+    elif sys.argv[1] == 'fills_anaysis':
+        exchange = open_exchange(sys.argv[2], sys.argv[3])
+        (fill_analysis, all_fills) = run_fills_analysis(exchange,
+                                                        end=datetime.now(),
+                                                        start=datetime.now() - timedelta(days=7))
+        print()
+        with pd.ExcelWriter('fills.xlsx', engine='xlsxwriter') as writer:
+            fill_analysis.to_excel(writer, sheet_name='fill_analysis')
+            all_fills.to_excel(writer, sheet_name='all_fills')
+    elif sys.argv[1] == '2target':
+        diff=diff_portoflio(open_exchange(sys.argv[2], sys.argv[3]))
+        print(diff[diff['diff'].apply(np.abs)>10])
+    elif sys.argv[1] == 'risk':
+        risk=live_risk(sys.argv[2], sys.argv[3])
+        print(risk[risk.columns[:4]])
+    elif sys.argv[1] == 'plex':
+        run_plex(sys.argv[2], sys.argv[3])
+    else:
+        print(f'commands fills_anaysis,2target,risk,plex')
