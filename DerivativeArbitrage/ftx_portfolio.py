@@ -252,7 +252,7 @@ def live_risk(exchange_name,subaccount=''):
         raise Exception('no position in account')
 
     balances=pd.DataFrame(exchange.fetch_balance(params={})['info']['result'],dtype=float)#'showAvgPrice':True})
-    balances=balances[balances['total']!=0.0].set_index('coin').fillna(0.0)
+    balances=balances[(balances['total']!=0.0)&(balances['coin']!='USD')].set_index('coin').fillna(0.0)
 
     greeks=balances.join(positions,how='outer')
     greeks['futureDelta'] = positions.apply(lambda f: f['netSize'] * futures.loc[f['future'], 'mark'], axis=1)
@@ -268,6 +268,42 @@ def live_risk(exchange_name,subaccount=''):
     result.loc['total', account_info.index] = account_info.values
 
     return result
+
+def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
+    # open file
+    future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
+    future_weights = future_weights[(future_weights['name'] != 'USD') & (future_weights['name'] != 'total')]
+    cash_weights = future_weights.copy()
+    cash_weights['name']=cash_weights['name'].apply(lambda x: x.split('-')[0]+'/USD')
+    cash_weights['optimalWeight'] *= -1
+    target = future_weights.append(cash_weights)
+
+    def fetch_balances_positions(exchange: Exchange) -> pd.DataFrame:
+        markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
+        positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],
+                                 dtype=float).rename(
+            columns={'future': 'name', 'netSize': 'total'})  # 'showAvgPrice':True})
+        balances = pd.DataFrame(exchange.fetch_balance(params={})['info']['result'],
+                                dtype=float)  # 'showAvgPrice':True})
+        balances = balances[balances['coin'] != 'USD']
+        balances['name'] = balances['coin'] + '/USD'
+
+        current = positions.append(balances)[['name', 'total']]
+        current['current'] = current.apply(lambda f:
+                                           f['total'] * float(markets.loc[f['name'], 'price']), axis=1)
+
+        return current
+
+    # get portfolio in USD
+    current=fetch_balances_positions(exchange)
+
+    # join, diff, coin
+    diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['current']],how='outer')
+    diffs=diffs.fillna(0.0).reset_index()
+    diffs['diff']=diffs['optimalWeight']-diffs['current']
+    diffs['underlying'] = diffs['name'].apply(lambda x: x.split('-')[0].split('/USD')[0])
+
+    return diffs
 
 def process_fills(exchange,spot_fills,future_fills):
     if (spot_fills.empty)|(future_fills.empty): return pd.DataFrame()
@@ -716,11 +752,17 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
 #    shutil.copy2(filename,
 #        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
 
+if True:
+    risk=live_risk('ftx', 'SysPerp')
+    risk.to_excel('liverisk.xlsx')
+    print(risk['netDelta'])
+
 if False:
 #    run_plex('ftx_auk', 'SystematicPerp')
 #    run_plex('ftx_auk', 'CashAndCarry')
 #    run_plex('ftx_auk', '')
 #    run_plex('ftx_auk', 'Lending')
 #    run_plex('ftx_auk', 'FTTStaking')
-     run_plex('ftx', '')
-     run_plex('ftx', 'margintest')
+    run_plex('ftx', '')
+    run_plex('ftx', 'margintest')
+    run_plex('ftx', 'SysPerp')
