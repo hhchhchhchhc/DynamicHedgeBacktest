@@ -1,12 +1,7 @@
-import os
-
-import numpy as np
-import pandas as pd
 from ftx_snap_basis import *
 from ftx_portfolio import *
 from ftx_ftx import *
-import seaborn as sns
-import ccxt
+#import seaborn as sns
 #from sklearn import *
 
 def refresh_universe(exchange_name,universe_size):
@@ -353,34 +348,32 @@ def run_benchmark_ladder(
 
     ladder.to_pickle(run_dir + '/ladder.pickle')
 
-def run(command_list):
-    print(static_params)
-    if 'live' in command_list:
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        sys.argv.extend(['live'])
+    if len(sys.argv) < 4:
+        sys.argv.extend(['ftx', 'SysPerp'])
+        print(f'using defaults {sys.argv[2]} {sys.argv[3]}')
+    if sys.argv[1] == 'live':
         perp_vs_cash_live(
-                    concentration_limit=[CONCENTRATION_LIMIT],
-                    signal_horizon = [HOLDING_PERIOD],
-                    holding_period = [SIGNAL_HORIZON],
-                    slippage_override = [SLIPPAGE_OVERRIDE],
-                    run_dir='Runtime/Live_parquets')
-        #s3_upload_file('Runtime/live_parquets/optimal_live.xlsx', 'gof.crypto.shared', 'ftx_optimal_cash_carry_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx')
-    if 'benchmark' in command_list:
+            concentration_limit=[CONCENTRATION_LIMIT],
+            signal_horizon=[HOLDING_PERIOD],
+            holding_period=[SIGNAL_HORIZON],
+            slippage_override=[SLIPPAGE_OVERRIDE],
+            run_dir='Runtime/Live_parquets')
+    elif sys.argv[1] == 'benchmark':
         run_benchmark_ladder(
-                    concentration_limit_list=[.5],
-                    holding_period_list=[HOLDING_PERIOD],
-                    signal_horizon_list=[SIGNAL_HORIZON],
-                    slippage_override_list=[SLIPPAGE_OVERRIDE],
-                    run_dir='Runtime/cost_blind')
-    if 'ladder' in command_list:
-        run_ladder( concentration_limit_list=[0.5],
-                    holding_period_list = [timedelta(days=d) for d in [1]],
-                    signal_horizon_list = [timedelta(hours=d) for d in [1,3,6,12]] + [timedelta(days=d) for d in [1,2]],
-                    slippage_override = [0,2e-4],
-                    run_dir='Runtime/runs')
-
-    #run_ladder( concentration_limit_list=[9, 1, .5],
-    #            holding_period_list = [timedelta(hours=h) for h in [6,12]] + [timedelta(days=d) for d in [1, 2, 3, 4,5]],
-    #            signal_horizon_list = [timedelta(hours=h) for h in [12]] + [timedelta(days=d) for d in [1, 2,3,4,5,7,10,30]],
-    #            slippage_override = [2e-4,5e-4],
-    #            run_dir='Runtime/runs')
-
-run(['live'])
+            concentration_limit_list=[.5],
+            holding_period_list=[HOLDING_PERIOD],
+            signal_horizon_list=[SIGNAL_HORIZON],
+            slippage_override_list=[SLIPPAGE_OVERRIDE],
+            run_dir='Runtime/cost_blind')
+    elif sys.argv[1] == 'ladder':
+        run_ladder(concentration_limit_list=[0.5],
+                   holding_period_list=[timedelta(days=d) for d in [1]],
+                   signal_horizon_list=[timedelta(hours=d) for d in [1, 3, 6, 12]] + [timedelta(days=d) for d in
+                                                                                      [1, 2]],
+                   slippage_override=[0, 2e-4],
+                   run_dir='Runtime/runs')
+    else:
+        print(f'commands: live,ladder,benchmark')
