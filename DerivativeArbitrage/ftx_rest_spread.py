@@ -56,23 +56,22 @@ class AggressivePost:
     def update(self)->None:
         return None
 
-def most_illiquid(exchange,ticker_buy,ticker_sell):
+def symbol_ordering(exchange: Exchange,ticker1: str,ticker2: str) -> Tuple:
     ## get 5m histories
     nowtime = datetime.now().timestamp()
     since = nowtime - 5 * 60
     try:
-        history1 = pd.DataFrame(exchange.fetch_trades(ticker_buy, since=since*1000)).set_index('timestamp')
-        history2 = pd.DataFrame(exchange.fetch_trades(ticker_sell, since=since*1000)).set_index('timestamp')
+        history1 = pd.DataFrame(exchange.fetch_trades(ticker1, since=since*1000)).set_index('timestamp')
+        history2 = pd.DataFrame(exchange.fetch_trades(ticker2, since=since*1000)).set_index('timestamp')
     except Exception as e:
-        print(f"bad history for either {ticker_buy} or {ticker_sell}. Passing {ticker_sell}")
-        return ticker_sell
+        print(f"bad history for either {ticker1} or {ticker2}. Passing {ticker2}")
+        return ticker2
 
     ## least active first
     volume1 = history1['amount'].sum()
     volume2 = history2['amount'].sum()
 
-    result = ticker_buy if volume1<volume2 else ticker_sell
-    return result
+    return (ticker1,ticker2) if volume1<volume2 else (ticker2,ticker1)
 
 #################### low level orders, with checks and resend ##############################
 
@@ -188,10 +187,12 @@ async def post_chase_trigger(exchange: Exchange,
 
     return order
 
-#################### executers:  ##############################
+#################### slicers: chose sequence and size for orders  ##############################
 
 # size are + or -, in USD
-async def slice_spread_order(exchange: Exchange, ticker1: str, ticker2: str, size1: float, size2: float)->None:
+async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, size1: float, size2: float)->None:
+    (ticker1,ticker2) = symbol_ordering(exchange, ticker_1, ticker_2)
+
     fetched1 = exchange.fetch_ticker(ticker1)['info']
     increment1 = float(fetched1['sizeIncrement']) if ticker1!='BTC-PERP' else 0.01
     price1 = float(fetched1['price'])
@@ -214,16 +215,13 @@ async def slice_spread_order(exchange: Exchange, ticker1: str, ticker2: str, siz
     # slice the spread
     spread_size = min(np.abs(size1),np.abs(size2))
     amount_sliced = 0
-    execution_report = pd.DataFrame()
     while amount_sliced + 2 * slice_size < spread_size:
         price1 = float(exchange.fetch_ticker(ticker1)['info']['price'])
+        await post_chase_trigger(exchange, ticker1, np.sign(size1) * slice_size / price1, taker_trigger=999)
+
         price2 = float(exchange.fetch_ticker(ticker2)['info']['price'])
-        if most_illiquid(exchange, ticker1, ticker2) == ticker1:
-            await post_chase_trigger(exchange, ticker1, np.sign(size1) * slice_size / price1, taker_trigger=999)
-            await post_chase_trigger(exchange, ticker2, np.sign(size2) * slice_size / price2, taker_trigger=taker_trigger)
-        else:
-            await post_chase_trigger(exchange, ticker2, np.sign(size2) * slice_size / price2, taker_trigger=999)
-            await post_chase_trigger(exchange, ticker1, np.sign(size1) * slice_size / price1, taker_trigger=taker_trigger)
+        await post_chase_trigger(exchange, ticker2, np.sign(size2) * slice_size / price2, taker_trigger=taker_trigger)
+
         amount_sliced += slice_size
     print(f'spread {ticker1}/{ticker2} done in {amount_sliced}')
 
@@ -272,7 +270,9 @@ async def slice_single_order(exchange: Exchange, ticker: str, size: float)->None
 
     return None
 
-async def execute_weights(exchange,weights):
+########### executer: calls slicers in parallel
+
+async def executer_sysperp(exchange,weights):
     orders_by_underlying = [r[1] for r in weights.groupby('underlying')]
     single_orders = [{'ticker':r.head(1)['name'].values[0], 'size':r.head(1)['diff'].values[0]}
                      for r in orders_by_underlying if r.shape[0]==1]
@@ -310,11 +310,11 @@ if __name__ == "__main__":
         weights = diff_portoflio(exchange, sys.argv[4])
         weights = weights[weights['diff'].apply(np.abs) > slice_factor]
         print(weights)
-    #    weights = weights[weights['name'].isin(['LINK/USD','LINK-PERP'])]
+        weights = weights[weights['name'].isin(['CEL/USD','CEL-PERP'])]
 
         start_time = datetime.now().timestamp()
         try:
-            asyncio.run(execute_weights(exchange,weights))
+            asyncio.run(executer_sysperp(exchange,weights))
             #asyncio.run(clean_dust(exchange))
         except Exception as e:
             print(e)
