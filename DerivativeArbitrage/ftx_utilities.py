@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 import os
-os.chdir("C:/Users/david/SystematicCarry/DerivativeArbitrage")
-print(f'changed dir to{os.getcwd()}')
 import sys
 import shutil
 from typing import Tuple

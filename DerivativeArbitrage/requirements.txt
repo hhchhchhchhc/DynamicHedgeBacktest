@@ -10,3 +10,5 @@ cufflinks
 XlsxWriter
 openpyxl
 scipy
+matplotlib
+websockets>=9.0

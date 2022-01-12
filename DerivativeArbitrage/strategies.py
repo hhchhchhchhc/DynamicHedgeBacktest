@@ -155,6 +155,7 @@ def perp_vs_cash_live(
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         parameters = pd.Series({
             'run_date':datetime.today(),
+            'universe':UNIVERSE,
             'exclusion_list': exclusion_list,
             'type_allowed': type_allowed,
             'signal_horizon': signal_horizon,
@@ -353,7 +354,7 @@ if __name__ == "__main__":
         sys.argv.extend(['live'])
     if len(sys.argv) < 4:
         sys.argv.extend(['ftx', 'SysPerp'])
-        print(f'using defaults {sys.argv[2]} {sys.argv[3]}')
+    print(f'running {sys.argv}')
     if sys.argv[1] == 'live':
         perp_vs_cash_live(
             concentration_limit=[CONCENTRATION_LIMIT],

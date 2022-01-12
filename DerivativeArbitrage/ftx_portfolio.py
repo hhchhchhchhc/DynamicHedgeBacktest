@@ -747,10 +747,10 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
-        sys.argv.extend(['2target'])
+        sys.argv.extend(['risk'])
     if len(sys.argv) < 4:
         sys.argv.extend(['ftx', 'SysPerp'])
-        print(f'using defaults {sys.argv[2]} {sys.argv[3]}')
+    print(f'running {sys.argv}')
     if sys.argv[1] == 'fills_anaysis':
         exchange = open_exchange(sys.argv[2], sys.argv[3])
         (fill_analysis, all_fills) = run_fills_analysis(exchange,
