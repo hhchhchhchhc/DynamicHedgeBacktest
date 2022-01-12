@@ -12,10 +12,12 @@ from ftx_portfolio import diff_portoflio
 
 placement_latency = 0.1# in sec
 amend_speed = 10.# in sec
-amend_trigger = 0.
-taker_trigger = 0.002
-slice_factor = 10.# in USD
+amend_trigger = 0.001
+taker_trigger = 0.0025
+slice_factor = 50.# in USD
 audit = []
+
+special_maker_minimum_size = {'BTC-PERP': 0.01, 'RUNE-PERP': 1.0}
 
 #################### various helpers ##############################
 
@@ -65,7 +67,7 @@ def symbol_ordering(exchange: Exchange,ticker1: str,ticker2: str) -> Tuple:
         history2 = pd.DataFrame(exchange.fetch_trades(ticker2, since=since*1000)).set_index('timestamp')
     except Exception as e:
         print(f"bad history for either {ticker1} or {ticker2}. Passing {ticker2}")
-        return ticker2
+        return (ticker2,ticker1)
 
     ## least active first
     volume1 = history1['amount'].sum()
@@ -81,11 +83,17 @@ async def sure_cancel(exchange: Exchange,order: str) -> dict:
     attempt = 0
     while order_status['status'] == 'open':
         exchange.cancel_order(order['id'])
-        await asyncio.sleep(placement_latency)
+        sleep(placement_latency)
         order_status = exchange.fetch_order(order['id'])
-        attempt += 1
         global audit
-        audit += [{'audit_type': 'cancel', 'id': order['id'], 'cancel_attempt': attempt}|order]
+        if attempt>1:
+            audit += [{'audit_type': 'sure_cancel',
+                   'id': order['id'],
+                   'place_attempt': attempt,
+                   'status': order_status['status'],
+                   'bid': exchange.fetch_ticker(order_status['symbol'])['bid'],
+                   'ask': exchange.fetch_ticker(order_status['symbol'])['ask']} | order['info']]
+        attempt += 1
 
     return order
 
@@ -96,12 +104,15 @@ async def monitored_market_order(exchange: Exchange,
                               size: float  # in coin
                               ) -> dict:
     mkt_order = exchange.createOrder(ticker, 'market', side, size)
-    await asyncio.sleep(placement_latency)
+    sleep(placement_latency)
     order_status = exchange.fetch_order(mkt_order['id'])
     remaining = order_status['remaining']
 
     global audit
-    audit += [{'audit_type': 'market', 'id': mkt_order['id'], 'remaining': remaining}|mkt_order]
+    audit += [{'audit_type': 'market', 'id': mkt_order['id'],
+               'status': order_status['status'],
+               'bid': exchange.fetch_ticker(order_status['symbol'])['bid'],
+               'ask': exchange.fetch_ticker(order_status['symbol'])['ask']} | mkt_order['info']]
 
     return mkt_order
 
@@ -135,17 +146,19 @@ async def sure_post(exchange: Exchange,
                                      price=limit_price,
                                      params={'postOnly': True})
 
-        await asyncio.sleep(placement_latency)
+        sleep(placement_latency)
 
         order_status = exchange.fetch_order(order['id'])
         status = order_status['status']
         global audit
 
-        audit+=[{'audit_type': 'postAggressive',
+        if attempt>1:
+            audit+=[{'audit_type': 'sure_post_'+mode+'_'+side,
                  'id': order['id'],
                  'place_attempt': attempt,
                  'status': order_status['status'],
-                 'top_of_book': top_of_book}|order]
+                 'bid': exchange.fetch_ticker(ticker)['bid'],
+                 'ask': exchange.fetch_ticker(ticker)['ask']}|order['info']]
         attempt+=1
     return order
 
@@ -162,10 +175,10 @@ async def post_chase_trigger(exchange: Exchange,
     initial_order = await sure_post(exchange,ticker,'buy' if size>0 else 'sell',np.abs(size),increment, mode='passive')
     trigger_level = initial_order['price'] * (1 + taker_trigger * (1 if size >0 else -1))
 
-    await asyncio.sleep(amend_speed)
+    await asyncio.sleep(amend_sp  eed)
     order = initial_order
     order_status = exchange.fetch_order(order['id'])
-    while order_status['status'] == 'open':
+    while float(order_status['remaining']) > 0:
         side = order['side']
         opposite_tob = exchange.fetch_ticker(ticker)['ask' if side=='buy' else 'bid']
 
@@ -194,11 +207,15 @@ async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, s
     (ticker1,ticker2) = symbol_ordering(exchange, ticker_1, ticker_2)
 
     fetched1 = exchange.fetch_ticker(ticker1)['info']
-    increment1 = float(fetched1['sizeIncrement']) if ticker1!='BTC-PERP' else 0.01
+    increment1 = special_maker_minimum_size[ticker1] \
+        if ticker1 in special_maker_minimum_size.keys() \
+        else float(fetched1['sizeIncrement'])
     price1 = float(fetched1['price'])
 
     fetched2 = exchange.fetch_ticker(ticker2)['info']
-    increment2 = float(fetched2['sizeIncrement']) if ticker2!='BTC-PERP' else 0.01
+    increment2 = special_maker_minimum_size[ticker2] \
+        if ticker2 in special_maker_minimum_size.keys() \
+        else float(fetched2['sizeIncrement'])
     price2 = float(fetched2['price'])
 
     slice_size = max(increment1*price1, increment2*price2,slice_factor)
@@ -304,13 +321,13 @@ if __name__ == "__main__":
         sys.argv.extend(['execute'])
     if len(sys.argv) < 5:
         sys.argv.extend(['ftx', 'SysPerp', 'Runtime/ApprovedRuns/current_weights.xlsx'])
-        print(f'using defaults {sys.argv[2]} {sys.argv[3]} {sys.argv[4]}')
+    print(f'running {sys.argv}')
     if sys.argv[1] == 'execute':
         exchange = open_exchange(sys.argv[2], sys.argv[3])
         weights = diff_portoflio(exchange, sys.argv[4])
         weights = weights[weights['diff'].apply(np.abs) > slice_factor]
         print(weights)
-        weights = weights[weights['name'].isin(['CEL/USD','CEL-PERP'])]
+#        weights = weights[weights['name'].isin(['MATIC/USD','MATIC-PERP'])]
 
         start_time = datetime.now().timestamp()
         try:
@@ -326,4 +343,11 @@ if __name__ == "__main__":
                 pd.DataFrame(audit).to_excel(writer,sheet_name='audit')
 
             stats = fetch_latencyStats(exchange,days=1,subaccount_nickname='SysPerp')
-            print(stats)
+            print(f'latencystats:{stats}')
+    elif sys.argv[1] == 'diffonly':
+        exchange = open_exchange(sys.argv[2], sys.argv[3])
+        weights = diff_portoflio(exchange, sys.argv[4])
+        weights = weights[weights['diff'].apply(np.abs) > slice_factor]
+        print(weights)
+    else:
+        print(f'commands: execute,diffonly')
