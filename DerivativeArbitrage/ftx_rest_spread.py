@@ -58,6 +58,45 @@ class AggressivePost:
     def update(self)->None:
         return None
 
+class ExecutionLog:
+    _logCounter = 0
+    def __init__(self, order_type: str,
+                 legs: list): # len is 1 or 2, needs 'ticker' and 'size'
+        self._id = ExecutionLog._logCounter
+        ExecutionLog._logCounter +=1
+        self._type = order_type
+        self._legs = legs # len is 1 or 2, 'ticker' and 'size', later benchmarks and fills
+        self._receivedAt = None # temporary
+        self._children = []# list of ExecutionLog
+
+    # fetches exchange to populate benchmarks
+    def initializeBenchmark(self,exchange: Exchange) -> None:
+        self._receivedAt=datetime.now()
+        fetched = [mkt_at_size(exchange,leg['ticker'],'asks' if leg['size']>0 else 'bids',np.abs(leg['size'])) for leg in self._legs]
+        if datetime.now()<self._receivedAt + timedelta(milliseconds=1000*placement_latency): # 15ms is approx throttle..
+            warnings.warn('mkt_at_size was slow',RuntimeWarning)
+        self._legs = [leg | {'benchmark':
+                                 {'initial_mkt': f['mid'] * (1 + f['slippage']),
+                                  'initial_mid':f['mid']}}
+                      for f,leg in zip(fetched,self._legs)]
+
+    # only native orders receive values. Otherwise recurse on _children.
+    # fillSize is just an assert
+    def populateFill(self,avgFill: list=[],filledSize: list=[]) -> list:
+        if self._children:
+            assert(not (avgFill|filledSize))
+            self._legs = [leg | {'fill': sum(l['size']*l['fill']
+                         for l in child.populateFill() if l['ticker']==leg['ticker']
+                         for child in self._children)}
+                     for leg in self._legs]
+        else:
+            assert(avgFill&filledSize)
+            if any(a!=b['size'] for a,b in zip(filledSize,self._legs)):
+                warnings.warn('filledSize!=self._legs')
+            self._legs = [leg | {'fill': size}
+                          for size,leg in zip(filledSize,self._legs)]
+        return self._legs
+
 def symbol_ordering(exchange: Exchange,ticker1: str,ticker2: str) -> Tuple:
     ## get 5m histories
     nowtime = datetime.now().timestamp()
@@ -66,7 +105,7 @@ def symbol_ordering(exchange: Exchange,ticker1: str,ticker2: str) -> Tuple:
         history1 = pd.DataFrame(exchange.fetch_trades(ticker1, since=since*1000)).set_index('timestamp')
         history2 = pd.DataFrame(exchange.fetch_trades(ticker2, since=since*1000)).set_index('timestamp')
     except Exception as e:
-        print(f"bad history for either {ticker1} or {ticker2}. Passing {ticker2}")
+        warnings.warn(f"bad history for either {ticker1} or {ticker2}. Passing {ticker2}",RuntimeWarning)
         return (ticker2,ticker1)
 
     ## least active first
@@ -129,7 +168,7 @@ async def sure_post(exchange: Exchange,
     sizeIncrement=float(exchange.fetch_ticker(ticker)['info']['sizeIncrement'])
     if (size>sizeIncrement/2)&(size<sizeIncrement):
         size = sizeIncrement
-        print(f'rounded up {ticker} in {size} to {sizeIncrement}')
+        warnings.warn(f'rounded up {ticker} in {size} to {sizeIncrement}',RuntimeWarning)
 
     attempt = 1 # start one increment in front of tob
     status = 'canceled'
@@ -169,13 +208,16 @@ async def sure_post(exchange: Exchange,
 async def post_chase_trigger(exchange: Exchange,
                             ticker: str, size: float,
                             taker_trigger: float) -> dict:
+    log = ExecutionLog(sys._getframe().f_code.co_name, [{'ticker': r['name'], 'size': r['diff']} for (i, r) in weights.iterrows()])
+    log.initializeBenchmark(exchange)
+
     # post
     fetched = exchange.fetch_ticker(ticker)['info']
     increment = float(fetched['priceIncrement'])
     initial_order = await sure_post(exchange,ticker,'buy' if size>0 else 'sell',np.abs(size),increment, mode='passive')
     trigger_level = initial_order['price'] * (1 + taker_trigger * (1 if size >0 else -1))
 
-    await asyncio.sleep(amend_sp  eed)
+    await asyncio.sleep(amend_speed)
     order = initial_order
     order_status = exchange.fetch_order(order['id'])
     while float(order_status['remaining']) > 0:
@@ -198,12 +240,17 @@ async def post_chase_trigger(exchange: Exchange,
         await asyncio.sleep(amend_speed)
         order_status = exchange.fetch_order(order['id'])
 
-    return order
+    log.populateFill()
+    return log
 
 #################### slicers: chose sequence and size for orders  ##############################
 
 # size are + or -, in USD
 async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, size1: float, size2: float)->None:
+    log = ExecutionLog(sys._getframe().f_code.co_name, [{'ticker': ticker_1, 'size': size1},
+                                                        {'ticker': ticker_2, 'size': size2}])
+    log.initializeBenchmark(exchange)
+
     (ticker1,ticker2) = symbol_ordering(exchange, ticker_1, ticker_2)
 
     fetched1 = exchange.fetch_ticker(ticker1)['info']
@@ -222,7 +269,7 @@ async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, s
 
     # if same side, single order
     if (size2 * size1 >= 0):
-        await asyncio.gather(*[slice_single_order(exchange,ticker1,size1),
+        log._children += await asyncio.gather(*[slice_single_order(exchange,ticker1,size1),
                                slice_single_order(exchange, ticker2, size2)])
         return None
     # size too small
@@ -234,17 +281,17 @@ async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, s
     amount_sliced = 0
     while amount_sliced + 2 * slice_size < spread_size:
         price1 = float(exchange.fetch_ticker(ticker1)['info']['price'])
-        await post_chase_trigger(exchange, ticker1, np.sign(size1) * slice_size / price1, taker_trigger=999)
+        log._children +=await post_chase_trigger(exchange, ticker1, np.sign(size1) * slice_size / price1, taker_trigger=999)
 
         price2 = float(exchange.fetch_ticker(ticker2)['info']['price'])
-        await post_chase_trigger(exchange, ticker2, np.sign(size2) * slice_size / price2, taker_trigger=taker_trigger)
+        log._children +=await post_chase_trigger(exchange, ticker2, np.sign(size2) * slice_size / price2, taker_trigger=taker_trigger)
 
         amount_sliced += slice_size
     print(f'spread {ticker1}/{ticker2} done in {amount_sliced}')
 
     if ((spread_size-amount_sliced)/price1>increment1)&((spread_size-amount_sliced)/price2>increment2):
         print('residual:')
-        await slice_spread_order( exchange,
+        log._children +=await slice_spread_order( exchange,
                             ticker1,ticker2,
                             np.sign(size1)*(spread_size-amount_sliced)/price1,
                             np.sign(size2) * (spread_size - amount_sliced) / price2)
@@ -253,25 +300,30 @@ async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, s
     diff=diff_portoflio(exchange)
     residual_ticker=diff.loc[diff['name'].isin([ticker1,ticker2]),'name'].values
     residual_size = diff.loc[diff['name'].isin([ticker1, ticker2]), 'diff'].values
-    await slice_single_order(exchange, residual_ticker[0], residual_size[0])
-    await slice_single_order(exchange, residual_ticker[1], residual_size[1])
+    log._children +=await slice_single_order(exchange, residual_ticker[0], residual_size[0])
+    log._children +=await slice_single_order(exchange, residual_ticker[1], residual_size[1])
     print('spread:single residual {} done in {}'.format(residual_ticker[0], residual_size[0]))
     print('spread:single residual {} done in {}'.format(residual_ticker[1], residual_size[1]))
 
-    return None
+    log.populateFill()
+    return log
 
 # size are + or -, in USD
-async def slice_single_order(exchange: Exchange, ticker: str, size: float)->None:
+async def slice_single_order(exchange: Exchange, ticker: str, size: float) -> ExecutionLog:
+    log = ExecutionLog(sys._getframe().f_code.co_name, [{'ticker': ticker, 'size': size}])
+    log.initializeBenchmark(exchange)
+
     fetched = exchange.fetch_ticker(ticker)['info']
     increment = (float(fetched['sizeIncrement']) if ticker!='BTC-PERP' else 0.01)
     price=float(fetched['price'])
     slice_size = max(increment*price,slice_factor)
 
     # split order into slice_size
+    children = []
     amount_sliced = 0
     while amount_sliced + 2 * slice_size < np.abs(size):
         price=float(exchange.fetch_ticker(ticker)['info']['price'])
-        await post_chase_trigger(exchange, ticker, np.sign(size)*slice_size/price, taker_trigger=taker_trigger)
+        children += await post_chase_trigger(exchange, ticker, np.sign(size)*slice_size/price, taker_trigger=taker_trigger)
         amount_sliced += slice_size
     print(f'single {ticker} done in {np.sign(size)*amount_sliced}')
 
@@ -279,21 +331,25 @@ async def slice_single_order(exchange: Exchange, ticker: str, size: float)->None
     diff=diff_portoflio(exchange)
     residual_size=diff.loc[diff['name']==ticker,'diff'].values[0]
     if np.abs(residual_size)>=2*slice_size:
-        print(f'residual {residual_size} > 2*slice {slice_size}')
+        warnings.warn(f'residual {residual_size} > 2*slice {slice_size}',RuntimeWarning)
     if np.abs(residual_size)/price > 1.1*increment:
         price=float(exchange.fetch_ticker(ticker)['info']['price'])
-        await monitored_market_order(exchange, ticker,'buy' if residual_size>0 else 'sell', np.abs(residual_size)/price)
+        children += await monitored_market_order(exchange, ticker,'buy' if residual_size>0 else 'sell', np.abs(residual_size)/price)
         print(f'single residual {ticker} done in {residual_size}')
 
-    return None
+    log.populateFill()
+    return log
 
 ########### executer: calls slicers in parallel
 
-async def executer_sysperp(exchange,weights):
+async def executer_sysperp(exchange: Exchange,weights: pd.DataFrame) -> ExecutionLog:
+    log=ExecutionLog(sys._getframe().f_code.co_name,[{'ticker':r['name'],'size':r['diff']} for (i,r) in weights.iterrows()])
+    log.initializeBenchmark(exchange)
+
     orders_by_underlying = [r[1] for r in weights.groupby('underlying')]
     single_orders = [{'ticker':r.head(1)['name'].values[0], 'size':r.head(1)['diff'].values[0]}
                      for r in orders_by_underlying if r.shape[0]==1]
-    await asyncio.gather(*[slice_single_order(exchange,
+    log._children += await asyncio.gather(*[slice_single_order(exchange,
                                     r['ticker'],
                                     r['size'])
                                          for r in single_orders])
@@ -302,7 +358,7 @@ async def executer_sysperp(exchange,weights):
                       'ticker2':r.tail(1)['name'].values[0], 'size2':r.tail(1)['diff'].values[0]}
                      for r in orders_by_underlying
                      if (r.shape[0]==2)]
-    await asyncio.gather(*[slice_spread_order(exchange,
+    log._children += await asyncio.gather(*[slice_spread_order(exchange,
                                            r['ticker1'],
                                            r['ticker2'],
                                            r['size1'],
@@ -312,6 +368,8 @@ async def executer_sysperp(exchange,weights):
     n_orders = [None for r in orders_by_underlying if r.shape[0]>2]
     assert(len(n_orders)==0)
 
+    log.populateFill()
+    return log
         #leftover_delta =
         #if leftover_delta>slice_sizeUSD/slice_factor:
         #    exchange.createOrder(future, 'market', order_status['side'], order_status['remaining'])
@@ -327,7 +385,7 @@ if __name__ == "__main__":
         weights = diff_portoflio(exchange, sys.argv[4])
         weights = weights[weights['diff'].apply(np.abs) > slice_factor]
         print(weights)
-#        weights = weights[weights['name'].isin(['MATIC/USD','MATIC-PERP'])]
+        weights = weights[weights['name'].isin(['ALPHA/USD','ALPHA-PERP'])]
 
         start_time = datetime.now().timestamp()
         try:
