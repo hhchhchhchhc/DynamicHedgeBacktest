@@ -39,13 +39,16 @@ def underlying_vol(exchange,symbol,start_time,end_time):
 
     return vol
 
-def mkt_depth(exchange,symbol,side , target_depth=10000):
+def mkt_at_size(exchange, symbol, side, target_depth=10000.):
     #side='bids' or 'asks'
-    # returns average px of a mkt order of size target_depth (in USD), and the volume actually done
+    # returns average px of a mkt order of size target_depth (in USD)
     order_book = exchange.fetch_order_book(symbol)
     mktdepth = pd.DataFrame(order_book[side])
     other_side = 'bids' if side=='asks' else 'asks'
     mid = 0.5 * (order_book[side][0][0] + order_book[other_side][0][0])
+
+    if target_depth==0:
+        return (order_book[side][0][0],mid)
 
     mktdepth['px']=(mktdepth[0]*mktdepth[1]).cumsum()/mktdepth[1].cumsum()
     mktdepth['size']=(mktdepth[0]*mktdepth[1]).cumsum()
@@ -54,7 +57,7 @@ def mkt_depth(exchange,symbol,side , target_depth=10000):
     interpolator[float(target_depth)]=np.NaN
     interpolator.interpolate(method='index',inplace=True)
 
-    return interpolator[target_depth]/mid-1.0
+    return {'mid':mid,'slippage':interpolator[target_depth]/mid-1.0}
 
 def fetch_nearest_trade(exchange, symbol, time, target_depth=1000):
 

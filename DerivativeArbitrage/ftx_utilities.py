@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import warnings
 import shutil
 from typing import Tuple
 import ccxt

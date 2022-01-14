@@ -307,13 +307,13 @@ class ModelledAssets:
                 # futures['speed'] = 0  ##*futures['future_ask'] ### just 0
             else:
                 futures['spot_ask'] = futures['spot_ticker'].apply(
-                    lambda x: mkt_depth(exchange, x, 'asks', slippage_orderbook_depth)) * slippage_scaler + fees
+                    lambda x: mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth)['slippage']) * slippage_scaler + fees
                 futures['spot_bid'] = futures['spot_ticker'].apply(
-                    lambda x: mkt_depth(exchange, x, 'bids', slippage_orderbook_depth)) * slippage_scaler - fees
+                    lambda x: mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth)['slippage']) * slippage_scaler - fees
                 futures['future_ask'] = futures['name'].apply(
-                    lambda x: mkt_depth(exchange, x, 'asks', slippage_orderbook_depth)) * slippage_scaler + fees
+                    lambda x: mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth)['slippage']) * slippage_scaler + fees
                 futures['future_bid'] = futures['name'].apply(
-                    lambda x: mkt_depth(exchange, x, 'bids', slippage_orderbook_depth)) * slippage_scaler - fees
+                    lambda x: mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth)['slippage']) * slippage_scaler - fees
                 ### forget speed for now..
                 # futures['speed'] = futures['name'].apply(
                 #    lambda x: mkt_speed(exchange, x, depths).seconds)
