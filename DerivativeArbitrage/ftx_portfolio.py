@@ -269,6 +269,7 @@ def live_risk(exchange_name,subaccount=''):
 
     return result
 
+# diff is in coin
 def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
     # open file
     future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
@@ -281,7 +282,6 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
     target = future_weights.append(cash_weights)
 
     def fetch_balances_positions(exchange: Exchange) -> pd.DataFrame:
-        markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
         positions = pd.DataFrame([r['info'] for r in exchange.fetch_positions(params={})],
                                  dtype=float).rename(
             columns={'future': 'name', 'netSize': 'total'})  # 'showAvgPrice':True})
@@ -291,19 +291,18 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
         balances['name'] = balances['coin'] + '/USD'
 
         current = positions.append(balances)[['name', 'total']]
-        current['current'] = current.apply(lambda f:
-                                           f['total'] * float(markets.loc[f['name'], 'price']), axis=1)
 
         return current
 
-    # get portfolio in USD
+    # get portfolio in coin
     current=fetch_balances_positions(exchange)
 
     # join, diff, coin
-    diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['current']],how='outer')
+    diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['total']],how='outer')
     diffs=diffs.fillna(0.0).reset_index()
-    diffs['diff']=diffs['optimalWeight']-diffs['current']
+    diffs['price']=diffs['name'].apply(lambda x:float(exchange.fetch_ticker(x)['info']['price']))
     diffs['underlying'] = diffs['name'].apply(lambda x: x.split('-')[0].split('/USD')[0])
+    diffs['diff']=diffs['optimalWeight']/diffs['price']-diffs['total']
 
     return diffs
 
