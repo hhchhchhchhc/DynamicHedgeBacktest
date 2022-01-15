@@ -1,9 +1,8 @@
 import copy
-from time import sleep,perf_counter
-import asyncio
-import dateutil.parser
-import numpy
-import pandas as pd
+#from time import sleep,perf_counter
+#import dateutil.parser
+#import numpy
+#import pandas as pd
 import functools
 
 from ftx_ftx import *
@@ -404,10 +403,11 @@ if __name__ == "__main__":
     print(f'running {sys.argv}')
     if sys.argv[1] == 'execute':
         exchange = open_exchange(sys.argv[2], sys.argv[3])
+        asyncio.run(vwap(exchange,'OKB/USD',(datetime.now()-timedelta(weeks=1)).timestamp(),datetime.now().timestamp(),'1s'))
         weights = diff_portoflio(exchange, sys.argv[4])
         weights = weights[weights['price']*weights['diff'].apply(np.abs) > slice_factor]
         print(weights)
-#        weights = weights[weights['name'].isin(['BNT/USD','BNT-PERP'])]
+        weights = weights[weights['name'].isin(['BNT/USD','BNT-PERP'])]
 
         start_time = datetime.now().timestamp()
         try:

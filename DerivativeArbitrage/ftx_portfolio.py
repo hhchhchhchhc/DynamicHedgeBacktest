@@ -274,7 +274,7 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
     # open file
     future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
     future_weights = future_weights[(future_weights['name'] != 'USD') & (future_weights['name'] != 'total')]
-    future_weights['optimalWeight'] *= -1
+    future_weights['optimalWeight'] *= -.1
 
     cash_weights = future_weights.copy()
     cash_weights['name']=cash_weights['name'].apply(lambda x: x.split('-')[0]+'/USD')

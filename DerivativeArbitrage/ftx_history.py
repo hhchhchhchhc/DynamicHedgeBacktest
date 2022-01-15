@@ -4,7 +4,7 @@ from ftx_utilities import *
 from ftx_ftx import *
 
 # all rates annualized, all volumes daily
-def build_history(futures,exchange,
+async def build_history(futures,exchange,
         timeframe='1h',
         end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
         start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
@@ -19,8 +19,8 @@ def build_history(futures,exchange,
                                         coin == c.split('/')[0] for coin in list(futures['symbol'])
                                     )]]
         else:
-            perp_funding_data=pd.concat([funding_history(f,exchange,start,end,dirname)
-                                     for (i,f) in futures[futures['type']=='perpetual'].iterrows()],join='outer',axis=1)
+            perp_funding_data=pd.concat(await asyncio.gather(*[funding_history(f,exchange,start,end,dirname)
+                                     for (i,f) in futures[futures['type']=='perpetual'].iterrows()]),join='outer',axis=1)
             if dirname!='': perp_funding_data.to_parquet(parquet_filename)
 
     future_rate_data=pd.concat([rate_history(f, exchange, end, start, timeframe,dirname)
@@ -97,7 +97,7 @@ def borrow_history(spot,exchange,
     return data
 
 ######### annualized funding for perps
-def funding_history(future,exchange,
+async def funding_history(future,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                     dirname='Runtime/temporary_parquets'):
@@ -115,7 +115,7 @@ def funding_history(future,exchange,
     while end_time > start.timestamp():
         if start_time<start.timestamp(): start_time=start.timestamp()
 
-        data = fetch_funding_rate_history(exchange, future, start_time, end_time)
+        data = await fetch_funding_rate_history(exchange, future, start_time, end_time)
         if len(data) == 0: break
         funding_data = pd.concat([funding_data, data], join='outer', axis=0)
 

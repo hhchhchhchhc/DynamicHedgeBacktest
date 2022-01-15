@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import os
 import sys
+import asyncio
 import warnings
 import shutil
 from typing import Tuple
+#import ccxt.async_support as ccxt
 import ccxt
 import numpy as np
 import pandas as pd
