@@ -12,7 +12,7 @@ from ftx_portfolio import diff_portoflio
 
 placement_latency = 0.1# in sec
 amend_speed = 10.# in sec
-amend_trigger = 0.001
+amend_trigger = 0.005
 taker_trigger = 0.0025
 slice_factor = 10.# in USD
 audit = []
@@ -85,7 +85,6 @@ class ExecutionLog:
     # fillSize is just an assert
     def populateFill(self,exchange: Exchange) -> list:
         if self.children:
-
             children_fills =[[l for child in self.children
                              for l in child.populateFill(exchange) if l['ticker'] == leg['ticker']]
                              for leg in self._legs]
@@ -98,12 +97,19 @@ class ExecutionLog:
                                                     else 'unclosed'}
                             for leg,fills in zip(self._legs,children_fills)]
         else:
-            fills = exchange.fetch_order(self._id)
+            try:
+                fills = exchange.fetch_order(self._id)
+            except Exception as e:
+                if self._legs[0]['size'] < float(
+                        exchange.fetch_ticker(self._legs[0]['ticker'])['info']['sizeIncrement']):
+                    self._legs[0] = self._legs[0] | {'average': -1., 'filled': 0., 'status': 'closed'}
+                    return self._legs
+
             if fills['status']=='open':
                 warnings.warn('leaf still open')
             self._legs = [self._legs[0] | {'average':fills['average'],
-                                           'filled':fills['filled']*(1 if fills['side']=='buy' else -1),
-                                           'status':fills['status']}]
+                                       'filled':fills['filled']*(1 if fills['side']=='buy' else -1),
+                                       'status':fills['status']}]
         return self._legs
 
 def symbol_ordering(exchange: Exchange,ticker1: str,ticker2: str) -> Tuple:
@@ -384,6 +390,7 @@ async def executer_sysperp(exchange: Exchange,weights: pd.DataFrame) -> Executio
     assert(len(n_orders)==0)
 
     log.populateFill(exchange)
+    pickleit(log,"ExecutionLog")
     return log
         #leftover_delta =
         #if leftover_delta>slice_sizeUSD/slice_factor:
