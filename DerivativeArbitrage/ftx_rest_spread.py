@@ -9,12 +9,14 @@ import functools
 from ftx_ftx import *
 from ftx_utilities import *
 from ftx_portfolio import diff_portoflio
+from ftx_history import fetch_trades_history
 
 placement_latency = 0.1# in sec
 amend_speed = 10.# in sec
 amend_trigger = 0.005
 taker_trigger = 0.0025
-slice_factor = 10.# in USD
+max_slice_factor = 50.# in USD
+time_budget = 60
 audit = []
 
 special_maker_minimum_size = {'BTC-PERP': 0.01, 'RUNE-PERP': 1.0}
@@ -263,7 +265,7 @@ async def post_chase_trigger(exchange: Exchange,
 #################### slicers: chose sequence and size for orders  ##############################
 
 # size are + or -, in USD
-async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, size_1: float, size_2: float)->ExecutionLog:
+async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, size_1: float, size_2: float, min_volume: float)->ExecutionLog:
     log = ExecutionLog(sys._getframe().f_code.co_name, [{'ticker': ticker_1, 'size': size_1},
                                                         {'ticker': ticker_2, 'size': size_2}])
     log.initializeBenchmark(exchange)
@@ -277,18 +279,20 @@ async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, s
         else float(fetched1['sizeIncrement'])
     price1 = float(fetched1['price'])
 
+
     fetched2 = exchange.fetch_ticker(ticker2)['info']
     increment2 = special_maker_minimum_size[ticker2] \
         if ticker2 in special_maker_minimum_size.keys() \
         else float(fetched2['sizeIncrement'])
     price2 = float(fetched2['price'])
 
-    slice_size = max(increment1, increment2,slice_factor/min(price1,price2))
+    slice_factor = amend_speed * min_volume/price1
+    slice_size = max(increment1, increment2,min(max_slice_factor/price1,slice_factor))
 
     # if same side, single order
     if (size2 * size1 >= 0):
-        log.children += await asyncio.gather(*[slice_single_order(exchange, ticker1, size1),
-                                               slice_single_order(exchange, ticker2, size2)])
+        log.children += await asyncio.gather(*[slice_single_order(exchange, ticker1, size1,min_volume),
+                                               slice_single_order(exchange, ticker2, size2,min_volume)])
         return log
     # size too small
     if ((np.abs(size1)<=increment1)|(np.abs(size2)<=increment2)):
@@ -297,7 +301,7 @@ async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, s
     # slice the spread
     spread_size = min(np.abs(size1),np.abs(size2))
     amount_sliced = 0
-    while amount_sliced + 2 * slice_size < spread_size:
+    while amount_sliced + slice_size < spread_size:
         price1 = float(exchange.fetch_ticker(ticker1)['info']['price'])
         log.children +=[await post_chase_trigger(exchange, ticker1, np.sign(size1) * slice_size, taker_trigger=999)]
 
@@ -319,27 +323,29 @@ async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, s
     residual_ticker=diff.loc[diff['name'].isin([ticker1,ticker2]),'name'].values
     residual_size = diff.loc[diff['name'].isin([ticker1, ticker2]), 'diff'].values
     residual_price = diff.loc[diff['name'].isin([ticker1, ticker2]), 'price'].values
-    log.children +=[await slice_single_order(exchange, residual_ticker[0], residual_size[0])]
+    log.children +=[await slice_single_order(exchange, residual_ticker[0], residual_size[0],min_volume)]
     print('spread:single residual {} done in {}'.format(residual_ticker[0], residual_size[0]*residual_price[0]))
-    log.children +=[await slice_single_order(exchange, residual_ticker[1], residual_size[1])]
+    log.children +=[await slice_single_order(exchange, residual_ticker[1], residual_size[1],min_volume)]
     print('spread:single residual {} done in {}'.format(residual_ticker[1], residual_size[1]*residual_price[1]))
 
     log.populateFill(exchange)
     return log
 
 # size are + or -, in coin
-async def slice_single_order(exchange: Exchange, ticker: str, size: float) -> ExecutionLog:
+async def slice_single_order(exchange: Exchange, ticker: str, size: float,min_volume: float) -> ExecutionLog:
     fetched = exchange.fetch_ticker(ticker)['info']
     increment = (float(fetched['sizeIncrement']) if ticker != 'BTC-PERP' else 0.01)
     price = float(fetched['price'])
-    slice_size = max(increment, slice_factor/price)
+
+    slice_factor = amend_speed * min_volume/price
+    slice_size = max(increment, min(max_slice_factor,slice_factor)/price)
 
     log = ExecutionLog(sys._getframe().f_code.co_name, [{'ticker': ticker, 'size': size}])
     log.initializeBenchmark(exchange)
 
     # split order into slice_size
     amount_sliced = 0
-    while amount_sliced + 2 * slice_size < np.abs(size):
+    while amount_sliced + slice_size < np.abs(size):
         price = float(exchange.fetch_ticker(ticker)['info']['price'])
         log.children += [await post_chase_trigger(exchange, ticker, np.sign(size) * slice_size,taker_trigger=taker_trigger)]
         amount_sliced += slice_size
@@ -348,7 +354,7 @@ async def slice_single_order(exchange: Exchange, ticker: str, size: float) -> Ex
     # residual, from book
     diff=diff_portoflio(exchange)
     residual_size=diff.loc[diff['name']==ticker,'diff'].values[0]
-    if np.abs(residual_size)>=2*slice_size:
+    if np.abs(residual_size)>=slice_size:
         warnings.warn(f'residual {residual_size*price} > 2*slice {slice_size*price}',RuntimeWarning)
     if np.abs(residual_size) > 1.1*increment:
         price=float(exchange.fetch_ticker(ticker)['info']['price'])
@@ -368,29 +374,28 @@ async def executer_sysperp(exchange: Exchange,weights: pd.DataFrame) -> Executio
     log.initializeBenchmark(exchange)
 
     orders_by_underlying = [r[1] for r in weights.groupby('underlying')]
-    single_orders = [{'ticker':r.head(1)['name'].values[0], 'size':r.head(1)['diff'].values[0]}
+    single_orders = [{'ticker':r.head(1)['name'].values[0], 'size':r.head(1)['diff'].values[0], 'volume':r.head(1)['volume'].values[0]}
                      for r in orders_by_underlying if r.shape[0]==1]
     log.children += await asyncio.gather(*[slice_single_order(exchange,
                                                               r['ticker'],
-                                                              r['size'])
+                                                              r['size'],r['volume'])
                                            for r in single_orders])
 
     spread_orders = [{'ticker1':r.head(1)['name'].values[0], 'size1':r.head(1)['diff'].values[0],
-                      'ticker2':r.tail(1)['name'].values[0], 'size2':r.tail(1)['diff'].values[0]}
+                      'ticker2':r.tail(1)['name'].values[0], 'size2':r.tail(1)['diff'].values[0], 'volume':r['volume'].min()}
                      for r in orders_by_underlying
                      if (r.shape[0]==2)]
     log.children += await asyncio.gather(*[slice_spread_order(exchange,
                                                               r['ticker1'],
                                                               r['ticker2'],
                                                               r['size1'],
-                                                              r['size2'])
+                                                              r['size2'],r['volume'])
                                            for r in spread_orders])
 
     n_orders = [None for r in orders_by_underlying if r.shape[0]>2]
     assert(len(n_orders)==0)
 
     log.populateFill(exchange)
-    pickleit(log,"ExecutionLog")
     return log
         #leftover_delta =
         #if leftover_delta>slice_sizeUSD/slice_factor:
@@ -405,17 +410,25 @@ if __name__ == "__main__":
     if sys.argv[1] == 'execute':
         exchange = open_exchange(sys.argv[2], sys.argv[3])
         weights = diff_portoflio(exchange, sys.argv[4])
-        weights = weights[weights['price']*weights['diff'].apply(np.abs) > slice_factor]
+        weights['volume']=weights['name'].apply(lambda s:fetch_trades_history(s,exchange,
+                    datetime.now()-timedelta(weeks=1),datetime.now(),'1s').mean()[s.split('/USD')[0]+'/trades/volume'])
+        weights['time2do']=weights['price']*weights['diff'].apply(np.abs) / weights['volume']
+        too_slow = weights.loc[weights['time2do'] > time_budget,'underlying'].unique()
+        weights = weights[(weights['price']*weights['diff'].apply(np.abs) > max_slice_factor)
+                          &(weights['underlying'].isin(too_slow)==False)]
+
         print(weights)
-#        weights = weights[weights['name'].isin(['BNT/USD','BNT-PERP'])]
+#        coin='MATIC'
+#        weights = weights[weights['name'].isin([coin+'/USD',coin+'-PERP'])]
 
         start_time = datetime.now().timestamp()
         try:
-            asyncio.run(executer_sysperp(exchange,weights))
+            log=asyncio.run(executer_sysperp(exchange,weights))
             #asyncio.run(clean_dust(exchange))
         except Exception as e:
             print(e)
         finally:
+            pickleit(log, "Runtime/ExecutionLog.pickle")
             exchange.cancel_all_orders()
             end_time = datetime.now().timestamp()
             with pd.ExcelWriter('Runtime/execution_diagnosis.xlsx', engine='xlsxwriter') as writer:
