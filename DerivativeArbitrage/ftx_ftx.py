@@ -10,20 +10,6 @@ import dateutil
 from datetime import *
 import dateutil
 
-# disregard pagination :(
-def vwap(exchange,symbol,start_time,end_time,freq):
-    trade_list = pd.DataFrame(exchange.publicGetMarketsMarketNameTrades(
-        {'market_name': symbol, 'start_time': start_time/1000, 'end_time': end_time/1000}
-    )['result'], dtype=float)
-    trade_list['time']=trade_list['time'].apply(dateutil.parser.isoparse)
-    trade_list['amt']=trade_list.apply(lambda x: x['size']*(1 if x['side'] else -1),axis=1)
-    trade_list['amtUSD'] = trade_list['amt']*trade_list['price']
-
-    vwap=trade_list.set_index('time')[['amt','amtUSD']].resample(freq).sum()
-    vwap['vwap']=vwap['amtUSD']/vwap['amt']
-
-    return vwap.drop(columns='amtUSD').ffill()
-
 def underlying_vol(exchange,symbol,start_time,end_time):
     trade_list = pd.DataFrame(exchange.publicGetMarketsMarketNameTrades(
         {'market_name': symbol, 'start_time': start_time/1000, 'end_time': end_time/1000}
