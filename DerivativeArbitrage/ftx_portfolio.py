@@ -300,7 +300,9 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
     # join, diff, coin
     diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['total']],how='outer')
     diffs=diffs.fillna(0.0).reset_index()
-    diffs['price']=diffs['name'].apply(lambda x:float(exchange.fetch_ticker(x)['info']['price']))
+    tickers=pd.DataFrame(exchange.fetch_tickers()).T
+    tickers['symbol']=tickers['symbol'].apply(lambda s: s.replace('/USD:USD','-PERP'))
+    diffs['price']=diffs['name'].apply(lambda x:tickers.loc[tickers['symbol']==x,'close'].values[0])
     diffs['underlying'] = diffs['name'].apply(lambda x: x.split('-')[0].split('/USD')[0])
     diffs['diff']=diffs['optimalWeight']/diffs['price']-diffs['total']
 
@@ -746,7 +748,7 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
-        sys.argv.extend(['risk'])
+        sys.argv.extend(['2target'])
     if len(sys.argv) < 4:
         sys.argv.extend(['ftx', 'SysPerp'])
     print(f'running {sys.argv}')
