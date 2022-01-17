@@ -349,32 +349,36 @@ def run_benchmark_ladder(
 
     ladder.to_pickle(run_dir + '/ladder.pickle')
 
-if __name__ == "__main__":
-    if len(sys.argv) == 1:
-        sys.argv.extend(['live'])
-    if len(sys.argv) < 4:
-        sys.argv.extend(['ftx', 'SysPerp'])
-    print(f'running {sys.argv}')
-    if sys.argv[1] == 'live':
-        perp_vs_cash_live(
+def strategies_main(*argv):
+    argv=list(argv)
+    if len(argv) == 1:
+        argv.extend(['SysPerp'])
+    if len(argv) < 3:
+        argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
+    print(f'running {argv}')
+    if argv[0] == 'SysPerp':
+        return perp_vs_cash_live(
             concentration_limit=[CONCENTRATION_LIMIT],
-            signal_horizon=[HOLDING_PERIOD],
-            holding_period=[SIGNAL_HORIZON],
+            signal_horizon=[argv[1]],
+            holding_period=[argv[2]],
             slippage_override=[SLIPPAGE_OVERRIDE],
             run_dir='Runtime/Live_parquets')
-    elif sys.argv[1] == 'benchmark':
-        run_benchmark_ladder(
+    elif argv[0] == 'benchmark':
+        return run_benchmark_ladder(
             concentration_limit_list=[.5],
             holding_period_list=[HOLDING_PERIOD],
             signal_horizon_list=[SIGNAL_HORIZON],
             slippage_override_list=[SLIPPAGE_OVERRIDE],
             run_dir='Runtime/cost_blind')
-    elif sys.argv[1] == 'ladder':
-        run_ladder(concentration_limit_list=[0.5],
+    elif argv[0] == 'ladder':
+        return run_ladder(concentration_limit_list=[0.5],
                    holding_period_list=[timedelta(days=d) for d in [1]],
                    signal_horizon_list=[timedelta(hours=d) for d in [1, 3, 6, 12]] + [timedelta(days=d) for d in
                                                                                       [1, 2]],
                    slippage_override=[0, 2e-4],
                    run_dir='Runtime/runs')
     else:
-        print(f'commands: live,ladder,benchmark')
+        print(f'commands: SysPerp,ladder,benchmark')
+
+if __name__ == "__main__":
+    strategies_main(*sys.argv[1:])

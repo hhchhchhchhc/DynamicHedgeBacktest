@@ -175,7 +175,7 @@ def fetch_funding_rate_history(exchange, perp,start_time,end_time,params={}):
     request = {
         'start_time': start_time,
         'end_time': end_time,
-        'future': perp.name,
+        'future': perp['symbol'],
         'resolution': exchange.describe()['timeframes']['1h']}
 
     response = exchange.publicGetFundingRates(exchange.extend(request, params))

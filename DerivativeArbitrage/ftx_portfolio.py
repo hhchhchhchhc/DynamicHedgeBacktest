@@ -239,7 +239,7 @@ def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_balances'
             None)] = greeks.sum(axis=1)
     return greeks
 
-def live_risk(exchange_name,subaccount=''):
+def live_risk(exchange_name='ftx',subaccount='SysPerp'):
     exchange = open_exchange(exchange_name,subaccount)
     futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False, includeIndex=True)).set_index('name')
     markets = pd.DataFrame([r['info'] for r in exchange.fetch_markets()]).set_index('name')
@@ -307,76 +307,6 @@ def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xls
     diffs['diff']=diffs['optimalWeight']/diffs['price']-diffs['total']
 
     return diffs
-
-def process_fills(exchange,spot_fills,future_fills):
-    if (spot_fills.empty)|(future_fills.empty): return pd.DataFrame()
-    spot_fills['time']=spot_fills['time'].apply(dateutil.parser.isoparse)
-    future_fills['time']=future_fills['time'].apply(dateutil.parser.isoparse)
-    # TODO: its not that simple if partials, but...
-    fill1 = spot_fills if spot_fills['time'].min()<future_fills['time'].min() else future_fills
-    fill2 = spot_fills if spot_fills['time'].min() >= future_fills['time'].min() else future_fills
-    symbol1 = fill1['market'].iloc[0]
-    symbol2 = fill2['market'].iloc[0]
-
-    ## TODO: more rigorous to see in USD than bps
-    result=pd.Series()
-    result['size'] = min([(spot_fills['price'] * spot_fills['size']).sum(),
-                            (future_fills['price'] * future_fills['size']).sum()])
-    result['avg_spot_level']=(spot_fills['size']*spot_fills['price']).sum() / spot_fills['size'].sum()
-    result['avg_future_level']=(future_fills['size']*future_fills['price']).sum() / future_fills['size'].sum()
-    result['realized_premium_bps']=(result['avg_future_level']*future_fills['size'].sum()-\
-                                    result['avg_spot_level']*future_fills['size'].sum())\
-                                    /result['size']*10000
-    result['final_delta']=( spot_fills.loc[spot_fills['side']=='buy','size'].sum() \
-                        -   spot_fills.loc[spot_fills['side'] == 'sell', 'size'].sum() \
-                        +   future_fills.loc[future_fills['side'] == 'buy', 'size'].sum() \
-                        -   future_fills.loc[future_fills['side'] == 'sell', 'size'].sum())\
-                                  *fill2.loc[fill2.index.max(),'price']
-    # premium_mid: we use nearest trades instead of candles
-    s2 = fill1['time'].apply(lambda t: fetch_nearest_trade(exchange,symbol2,t,target_depth=1)[0])
-    premium = (s2-fill1['price'])*fill1['size']* (1 if spot_fills['time'].min()<future_fills['time'].min() else -1)
-    result['premium_nearest_transaction']= premium.sum()/result['size']*10000
-    # delta_pnl: we use nearest trade at the end
-    (result['start_time'],result['end_time'])=\
-        (spot_fills['time'].min().tz_convert(None),future_fills['time'].min().tz_convert(None)) if spot_fills['time'].min()<future_fills['time'].min() \
-            else (future_fills['time'].min().tz_convert(None),spot_fills['time'].min().tz_convert(None))
-   # result['end_time'] = max(spot_fills['time'].max(), future_fills['time'].max())
-    final_spot=fetch_nearest_trade(exchange,spot_fills['market'].iloc[0],result['end_time'])[0]
-    final_future = fetch_nearest_trade(exchange,future_fills['market'].iloc[0],result['end_time'])[0]
-    result['delta_pnl'] = \
-        (spot_fills['size']*(final_spot-spot_fills['price']).sum()\
-        +(future_fills['size']*(final_future-future_fills['price']).sum())\
-        )/result['size']*10000
-    result['fee']=(spot_fills['fee']+future_fills['fee']).sum()/result['size']
-
-    return result
-
-def run_fills_analysis(exchange, end = datetime.now(),start = datetime.now()- timedelta(days=30)):
-    futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False))
-
-    fill_analysis = pd.DataFrame()
-    all_fills=pd.DataFrame(exchange.privateGetFills(
-                        {'start_time':int(start.timestamp()),'end_time':int(end.timestamp())}
-                        )['result'],dtype=float)
-    funding_paid = pd.DataFrame(exchange.privateGetFundingPayments(
-                        {'start_time':int(start.timestamp()),'end_time':int(end.timestamp())}
-                        )['result'],dtype=float)
-    if all_fills.empty: return (fill_analysis,all_fills)
-    for future in set(all_fills['market']).intersection(set(futures['name'])):
-        underlying=future.split('-')[0]
-        spot_fills=all_fills[all_fills['market']==underlying+'/USD']
-        future_fills=all_fills[all_fills['market']==future]
-        if (spot_fills.empty)|(future_fills.empty): continue
-
-        result=process_fills(exchange,spot_fills,future_fills)
-
-        funding_received= -funding_paid.loc[
-            funding_paid['future'].apply(lambda f: f.split('-')[0])==underlying,
-            'payment']
-        result['funding'] = funding_received.sum()
-        fill_analysis[underlying]=result
-
-    return (fill_analysis,all_fills)
 
 def fetch_portfolio(exchange,time):
     # fetch mark,spot and balances as closely as possible
@@ -703,9 +633,9 @@ def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
+def run_plex(exchange_name,subaccount,dirname='Runtime/RiskPnL/'):
 
-    filename = dirname+'portfolio_history_'+exchange_name+'_'+account+'.xlsx'
+    filename = dirname+'portfolio_history_'+exchange_name+'_'+subaccount+'.xlsx'
     if not os.path.isfile(filename):
         risk_history = pd.DataFrame()
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
@@ -725,7 +655,7 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
     start_portfolio = risk_history[(risk_history['time']<start_time+timedelta(milliseconds= 1000)) \
                 &(risk_history['time']>start_time-timedelta(milliseconds= 1000))]#TODO: precision!
 
-    exchange = open_exchange(exchange_name,account)
+    exchange = open_exchange(exchange_name,subaccount)
     end_time = datetime.now() - timedelta(seconds=14)  # 16s is to avoid looking into the future to fetch prices
     end_portfolio = fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
 
@@ -742,35 +672,35 @@ def run_plex(exchange_name,account,dirname='Runtime/RiskPnL/'):
         pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
         summary.to_excel(writer, sheet_name='summary')
 
-    return pnl
+    return summary
 #    shutil.copy2(filename,
 #        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
-
-if __name__ == "__main__":
-    if len(sys.argv) == 1:
-        sys.argv.extend(['2target'])
-    if len(sys.argv) < 4:
-        sys.argv.extend(['ftx', 'SysPerp'])
-    print(f'running {sys.argv}')
-    if sys.argv[1] == 'fills_anaysis':
-        exchange = open_exchange(sys.argv[2], sys.argv[3])
+def ftx_portoflio_main(*argv):
+    argv=list(argv)
+    if len(argv) == 0:
+        argv.extend(['risk'])
+    if len(argv) < 3:
+        argv.extend(['ftx', 'SysPerp'])
+    print(f'running {argv}')
+    if argv[0] == 'fills_anaysis':
+        exchange = open_exchange(argv[1], argv[2])
         (fill_analysis, all_fills) = run_fills_analysis(exchange,
                                                         end=datetime.now(),
                                                         start=datetime.now() - timedelta(days=7))
-        print()
         with pd.ExcelWriter('fills.xlsx', engine='xlsxwriter') as writer:
             fill_analysis.to_excel(writer, sheet_name='fill_analysis')
             all_fills.to_excel(writer, sheet_name='all_fills')
-    elif sys.argv[1] == '2target':
-        diff=diff_portoflio(open_exchange(sys.argv[2], sys.argv[3]))
-        print(diff[diff['diff'].apply(np.abs)>10])
-    elif sys.argv[1] == 'risk':
-        risk=live_risk(sys.argv[2], sys.argv[3])
-        print(risk[risk.columns[:4]])
-    elif sys.argv[1] == 'plex':
-        run_plex(sys.argv[2], sys.argv[3])
+    elif argv[0] == 'execreport':
+        diff=diff_portoflio(open_exchange(argv[1], argv[2]))
+        return diff[diff['diff'].apply(np.abs)>10]
+    elif argv[0] == 'risk':
+        risk=live_risk(argv[1], argv[2])
+        return risk[risk.columns[:3]]
+    elif argv[0] == 'plex':
+        return run_plex(*argv[1:])
     else:
-        print(f'commands fills_anaysis,2target,risk,plex')
+        print(f'commands fills_anaysis,execreport,risk,plex')
 
-
+if __name__ == "__main__":
+    ftx_portoflio_main(*sys.argv[1:])
 

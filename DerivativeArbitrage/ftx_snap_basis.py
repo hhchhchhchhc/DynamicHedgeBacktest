@@ -31,10 +31,12 @@ def enricher(exchange,input_futures,holding_period,equity,
     futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
     futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
     ########### naive basis for all futures
-    futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
-        lambda f:float(exchange.publicGetFuturesFutureNameStats({'future_name': f.name})['result']['nextFundingRate']) * 24 * 365.25,axis=1)
-    futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
-        lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
+    if not futures[futures['type'] == 'perpetual'].empty:
+        futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
+            lambda f:float(exchange.publicGetFuturesFutureNameStats({'future_name': f.name})['result']['nextFundingRate']) * 24 * 365.25,axis=1)
+    if not futures[futures['type'] == 'future'].empty:
+        futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
+            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
 
     #### need borrow to be present
     #futures = futures[futures['funding_volume']>0]
@@ -256,10 +258,10 @@ def fetch_rate_slippage(input_futures, exchange: Exchange,holding_period,
             futures['future_bid'] = -futures['future_ask']
             #futures['speed']=0##*futures['future_ask'] ### just 0
         else:
-            futures['spot_ask'] = futures['spot_ticker'].apply(lambda x: mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth)) * slippage_scaler + fees
-            futures['spot_bid'] = futures['spot_ticker'].apply(lambda x: mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth)) * slippage_scaler - fees
-            futures['future_ask'] = futures.apply(lambda x: mkt_at_size(exchange, x.name, 'asks', slippage_orderbook_depth)) * slippage_scaler + fees
-            futures['future_bid'] = futures.apply(lambda x: mkt_at_size(exchange, x.name, 'bids', slippage_orderbook_depth)) * slippage_scaler - fees
+            futures['spot_ask'] = futures['spot_ticker'].apply(lambda x: mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth)['slippage']) * slippage_scaler + fees
+            futures['spot_bid'] = futures['spot_ticker'].apply(lambda x: mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth)['slippage']) * slippage_scaler - fees
+            futures['future_ask'] = futures['symbol'].apply(lambda x: mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth)['slippage']) * slippage_scaler + fees
+            futures['future_bid'] = futures['symbol'].apply(lambda x: mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth)['slippage']) * slippage_scaler - fees
             #futures['speed_in_'+str(slippage_orderbook_depth)]=futures['name'].apply(lambda x:mkt_speed(exchange,x,slippage_orderbook_depth).seconds)
 
     #### rate slippage assuming perps are rolled every perp_holding_period
