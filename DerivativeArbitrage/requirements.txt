@@ -12,3 +12,5 @@ openpyxl
 scipy
 matplotlib
 websockets>=9.0
+python-telegram-bot
+dataframe-image

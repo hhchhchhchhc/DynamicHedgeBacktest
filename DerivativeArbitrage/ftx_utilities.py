@@ -120,14 +120,14 @@ def find_borrow(markets,future,query):
 
 def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':False}):
     if params['pickleit']:
-        pickleit(data, "C:/Users/david/Dropbox/mobilier/crypto/" + exchange_name + datatype + ".pickle", "ab")
+        pickleit(data, "Runtime/temporary_parquets/" + exchange_name + datatype + ".pickle", "ab")
     if params['excelit']:
         try:
-            data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange_name + datatype + ".xlsx")
+            data.to_excel("Runtime/temporary_parquets/" + exchange_name + datatype + ".xlsx")
         except:  ###usually because file is open
-            data.to_excel("C:/Users/david/Dropbox/mobilier/crypto/" + exchange_name + datatype + "copy.xlsx")
+            data.to_excel("Runtime/temporary_parquets/" + exchange_name + datatype + "copy.xlsx")
 
-def open_exchange(exchange_name,subaccount=''):
+def open_exchange(exchange_name,subaccount):
     if exchange_name=='ftx':
         exchange = ccxt.ftx({ ## David personnal
             'enableRateLimit': True,

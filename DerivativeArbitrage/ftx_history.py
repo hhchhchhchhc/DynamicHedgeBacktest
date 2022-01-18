@@ -1,3 +1,4 @@
+import dateutil.parser
 import pandas as pd
 
 from ftx_utilities import *
@@ -133,6 +134,56 @@ async def funding_history(future,exchange,
         data = pd.DataFrame()
 
     return data
+
+def fetch_trades_history(symbol,exchange,
+                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
+                    end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
+                         frequency='1s',
+                    dirname='Runtime/temporary_parquets'):
+    parquet_filename = dirname + '/' + symbol.split('/USD')[0] + "_trades.parquet"
+    if dirname!='':
+        if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+
+    max_trades_data = int(5000)  # in trades. limit is 5000 :(
+    print('trades_history: ' + symbol)
+
+    ### grab data per batch of 5000, try weekly
+    trades=[]
+    end_time = end.timestamp()
+    start_time = (datetime.fromtimestamp(end_time) - timedelta(weeks=1)).timestamp()
+
+    while end_time > start.timestamp():
+        if start_time<start.timestamp(): start_time=start.timestamp()
+
+        new_trades =  exchange.publicGetMarketsMarketNameTrades(
+            {'market_name': symbol, 'start_time': start_time, 'end_time': end_time}
+                                                        )['result']
+        if (len(new_trades) == 0): break
+        trades.extend(new_trades)
+        end_time = min(start_time,dateutil.parser.isoparse(new_trades[-1]['time']).timestamp())
+        start_time = (datetime.fromtimestamp(end_time) - timedelta(
+            weeks=1)).timestamp()
+
+    data = pd.DataFrame(data=trades)
+    data['size'] = data['size'].astype(float)
+    data['volume'] = data['size'] * data['price'].astype(float)
+    data['count'] = 1
+
+    data['time']=data['time'].apply(dateutil.parser.isoparse)
+    data.set_index('time',inplace=True)
+
+    vwap=data[['size','volume','count']].resample(frequency).sum().ffill()
+    vwap['vwap']=vwap['volume']/vwap['size']
+
+    vwap.columns = [symbol.split('/USD')[0] + '/trades/' + column for column in vwap.columns]
+    #data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    vwap = vwap[~vwap.index.duplicated()].sort_index()
+
+
+    if dirname != '': vwap.to_parquet(parquet_filename)
+
+    return vwap
+
 
 #### annualized rates for futures and perp, volumes are daily
 def rate_history(future,exchange,

@@ -13,8 +13,8 @@ from datetime import *
 import dateutil
 
 # disregard pagination :(
-async def vwap(exchange,symbol,start_time,end_time,freq):
-    trade_list = pd.DataFrame(await exchange.publicGetMarketsMarketNameTrades(
+def vwap(exchange,symbol,start_time,end_time,freq):
+    trade_list = pd.DataFrame(exchange.publicGetMarketsMarketNameTrades(
         {'market_name': symbol, 'start_time': start_time/1000, 'end_time': end_time/1000}
     )['result'], dtype=float)
     trade_list['time']=trade_list['time'].apply(dateutil.parser.isoparse)
@@ -23,7 +23,7 @@ async def vwap(exchange,symbol,start_time,end_time,freq):
 
     vwap=trade_list.set_index('time')[['amt','amtUSD']].resample(freq).sum()
     vwap['vwap']=vwap['amtUSD']/vwap['amt']
-    await asyncio.sleep(1)
+
     return vwap.drop(columns='amtUSD').ffill()
 
 def underlying_vol(exchange,symbol,start_time,end_time):
@@ -191,7 +191,7 @@ def fetch_funding_rate_history(exchange, perp,start_time,end_time,params={}):
     request = {
         'start_time': start_time,
         'end_time': end_time,
-        'future': perp.name,
+        'future': perp['symbol'],
         'resolution': exchange.describe()['timeframes']['1h']}
 
     response = exchange.publicGetFundingRates(exchange.extend(request, params))
@@ -218,7 +218,7 @@ def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):
     response = exchange.publicGetFutures(params)
 
     expired = exchange.publicGetExpiredFutures(params) if includeExpired==True else []
-    coin_details = await fetch_coin_details(exchange)
+    coin_details = fetch_coin_details(exchange)
 
     #### for IM calc
     account_leverage = exchange.privateGetAccount()['result']
