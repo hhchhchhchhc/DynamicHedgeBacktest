@@ -42,19 +42,21 @@ def enricher(exchange,input_futures,holding_period,equity,
     #futures = futures[futures['funding_volume']>0]
     futures.loc[~futures['spotMargin'],'borrow']=999
 
-    # spot carries
-    futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
-    futures['carryShort']=futures['basis_mid']-futures['quote_borrow']+futures['borrow']
-    futures['direction_mid']=1
-    futures.loc[futures['carryShort']+futures['carryLong']<0,'direction_mid']=-1
-    futures['carry_mid'] = futures['carryLong']
-    futures.loc[futures['direction_mid']<0,'carry_mid'] = futures.loc[futures['direction_mid']<0,'carryShort']
-
     # transaction costs
     costs=fetch_rate_slippage(futures, exchange, holding_period,
         slippage_override, slippage_orderbook_depth, slippage_scaler,
         params)
     futures = futures.join(costs, how = 'outer')
+
+    # spot carries
+    futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
+    futures['carryShort']=futures['basis_mid']-futures['quote_borrow']+futures['borrow']
+    futures['direction_mid']=0
+    futures['carry_mid'] = 0
+    futures.loc[(futures['carryShort']+futures['carryLong']<0)&(futures['carryShort']<0),'direction_mid']=-1
+    futures.loc[(futures['carryShort']+futures['carryLong']>0)&(futures['carryLong']>0),'direction_mid']=1
+    futures.loc[(futures['carryShort'] + futures['carryLong'] < 0) & (futures['carryShort'] < 0), 'carry_mid'] = -futures['carryShort']
+    futures.loc[(futures['carryShort'] + futures['carryLong'] > 0) & (futures['carryLong'] > 0), 'carry_mid'] = futures['carryLong']
 
     ##### max weights ---> TODO CHECK formulas, short < long no ??
     future_im = futures.apply(lambda f:
@@ -113,11 +115,12 @@ def update(input_futures,point_in_time,history,equity,
     # spot carries
     futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
     futures['carryShort']=futures['basis_mid']-futures['quote_borrow']+futures['borrow']
-    futures['direction_mid']=1
-    futures.loc[futures['carryShort']+futures['carryLong']<0,'direction_mid']=-1
-    futures['carry_mid'] = futures['carryLong']
-    futures.loc[futures['direction_mid']<0,'carry_mid'] = futures.loc[futures['direction_mid']<0,'carryShort']
-    futures=futures.drop(columns=['carryLong','carryShort'])
+    futures['direction_mid']=0
+    futures['carry_mid'] = 0
+    futures.loc[(futures['carryShort']+futures['carryLong']<0)&(futures['carryShort']<0),'direction_mid']=-1
+    futures.loc[(futures['carryShort']+futures['carryLong']>0)&(futures['carryLong']>0),'direction_mid']=1
+    futures.loc[(futures['carryShort'] + futures['carryLong'] < 0) & (futures['carryShort'] < 0), 'carry_mid'] = -futures['carryShort']
+    futures.loc[(futures['carryShort'] + futures['carryLong'] > 0) & (futures['carryLong'] > 0), 'carry_mid'] = futures['carryLong']
 
     ####### expectations. This is what optimizer uses.
 

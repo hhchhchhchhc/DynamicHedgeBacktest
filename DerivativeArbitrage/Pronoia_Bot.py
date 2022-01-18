@@ -1,6 +1,7 @@
 import ccxt
 from strategies import *
 from ftx_portfolio import *
+from ftx_rest_spread import *
 import matplotlib.pyplot as plt
 import dataframe_image as dfi
 
@@ -45,7 +46,8 @@ def help(update, context):
     update.message.reply_text('* plex [echange] [subaccount]-> compute plex')
     update.message.reply_text('* hist BTC [7] [15m] [ftx]-> history of BTC and related futures/borrow every 15m for past 7d')
     update.message.reply_text('* basis [future] [10000] [ftx] -> futures basis on ftx in size 10000')
-    update.message.reply_text('* SysPerp [holding period] [signal horizon]: optimal perps')
+    update.message.reply_text('* sysperp [holding period] [signal horizon]: optimal perps')
+    update.message.reply_text('* execute: executes latest sysperp run')
     update.message.reply_text('* execreport: live portoflio vs target')
 
 def echo(update, context):
@@ -84,6 +86,10 @@ def echo(update, context):
             data = strategies_main(*split_message)
             dfi.export(data, 'Runtime/dataframe.png')
             update.message.bot.send_photo(update.message['chat']['id'], photo=open('Runtime/dataframe.png', 'rb'))
+        elif split_message[0]=='execute':
+            data = ftx_rest_spread_main(*split_message)
+            dfi.export(data, 'Runtime/dataframe.png')
+            update.message.bot.send_photo(update.message['chat']['id'], photo=open('Runtime/dataframe.png', 'rb'))
 
         elif split_message[0]=='hist':
             if len(split_message)<2:
@@ -92,9 +98,10 @@ def echo(update, context):
             days = 7                if len(split_message)<3 else int(split_message[2])
             timeframe ='1h'         if len(split_message)<4 else split_message[3]
             exchange_name = 'ftx'   if len(split_message)<5 else split_message[4]
+
             update.message.reply_text('ok so history of ' + str(underlying) + ' for ' + str(days) + ' days every ' + str(timeframe) + ' on '+ exchange_name)
 
-            exchange = open_exchange(exchange_name)
+            exchange = open_exchange(exchange_name,'')
             futures = pd.DataFrame(fetch_futures(exchange))
             futures = futures[futures['underlying'] == underlying]
             data = build_history(futures, exchange,
@@ -109,23 +116,6 @@ def echo(update, context):
                 with open(filename, "rb") as file:
                     update.message.bot.sendDocument(update.message['chat']['id'],document=file)
 
-            ### display graphs
-            fig, ax = plt.subplots( nrows=3, ncols=1 )
-            plt.close(fig)
-            spot_mask=data.columns.get_level_values(5)=='spot'
-            data.loc[data.index,spot_mask].plot(ax=ax[0])
-            ax[0].legend([data.columns[spot_mask].get_level_values(4)[0]])
-
-            future_mask=(data.columns.get_level_values(5)=='perpetual')|(data.columns.get_level_values(5)=='future')
-            data.loc[data.index,future_mask].plot(ax=ax[1])
-            ax[1].legend(list(data.columns[future_mask].get_level_values(4)))
-
-            borrow_mask=data.columns.get_level_values(5)=='borrow'
-            data.loc[data.index,borrow_mask].plot(ax=ax[2])
-            ax[2].legend(list(data.columns[borrow_mask].get_level_values(4)))
-
-            fig.savefig('Runtime/hist.png')
-            update.message.bot.send_photo(update.message['chat']['id'], photo=open('Runtime/hist.png', 'rb'))
         elif split_message[0]=='basis':
             type='future' if len(split_message)<2 else str(split_message[1])
             depth=1000 if len(split_message)<3 else int(split_message[2])
@@ -140,7 +130,7 @@ def echo(update, context):
                      slippage_scaler=1.0,
                      params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
 
-            outputit(data,'basis',exchange.describe()['id'],{'excelit':True,'pickleit':False})
+            data.sort_values('carry_mid',ascending=False).to_excel("Runtime/temporary_parquets/" + exchange.describe()['id'] + "basis.xlsx")
 
             ### send xls
             if True:# update.effective_message.chat['first_name'] == 'daviidarr':

@@ -351,12 +351,12 @@ def run_benchmark_ladder(
 
 def strategies_main(*argv):
     argv=list(argv)
-    if len(argv) == 1:
+    if len(argv) == 0:
         argv.extend(['SysPerp'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
-    if argv[0] == 'SysPerp':
+    if argv[0] == 'sysperp':
         return perp_vs_cash_live(
             concentration_limit=[CONCENTRATION_LIMIT],
             signal_horizon=[argv[1]],
@@ -378,7 +378,7 @@ def strategies_main(*argv):
                    slippage_override=[0, 2e-4],
                    run_dir='Runtime/runs')
     else:
-        print(f'commands: SysPerp,ladder,benchmark')
+        print(f'commands: sysperp,ladder,benchmark')
 
 if __name__ == "__main__":
     strategies_main(*sys.argv[1:])
