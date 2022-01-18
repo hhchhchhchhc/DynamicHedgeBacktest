@@ -4,7 +4,7 @@ from ftx_ftx import *
 #import seaborn as sns
 #from sklearn import *
 
-def refresh_universe(exchange_name,universe_size):
+async def refresh_universe(exchange_name,universe_size):
     filename = 'Runtime/Configs/universe.xlsx'
     if os.path.isfile(filename):
         try:
@@ -12,8 +12,8 @@ def refresh_universe(exchange_name,universe_size):
         except:
             print('refreshing universe')
     exchange=open_exchange(exchange_name)
-    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
-    markets=exchange.fetch_markets()
+    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
+    markets=await exchange.fetch_markets()
 
     universe_start = datetime(2021, 9, 1)
     universe_end = datetime(2021, 12, 1)
@@ -63,7 +63,7 @@ def refresh_universe(exchange_name,universe_size):
 
     return futures
 
-def perp_vs_cash_live(
+async def perp_vs_cash_live(
                 signal_horizon,
                 holding_period,
                 slippage_override,
@@ -78,14 +78,14 @@ def perp_vs_cash_live(
     except: pass
 
     exchange = open_exchange('ftx', '')
-    markets = exchange.fetch_markets()
-    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
+    markets = await exchange.fetch_markets()
+    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
 
     now_time = datetime.now()
     point_in_time = now_time.replace(minute=0, second=0, microsecond=0)
 
     # filtering params
-    universe=refresh_universe('ftx',UNIVERSE)
+    universe=await refresh_universe('ftx',UNIVERSE)
     universe=universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = TYPE_ALLOWED
     max_nb_coins = 99
@@ -104,7 +104,7 @@ def perp_vs_cash_live(
         equity = previous_weights_df.loc['total']
         previous_weights_df = previous_weights_df.drop(['USD', 'total'])
     else:
-        start_portfolio = fetch_portfolio(open_exchange('ftx', EQUITY), now_time)
+        start_portfolio = await fetch_portfolio(open_exchange('ftx', EQUITY), now_time)
         previous_weights_df = -start_portfolio.loc[
             start_portfolio['attribution'].isin(futures.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
@@ -116,15 +116,15 @@ def perp_vs_cash_live(
     for (holding_period,signal_horizon,slippage_override,concentration_limit) in [(hp,sh,sl,c) for hp in holding_period for sh in signal_horizon for sl in slippage_override for c in concentration_limit]:
 
         ## ----------- enrich, get history, filter
-        enriched = enricher(exchange, filtered, holding_period, equity=equity,
+        enriched = await enricher(exchange, filtered, holding_period, equity=equity,
                             slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                             slippage_scaler=slippage_scaler,
                             params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
 
         #### get history ( this is sloooow)
-        hy_history = build_history(enriched, exchange,
+        hy_history = await build_history(enriched, exchange,
                                    timeframe='1h', end=point_in_time, start=point_in_time-signal_horizon-holding_period,
-                                   dirname='Runtime/Live_parquets')
+                                   dirname=run_dir)
 
         # ------- build derived data history
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
@@ -186,9 +186,10 @@ def perp_vs_cash_live(
         #              dirname='Runtime/live_parquets/manual_validation'
         #              ).to_excel(writer,sheet_name='history_5m')
 
+    await exchange.close()
     return optimized
 
-def perp_vs_cash_backtest(
+async def perp_vs_cash_backtest(
                 signal_horizon,
                 holding_period,
                 slippage_override,
@@ -197,9 +198,9 @@ def perp_vs_cash_backtest(
                 exclusion_list=EXCLUSION_LIST,
                 filename='',
                 optional_params=[]):
-    exchange=open_exchange('ftx')
-    markets = exchange.fetch_markets()
-    futures = pd.DataFrame(fetch_futures(exchange,includeExpired=False)).set_index('name')
+    exchange=open_exchange('ftx','')
+    markets = await exchange.fetch_markets()
+    futures = pd.DataFrame(await fetch_futures(exchange,includeExpired=False)).set_index('name')
 
     # filtering params
     universe = refresh_universe('ftx', UNIVERSE)
@@ -250,7 +251,7 @@ def perp_vs_cash_backtest(
     post_filtered = post_filtered.sort_values(by='E_intCarry',key=abs,ascending=False).head(max_nb_coins)#,key=abs
 
     # run a trajectory
-    point_in_time=backtest_start+signal_horizon+holding_period # integrals not defined before that
+    point_in_time=backtest_start+signal_horizon+holding_period # integrals not async defined before that
     updated, marginFunc = update(post_filtered, point_in_time, hy_history, equity,
                                  intLongCarry, intShortCarry, intUSDborrow, E_long, E_short, E_intUSDborrow)
     previous_weights = pd.DataFrame()
@@ -290,7 +291,7 @@ def perp_vs_cash_backtest(
 
     return trajectory
 
-def run_ladder( concentration_limit_list,
+async def run_ladder( concentration_limit_list,
                 holding_period_list,
                 signal_horizon_list,
                 slippage_override,
@@ -326,7 +327,7 @@ def run_ladder( concentration_limit_list,
 
     ladder.to_pickle(run_dir + '/ladder.pickle')
 
-def run_benchmark_ladder(
+async def run_benchmark_ladder(
                 concentration_limit_list,
                 holding_period_list,
                 signal_horizon_list,
@@ -352,17 +353,17 @@ def run_benchmark_ladder(
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['SysPerp'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
     if argv[0] == 'sysperp':
-        return perp_vs_cash_live(
+        return asyncio.run(perp_vs_cash_live(
             concentration_limit=[CONCENTRATION_LIMIT],
             signal_horizon=[argv[1]],
             holding_period=[argv[2]],
             slippage_override=[SLIPPAGE_OVERRIDE],
-            run_dir='Runtime/Live_parquets')
+            run_dir='Runtime/Live_parquets'))
     elif argv[0] == 'benchmark':
         return run_benchmark_ladder(
             concentration_limit_list=[.5],

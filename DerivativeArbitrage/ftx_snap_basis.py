@@ -10,11 +10,11 @@ from ftx_history import *
 from ftx_ftx import *
 
 # adds info, transcation costs, and basic screening
-def enricher(exchange,input_futures,holding_period,equity,
+async def enricher(exchange,input_futures,holding_period,equity,
              slippage_override= -999, slippage_orderbook_depth= 0,
              slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':['perpetual'],'fee_mode':'retail'}):
     futures=input_futures.copy()
-    markets=exchange.fetch_markets()
+    markets=await exchange.fetch_markets()
 
     # basic screening
     futures = futures[
@@ -24,16 +24,20 @@ def enricher(exchange,input_futures,holding_period,equity,
         & (futures['type'].isin(params['type_allowed'])==True)]
     
     ########### add borrows
-    coin_details = pd.DataFrame(exchange.publicGetWalletCoins()['result'], dtype=float).set_index('id')
-    borrows = fetch_coin_details(exchange)
+    coin_details = pd.DataFrame((await exchange.publicGetWalletCoins())['result'], dtype=float).set_index('id')
+    borrows = await fetch_coin_details(exchange)
     futures = pd.merge(futures, borrows[['borrow', 'lend', 'funding_volume']], how='left', left_on='underlying',
                        right_index=True)
     futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
     futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
     ########### naive basis for all futures
     if not futures[futures['type'] == 'perpetual'].empty:
-        futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
-            lambda f:float(exchange.publicGetFuturesFutureNameStats({'future_name': f.name})['result']['nextFundingRate']) * 24 * 365.25,axis=1)
+        list = await asyncio.gather(*[
+            exchange.publicGetFuturesFutureNameStats({'future_name': f})
+        for f in futures[futures['type'] == 'perpetual'].index])
+        list = [float(l['result']['nextFundingRate'])*24*365.325 for l in list]
+        futures.loc[futures['type'] == 'perpetual','basis_mid'] = list
+
     if not futures[futures['type'] == 'future'].empty:
         futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
             lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
@@ -43,7 +47,7 @@ def enricher(exchange,input_futures,holding_period,equity,
     futures.loc[~futures['spotMargin'],'borrow']=999
 
     # transaction costs
-    costs=fetch_rate_slippage(futures, exchange, holding_period,
+    costs=await fetch_rate_slippage(futures, exchange, holding_period,
         slippage_override, slippage_orderbook_depth, slippage_scaler,
         params)
     futures = futures.join(costs, how = 'outer')
@@ -86,6 +90,18 @@ def enricher(exchange,input_futures,holding_period,equity,
 #                                                                                            axis=1)
 
     return futures.drop(columns=['carryLong','carryShort'])
+
+def enricher_wrapper(exchange_name,type,depth):
+    async def enricher_subwrapper(exchange_name,type,depth):
+        exchange=open_exchange(exchange_name,'')
+        futures = pd.DataFrame(await fetch_futures(exchange))
+        data = await enricher(exchange, futures, timedelta(weeks=1), depth,
+                        slippage_override=-999, slippage_orderbook_depth=depth,
+                        slippage_scaler=1.0,
+                        params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
+        await exchange.close()
+        return data
+    return asyncio.run(enricher_subwrapper(exchange_name,type,depth))
 
 def update(input_futures,point_in_time,history,equity,
            intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow):
@@ -239,20 +255,21 @@ def forecast(exchange, input_futures, hy_history,
 # add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
 # Slippage override =spread to mid for a single leg, with fees = avg taker/maker.
 # Otherwise calculate from orderbook (override Only live is supported).
-def fetch_rate_slippage(input_futures, exchange: Exchange,holding_period,
+async def fetch_rate_slippage(input_futures, exchange: Exchange,holding_period,
                             slippage_override: int = -999, slippage_orderbook_depth: float = 0,
                             slippage_scaler: float = 1.0,params={'override_slippage':True,'fee_mode':'retail'}) -> None:
     futures=input_futures.copy()
     point_in_time=datetime.now()
-    markets=exchange.fetch_markets()
+    markets=await exchange.fetch_markets()
     if params['override_slippage']==True:
         futures['spot_ask'] = slippage_override
         futures['spot_bid'] = -slippage_override
         futures['future_ask'] = slippage_override
         futures['future_bid'] = -slippage_override
     else: ## rubble calc:
+        trading_fees = await exchange.fetch_trading_fees()
         fees=(0.6*0.00015-0.0001+2*0.00006) if (params['fee_mode']=='hr') \
-            else (exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker']*0) #maker fees 0 with 26 FTT staked
+            else (trading_fees['taker']+trading_fees['maker']*0) #maker fees 0 with 26 FTT staked
         ### relative semi-spreads incl fees, and speed
         if slippage_orderbook_depth==0:
             futures['spot_ask'] = fees+futures.apply(lambda f: 0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler
@@ -261,11 +278,18 @@ def fetch_rate_slippage(input_futures, exchange: Exchange,holding_period,
             futures['future_bid'] = -futures['future_ask']
             #futures['speed']=0##*futures['future_ask'] ### just 0
         else:
-            futures['spot_ask'] = futures['spot_ticker'].apply(lambda x: mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth)['slippage']) * slippage_scaler + fees
-            futures['spot_bid'] = futures['spot_ticker'].apply(lambda x: mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth)['slippage']) * slippage_scaler - fees
-            futures['future_ask'] = futures['symbol'].apply(lambda x: mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth)['slippage']) * slippage_scaler + fees
-            futures['future_bid'] = futures['symbol'].apply(lambda x: mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth)['slippage']) * slippage_scaler - fees
-            #futures['speed_in_'+str(slippage_orderbook_depth)]=futures['name'].apply(lambda x:mkt_speed(exchange,x,slippage_orderbook_depth).seconds)
+            futures['spot_ask'] = [x['slippage'] * slippage_scaler + fees for x in await asyncio.gather(
+                *[mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth) for
+                  x in futures['spot_ticker'].values])]
+            futures['spot_bid'] = [x['slippage'] * slippage_scaler - fees for x in await asyncio.gather(
+                *[mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth) for
+                  x in futures['spot_ticker'].values])]
+            futures['future_ask'] = [x['slippage'] * slippage_scaler + fees for x in await asyncio.gather(
+                *[mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth) for
+                  x in futures['symbol'].values])]
+            futures['future_bid'] = [x['slippage'] * slippage_scaler - fees for x in await asyncio.gather(
+                *[mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth) for
+                  x in futures['symbol'].values])]
 
     #### rate slippage assuming perps are rolled every perp_holding_period
     #### use both bid and ask for robustness, but don't x2 for entry+exit

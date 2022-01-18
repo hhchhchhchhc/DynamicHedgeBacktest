@@ -92,22 +92,8 @@ def echo(update, context):
             update.message.bot.send_photo(update.message['chat']['id'], photo=open('Runtime/dataframe.png', 'rb'))
 
         elif split_message[0]=='hist':
-            if len(split_message)<2:
-                raise Exception('missing underlying')
-            underlying = split_message[1].upper()
-            days = 7                if len(split_message)<3 else int(split_message[2])
-            timeframe ='1h'         if len(split_message)<4 else split_message[3]
-            exchange_name = 'ftx'   if len(split_message)<5 else split_message[4]
-
-            update.message.reply_text('ok so history of ' + str(underlying) + ' for ' + str(days) + ' days every ' + str(timeframe) + ' on '+ exchange_name)
-
-            exchange = open_exchange(exchange_name,'')
-            futures = pd.DataFrame(fetch_futures(exchange))
-            futures = futures[futures['underlying'] == underlying]
-            data = build_history(futures, exchange,
-                        end=datetime.now(),start=datetime.now()-timedelta(days=days),
-                        timeframe=timeframe,
-                        dirname='')
+            argv=['build']+split_message[1:]
+            data = ftx_history_main(*argv)
 
             ### send xls
             if update.effective_message.chat['first_name'] in whitelist:
@@ -122,19 +108,13 @@ def echo(update, context):
             exchange_name = 'ftx' if len(split_message) < 4 else split_message[3]
             update.message.reply_text('ok so basis for ' + type + ' for size ' + str(depth))
 
-            exchange = open_exchange(exchange_name,'')
-            futures = pd.DataFrame(fetch_futures(exchange))
+            data=enricher_wrapper(exchange_name,type,depth)
 
-            data = enricher(exchange, futures, timedelta(weeks=1), depth,
-                     slippage_override=-999, slippage_orderbook_depth=depth,
-                     slippage_scaler=1.0,
-                     params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
-
-            data.sort_values('carry_mid',ascending=False).to_excel("Runtime/temporary_parquets/" + exchange.describe()['id'] + "basis.xlsx")
+            data.sort_values('carry_mid',ascending=False).to_excel("Runtime/temporary_parquets/" + exchange_name + "basis.xlsx")
 
             ### send xls
             if True:# update.effective_message.chat['first_name'] == 'daviidarr':
-                with open("Runtime/temporary_parquets/" + exchange.describe()['id'] + "basis.xlsx", "rb") as file:
+                with open("Runtime/temporary_parquets/" + exchange_name + "basis.xlsx", "rb") as file:
                     update.message.bot.sendDocument(update.message['chat']['id'],document=file)
 
         else:

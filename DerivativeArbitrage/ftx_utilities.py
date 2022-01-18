@@ -2,11 +2,14 @@
 import os
 import sys
 import asyncio
+import platform
+if platform.system()=='Windows':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import warnings
 import shutil
 from typing import Tuple
-#import ccxt.async_support as ccxt
-import ccxt
+import ccxt.async_support as ccxt
+#import ccxt
 import numpy as np
 import pandas as pd
 import pickle
@@ -199,5 +202,5 @@ def open_all_subaccounts(exchange_name):
     })
     else: print('what exchange?')
 
-    subaccount_list = pd.DataFrame(exchange.privateGetSubaccounts()['result'])
+    subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     return [open_exchange(exchange_name,subaccount) for subaccount in subaccount_list]
