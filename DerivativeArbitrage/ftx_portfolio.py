@@ -522,15 +522,17 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             if type(f)!=str: continue
             if f in futures.index:
                 spot_ticker = futures.loc[f, 'underlying'] + '/USD'
-                mark_ticker = f
+                mark_ticker = futures.loc[futures['symbol']==f,'new_symbol'].values[0]
             else:
                 spot_ticker = f + ('' if ('/USD' in f) else '/USD')
                 mark_ticker = spot_ticker
 
-            result=result.append(pd.Series({'attribution':f,
-                                            'spot':await fetch_spot_or_perp(exchange, spot_ticker,point_in_time=point_in_time.timestamp()),
-                                            'mark':await fetch_spot_or_perp(exchange, mark_ticker,point_in_time=point_in_time.timestamp())}),
-                                 ignore_index=True)
+            params={'start_time':point_in_time.timestamp(), 'end_time':point_in_time.timestamp()+15}
+            result=result.append(pd.Series(
+                {'attribution':f,
+                'spot':(await exchange.fetch_ohlcv(spot_ticker, timeframe='15s', params=params))[0][1],
+                'mark':(await exchange.fetch_ohlcv(mark_ticker, timeframe='15s', params=params))[0][1]
+                 }),ignore_index=True)
             print('had to snap '+f)
 
         result.set_index('attribution',inplace=True)
@@ -541,6 +543,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     # rescale inflows, or recompute if needed
     cash_flows['USDamt'] *= cash_flows['coin'].apply(lambda f: end_of_day.loc[f,'spot'])
     cash_flows['end_mark'] = cash_flows['attribution'].apply(lambda f: end_of_day.loc[f,'mark'])
+    cash_flows['start_time']=cash_flows['time']
 
     if not future_trades.empty:# TODO: below code relies on trades ordering being preserved to this point :(
         cash_flows.loc[cash_flows['event_type']=='future_trade','USDamt']=(\
@@ -554,6 +557,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
         mkt_risk['start_spot'] = mkt_risk['attribution'].apply(lambda f: start_of_day.loc[f, 'spot'])
         mkt_risk['end_mark'] = mkt_risk['attribution'].apply(lambda f: end_of_day.loc[f, 'mark' if f in futures.index else 'spot'])
         mkt_risk['start_mark'] = mkt_risk['attribution'].apply(lambda f: start_of_day.loc[f,'mark' if f in futures.index else 'spot'])
+        mkt_risk['start_time']=start
         mkt_risk['time']=end
 
         # spots have delta
@@ -563,7 +567,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             spots['USDamt'] = spots['delta_pnl']
             spots['event_type']='delta'
             spots=spots[spots['USDamt']!=0.0]
-            cash_flows = cash_flows.append(spots[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
+            cash_flows = cash_flows.append(spots[['start_time','time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
         # perps also have premium -> IR01
         perp_portfolio = mkt_risk[mkt_risk['attribution'].isin(futures[futures['type'] == 'perpetual'].index)]
@@ -571,13 +575,13 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             perp_portfolio['delta_pnl'] = perp_portfolio['coinAmt'] * (perp_portfolio['end_spot'] - perp_portfolio['start_spot'])
             perp_portfolio['USDamt'] = perp_portfolio['delta_pnl']
             perp_portfolio['event_type'] = 'delta'
-            cash_flows = cash_flows.append(perp_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
+            cash_flows = cash_flows.append(perp_portfolio[['start_time','time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
                                            ignore_index=True)
 
             perp_portfolio['premium_pnl'] = perp_portfolio['coinAmt'] * (perp_portfolio['end_mark'] - perp_portfolio['start_mark']) - perp_portfolio['delta_pnl']
             perp_portfolio['USDamt'] = perp_portfolio['premium_pnl']
             perp_portfolio['event_type'] = 'IR01'
-            cash_flows = cash_flows.append(perp_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],ignore_index=True)
+            cash_flows = cash_flows.append(perp_portfolio[['start_time','time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],ignore_index=True)
 
         # futures also rolldown, and IR01 = totalpnl-mkt_risk-rolldown
         future_portfolio = mkt_risk[mkt_risk['attribution'].isin(futures[futures['type'] == 'future'].index)]
@@ -597,12 +601,12 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
             future_portfolio['USDamt']=future_portfolio['rolldown']
             future_portfolio['event_type']='funding'
-            cash_flows = cash_flows.append(future_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
+            cash_flows = cash_flows.append(future_portfolio[['start_time','time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
             future_portfolio['delta_pnl'] = future_portfolio['coinAmt'] * (future_portfolio['end_spot'] / future_portfolio['start_spot'] - 1.0) * future_portfolio['start_mark']
             future_portfolio['USDamt'] = future_portfolio['delta_pnl']
             future_portfolio['event_type'] = 'delta'
-            cash_flows = cash_flows.append(future_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
+            cash_flows = cash_flows.append(future_portfolio[['start_time','time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
                                            ignore_index=True)
 
             future_portfolio['IR01'] = future_portfolio['coinAmt']*future_portfolio['avg_mark']* \
@@ -611,7 +615,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             future_portfolio['USDamt'] = future_portfolio['IR01']
             future_portfolio['event_type'] = 'IR01'
             cash_flows = cash_flows.append(
-                future_portfolio[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
+                future_portfolio[['start_time','time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']],
                 ignore_index=True)
 
             future_portfolio['FX-IR_gamma'] = future_portfolio['coinAmt'] * (future_portfolio['end_mark'] - future_portfolio['start_mark']) \
@@ -620,7 +624,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
                         - future_portfolio['IR01']
             future_portfolio['USDamt']=future_portfolio['FX-IR_gamma']
             future_portfolio['event_type']='cross_effect' # includes xgamma
-            cash_flows = cash_flows.append(future_portfolio[['time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
+            cash_flows = cash_flows.append(future_portfolio[['start_time','time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
     unexplained=pd.DataFrame()
     unexplained['USDamt']=end_portfolio.loc[end_portfolio['event_type']=='PV','coinAmt'].values - \
@@ -629,10 +633,12 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     unexplained['coin'] = 'USD'
     unexplained['attribution'] = 'USD'
     unexplained['event_type'] = 'unexplained'
-    unexplained['time']=end
+    unexplained['start_time'] = start
+    unexplained['time'] = end
     unexplained['end_mark'] = 1.0
-    cash_flows = cash_flows.append(unexplained[['time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']], ignore_index=True)
+    cash_flows = cash_flows.append(unexplained[['start_time','time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']], ignore_index=True)
 
+    cash_flows['start_time'] = cash_flows['start_time'].apply(lambda t: t if type(t)!=str else dateutil.parser.isoparse(t).replace(tzinfo=None))
     cash_flows['time'] = cash_flows['time'].apply(lambda t: t if type(t)!=str else dateutil.parser.isoparse(t).replace(tzinfo=None))
     cash_flows['underlying'] = cash_flows['attribution'].apply(lambda f:
                             futures.loc[f,'underlying'] if f in futures.index
