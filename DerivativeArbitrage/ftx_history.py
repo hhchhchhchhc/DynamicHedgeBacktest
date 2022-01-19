@@ -12,8 +12,8 @@ async def build_history(futures,exchange,
         end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
         start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                   dirname='Runtime/temporary_parquets'):
-
-    exchange.load_markets()
+    print('building history for :')
+    print(futures['symbol'].values)
     data=pd.concat(await asyncio.gather(*(
             [funding_history(f,exchange,start,end,dirname)
                 for (i,f) in futures[futures['type']=='perpetual'].iterrows()]+
@@ -24,6 +24,8 @@ async def build_history(futures,exchange,
             [borrow_history(f, exchange, end, start, dirname)
                 for f in (list(futures.loc[futures['spotMargin'], 'underlying'].unique())+['USD'])]
                                                       )),join='outer',axis=1)
+    data=pd.concat([data]+[pd.DataFrame(index=data.index, columns=[f + '/rate/size', f + '/rate/borrow'], data=999)
+                    for f in futures.loc[~futures['spotMargin'], 'underlying'].unique()],join='outer',axis=1)
 
     return data[~data.index.duplicated()].sort_index()
 
@@ -37,7 +39,7 @@ async def borrow_history(spot,exchange,
          return from_parquet(parquet_filename)[[spot+'/rate/borrow',spot+'/rate/size']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
-    print('borrow_history: ' + spot)
+
 
     e = end.timestamp()
     s = start.timestamp()
@@ -47,6 +49,8 @@ async def borrow_history(spot,exchange,
     data = pd.concat(await asyncio.gather(*[
         fetch_borrow_rate_history(exchange,spot,start_time,start_time+f-int(resolution))
             for start_time in start_times]),axis=0,join='outer')
+    if data.empty:
+        return data
     data = data.astype(dtype={'time': 'int64'}).set_index(
         'time')[['rate','size']]
     data.rename(columns={'rate':spot+'/rate/borrow','size':spot+'/rate/size'},inplace=True)
@@ -64,7 +68,7 @@ async def funding_history(future,exchange,
     if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)[[future+'/rate/funding']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
-    print('funding_history: ' + future['symbol'])
+
 
     e = end.timestamp()
     s = start.timestamp()
@@ -146,7 +150,7 @@ async def rate_history(future,exchange,
 
     max_mark_data = int(1500)
     resolution = exchange.describe()['timeframes'][timeframe]
-    print('rate_history: ' + future['symbol'])
+
 
     e = end.timestamp()
     s = start.timestamp()
@@ -156,8 +160,8 @@ async def rate_history(future,exchange,
     mark_indexes = await asyncio.gather(*[
         exchange.fetch_ohlcv(future['new_symbol'], timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
             for start_time in start_times
-                for params in [{'start_time':start_time, 'end_time':start_time+f},
-                               {'start_time':start_time, 'end_time':start_time+f,'price':'index'}]])
+                for params in [{'start_time':start_time, 'end_time':start_time+f-int(resolution)},
+                               {'start_time':start_time, 'end_time':start_time+f-int(resolution),'price':'index'}]])
     mark = [y for x in mark_indexes[::2] for y in x]
     indexes = [y for x in mark_indexes[1::2] for y in x]
 
@@ -222,7 +226,7 @@ async def spot_history(symbol, exchange,
 
     max_mark_data = int(1500)
     resolution = exchange.describe()['timeframes'][timeframe]
-    print('price_history: ' + symbol)
+
 
     e = end.timestamp()
     s = start.timestamp()
