@@ -72,10 +72,12 @@ async def perp_vs_cash_live(
                 run_dir=''):
     try:
         first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
-        if max(first_history.index)<datetime.now().replace(minute=0,second=0,microsecond=0):
-            for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)
-        else: pass # otherwise do nothing and build_history will use what's there
-    except: pass
+        if max(first_history.index)>datetime.now().replace(minute=0,second=0,microsecond=0):
+            pass
+        else:
+            for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)# otherwise do nothing and build_history will use what's there
+    except:
+        for file in os.listdir(run_dir): os.remove(run_dir + '/' + file)
 
     exchange = open_exchange('ftx', '')
     markets = await exchange.fetch_markets()

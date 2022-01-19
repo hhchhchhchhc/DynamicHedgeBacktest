@@ -5,7 +5,7 @@ import pandas as pd
 
 from ftx_utilities import *
 from ftx_ftx import *
-from ftx_history import price_history
+from ftx_history import spot_history
 
 ## calc various margins for a cash and carry.
 # weights is position size, not %

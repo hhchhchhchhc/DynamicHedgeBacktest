@@ -120,7 +120,7 @@ def update(input_futures,point_in_time,history,equity,
     futures['mark']=futures.apply(
         lambda f:history.loc[point_in_time,f.name+'/mark/o'],axis=1)
     futures['index'] = futures.apply(
-        lambda f: history.loc[point_in_time, f.name + '/indexes/open'],axis=1)
+        lambda f: history.loc[point_in_time, f.name + '/indexes/o'],axis=1)
     futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future','symbol'].apply(
         lambda f: history.loc[point_in_time, f + '/rate/T'])
     futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
