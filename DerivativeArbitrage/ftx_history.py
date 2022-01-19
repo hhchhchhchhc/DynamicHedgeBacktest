@@ -1,3 +1,5 @@
+import asyncio
+
 import dateutil.parser
 import pandas as pd
 
@@ -11,50 +13,17 @@ async def build_history(futures,exchange,
         start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                   dirname='Runtime/temporary_parquets'):
 
-    perp_funding_data=pd.DataFrame()
-    if not futures[futures['type']=='perpetual'].empty:
-        parquet_filename = dirname+'/allfundings.parquet'
-        if os.path.isfile(parquet_filename):
-            perp_funding_data=from_parquet(parquet_filename)
-            perp_funding_data = perp_funding_data[[c for c in perp_funding_data.columns if any( \
-                                        coin == c.split('/')[0] for coin in list(futures['symbol'])
-                                    )]]
-        else:
-            perp_funding_data=pd.concat(await asyncio.gather(*[funding_history(f,exchange,start,end,dirname)
-                                     for (i,f) in futures[futures['type']=='perpetual'].iterrows()]),join='outer',axis=1)
-            if dirname!='': perp_funding_data.to_parquet(parquet_filename)
-
-    future_rate_data=pd.concat(await asyncio.gather(*[rate_history(f, exchange, end, start, timeframe,dirname)
-               for (i, f) in futures.iterrows()]),
-              join='outer',axis=1)
-    spot_price_data = pd.concat(await asyncio.gather(*[price_history(f+'/USD', exchange, end, start, timeframe,dirname)
-                                   for f in futures['underlying'].unique()]),
-                                  join='outer', axis=1)
-
-    parquet_filename = dirname+'/allborrows.parquet'
-    borrow_data=pd.DataFrame()
-    if os.path.isfile(parquet_filename):
-        borrow_data = from_parquet(parquet_filename)
-        borrow_data = borrow_data[[c for c in borrow_data.columns if any( \
-                                       coin==c.split('/')[0] for coin in (['USD']+ list(futures['underlying']))
-                                   )]]
-    else:
-        borrow_data1= await asyncio.gather(*[borrow_history(f, exchange, end, start,dirname)
-               for f in futures.loc[futures['spotMargin'],'underlying'].unique()])
-        borrow_data2= [pd.DataFrame(index=spot_price_data.index,columns=[f + '/rate/size', f + '/rate/borrow'],data=999)
-               for f in futures.loc[~futures['spotMargin'],'underlying'].unique()]
-        borrow_data3 = [await borrow_history('USD',exchange,end,start,dirname)]
-
-        borrow_data=pd.concat(borrow_data1+borrow_data2+borrow_data3,join='outer',axis=1)
-
-        if dirname!='': borrow_data.to_parquet(parquet_filename)
-
-    ## just couldn't figure out pd.concat...
-    data = perp_funding_data.join(
-                future_rate_data.join(
-                    spot_price_data.join(borrow_data, how='outer'),
-                how='outer'),
-            how='outer')
+    exchange.load_markets()
+    data=pd.concat(await asyncio.gather(*(
+            [funding_history(f,exchange,start,end,dirname)
+                for (i,f) in futures[futures['type']=='perpetual'].iterrows()]+
+            [rate_history(f, exchange, end, start, timeframe,dirname)
+                for (i, f) in futures.iterrows()]+
+            [spot_history(f + '/USD', exchange, end, start, timeframe, dirname)
+             for f in futures['underlying'].unique()]+
+            [borrow_history(f, exchange, end, start, dirname)
+                for f in (list(futures.loc[futures['spotMargin'], 'underlying'].unique())+['USD'])]
+                                                      )),join='outer',axis=1)
 
     return data[~data.index.duplicated()].sort_index()
 
@@ -68,32 +37,21 @@ async def borrow_history(spot,exchange,
          return from_parquet(parquet_filename)[[spot+'/rate/borrow',spot+'/rate/size']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
-    print('borrow_history: '+spot)
+    print('borrow_history: ' + spot)
 
-    ### grab data per batch of 5000
-    borrow_data=pd.DataFrame()
-    end_time = end.timestamp()
-    start_time = (datetime.fromtimestamp(end_time) - timedelta(hours=max_funding_data)).timestamp()
+    e = end.timestamp()
+    s = start.timestamp()
+    f = max_funding_data * int(resolution)
+    start_times = [e - k * f for k in range(1 + int((e - s) / f)) if e - k * f > s] + [s]
 
-    while end_time > start.timestamp():
-        if start_time<start.timestamp(): start_time=start.timestamp()
-
-        datas=await fetch_borrow_rate_history(exchange,spot,start_time,end_time)
-        if len(datas)==0: break
-        borrow_data= pd.concat([borrow_data,datas], join='outer', axis=0)
-
-        end_time = (datetime.fromtimestamp(start_time) - timedelta(hours=1)).timestamp()
-        start_time = (datetime.fromtimestamp(end_time) - timedelta(hours=max_funding_data)).timestamp()
-
-    if len(borrow_data)>0:
-        borrow_data = borrow_data.astype(dtype={'time': 'int64'}).set_index(
-            'time')[['coin','rate','size']]
-        data = pd.DataFrame()
-        data[spot+'/rate/borrow'] = borrow_data['rate']
-        data[spot+'/rate/size'] = borrow_data['size']
-        data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
-        data=data[~data.index.duplicated()].sort_index()
-    else: data=pd.DataFrame()
+    data = pd.concat(await asyncio.gather(*[
+        fetch_borrow_rate_history(exchange,spot,start_time,start_time+f-int(resolution))
+            for start_time in start_times]),axis=0,join='outer')
+    data = data.astype(dtype={'time': 'int64'}).set_index(
+        'time')[['rate','size']]
+    data.rename(columns={'rate':spot+'/rate/borrow','size':spot+'/rate/size'},inplace=True)
+    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data=data[~data.index.duplicated()].sort_index()
 
     return data
 
@@ -108,34 +66,21 @@ async def funding_history(future,exchange,
     resolution = exchange.describe()['timeframes']['1h']
     print('funding_history: ' + future['symbol'])
 
-    ### grab data per batch of 500
-    funding_data=pd.DataFrame()
-    end_time = end.timestamp()
-    start_time = (datetime.fromtimestamp(end_time) - timedelta(hours=max_funding_data)).timestamp()
+    e = end.timestamp()
+    s = start.timestamp()
+    f = max_funding_data * int(resolution)
+    start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
-    while end_time > start.timestamp():
-        if start_time<start.timestamp(): start_time=start.timestamp()
-
-        data = pd.DataFrame(await exchange.fetch_funding_rate_history(future['symbol'].replace('-PERP','/USD:USD'), since=start_time*1000, limit=500))
-        data['future']=data['info'].apply(lambda x: x['future'])
-        data['time']=data['timestamp']
-        data['rate']=data['fundingRate']*365.25*24
-        
-        if len(data) == 0: break
-        funding_data = pd.concat([funding_data, data[['future','time','rate']]], join='outer', axis=0)
-
-        end_time = (datetime.fromtimestamp(start_time) - timedelta(hours=1)).timestamp()
-        start_time = (datetime.fromtimestamp(end_time) - timedelta(hours=max_funding_data)).timestamp()
-
-    if len(funding_data) > 0:
-        funding_data = funding_data.astype(dtype={'time': 'int64'}).set_index(
-            'time')[['rate']]
-        data = pd.DataFrame()
-        data[future['symbol'] + '/rate/funding'] = funding_data['rate']
-        data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
-        data = data[~data.index.duplicated()].sort_index()
-    else:
-        data = pd.DataFrame()
+    lists = await asyncio.gather(*[
+        exchange.fetch_funding_rate_history(future['new_symbol'], params={'start_time':start_time, 'end_time':start_time+f})
+                                for start_time in start_times])
+    funding = [y for x in lists for y in x]
+    data = pd.DataFrame(funding)
+    data['time']=data['timestamp'].astype(dtype='int64')
+    data[future['symbol'] + '/rate/funding']=data['fundingRate']*365.25*24
+    data=data[['time',future['symbol'] + '/rate/funding']].set_index('time')
+    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data = data[~data.index.duplicated()].sort_index()
 
     return data
 
@@ -203,24 +148,19 @@ async def rate_history(future,exchange,
     resolution = exchange.describe()['timeframes'][timeframe]
     print('rate_history: ' + future['symbol'])
 
-    indexes = []
-    mark = []
-    data = []
-    end_time = end.timestamp()
-    start_time = (datetime.fromtimestamp(end_time) - timedelta(seconds=max_mark_data * int(resolution))).timestamp()
+    e = end.timestamp()
+    s = start.timestamp()
+    f = max_mark_data * int(resolution)
+    start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
-    while end_time >= start.timestamp():
-        if start_time < start.timestamp(): start_time = start.timestamp()
-        new_mark = await exchange.fetch_ohlcv(future['symbol'], timeframe=timeframe, since=start_time, limit=max_mark_data) # volume is for max_mark_data*resolution
-        new_indexes = await exchange.fetch_ohlcv(future['symbol'], timeframe=timeframe, since=start_time, limit=max_mark_data,params={'price':'index'})
+    mark_indexes = await asyncio.gather(*[
+        exchange.fetch_ohlcv(future['new_symbol'], timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
+            for start_time in start_times
+                for params in [{'start_time':start_time, 'end_time':start_time+f},
+                               {'start_time':start_time, 'end_time':start_time+f,'price':'index'}]])
+    mark = [y for x in mark_indexes[::2] for y in x]
+    indexes = [y for x in mark_indexes[1::2] for y in x]
 
-        if ((len(new_indexes) == 0)|(len(new_mark) == 0)): break
-
-        mark.extend(new_mark)
-        indexes.extend(new_indexes)
-        end_time = (datetime.fromtimestamp(start_time) - timedelta(seconds=int(resolution))).timestamp()
-        start_time = (datetime.fromtimestamp(end_time) - timedelta(
-            seconds=max_mark_data * int(resolution))).timestamp()
     if ((len(indexes) == 0) | (len(mark) == 0)):
         return pd.DataFrame(columns=
                          [future['symbol'] + '/mark/' + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
@@ -229,12 +169,11 @@ async def rate_history(future,exchange,
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
     ###### indexes
-    indexes = pd.DataFrame(indexes, dtype=float).astype(dtype={'time': 'int64'}).set_index('time')
+    indexes = pd.DataFrame([dict(zip(column_names,row)) for row in indexes], dtype=float).astype(dtype={'t': 'int64'}).set_index('t')
     indexes['volume'] = indexes['volume']* 24 * 3600 / int(resolution)
-    indexes = indexes.drop(columns=['startTime', 'volume']) # volume is often none
 
     ###### marks
-    mark = pd.DataFrame(columns=column_names, data=mark).astype(dtype={'t': 'int64'}).set_index('t')
+    mark = pd.DataFrame([dict(zip(column_names,row)) for row in mark]).astype(dtype={'t': 'int64'}).set_index('t')
     mark['volume']=mark['volume']*24*3600/int(resolution)
 
     mark.columns = ['mark/' + column for column in mark.columns]
@@ -248,18 +187,18 @@ async def rate_history(future,exchange,
 
         data['rate/c'] = data.apply(
             lambda y: calc_basis(y['mark/c'],
-                                 indexes.loc[y.name, 'indexes/close'], future['expiryTime'],
+                                 indexes.loc[y.name, 'indexes/c'], future['expiryTime'],
                                  datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
         data['rate/h'] = data.apply(
-            lambda y: calc_basis(y['mark/h'], indexes.loc[y.name, 'indexes/high'], future['expiryTime'],
+            lambda y: calc_basis(y['mark/h'], indexes.loc[y.name, 'indexes/h'], future['expiryTime'],
                                  datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
         data['rate/l'] = data.apply(
-            lambda y: calc_basis(y['mark/l'], indexes.loc[y.name, 'indexes/low'], future['expiryTime'],
+            lambda y: calc_basis(y['mark/l'], indexes.loc[y.name, 'indexes/l'], future['expiryTime'],
                                  datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
     elif future['type'] == 'perpetual': ### 1h funding = (mark/spot-1)/24
-        data['rate/c'] = (mark['mark/c'] / indexes['indexes/close'] - 1)*365.25
-        data['rate/h'] = (mark['mark/h'] / indexes['indexes/high'] - 1)*365.25
-        data['rate/l'] = (mark['mark/l'] / indexes['indexes/low'] - 1)*365.25
+        data['rate/c'] = (mark['mark/c'] / indexes['indexes/c'] - 1)*365.25
+        data['rate/h'] = (mark['mark/h'] / indexes['indexes/h'] - 1)*365.25
+        data['rate/l'] = (mark['mark/l'] / indexes['indexes/l'] - 1)*365.25
     else:
         print('what is ' + future['symbol'] + ' ?')
         return
@@ -272,11 +211,11 @@ async def rate_history(future,exchange,
     return data
 
 ## populates future_price or spot_price depending on type
-async def price_history(symbol,exchange,
-                 end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                 timeframe='1h',
-                  dirname='Runtime/temporary_parquets'):
+async def spot_history(symbol, exchange,
+                       end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
+                       start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
+                       timeframe='1h',
+                       dirname='Runtime/temporary_parquets'):
     if dirname!='':
         parquet_filename = dirname +'/' + symbol.replace('/USD','') + '_price.parquet'
         if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
@@ -285,19 +224,15 @@ async def price_history(symbol,exchange,
     resolution = exchange.describe()['timeframes'][timeframe]
     print('price_history: ' + symbol)
 
-    spot =[]
-    end_time = end.timestamp()
-    start_time = (datetime.fromtimestamp(end_time) - timedelta(seconds=max_mark_data * int(resolution))).timestamp()
+    e = end.timestamp()
+    s = start.timestamp()
+    f = max_mark_data * int(resolution)
+    start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
-    while end_time >= start.timestamp():
-        if start_time < start.timestamp(): start_time = start.timestamp()
-        new_spot = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=start_time, limit=max_mark_data)
-
-        if (len(new_spot) == 0): break
-        spot.extend(new_spot)
-        end_time = (datetime.fromtimestamp(start_time) - timedelta(seconds=int(resolution))).timestamp()
-        start_time = (datetime.fromtimestamp(end_time) - timedelta(
-            seconds=max_mark_data * int(resolution))).timestamp()
+    spot_lists = await asyncio.gather(*[
+        exchange.fetch_ohlcv(symbol, timeframe=timeframe, params={'start_time':start_time, 'end_time':start_time+f-int(resolution)})
+                                for start_time in start_times])
+    spot = [y for x in spot_lists for y in x]
 
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
@@ -314,12 +249,14 @@ async def price_history(symbol,exchange,
 
 def ftx_history_main(*argv):
     argv=list(argv)
+    if len(argv) < 1:
+        argv.extend(['build'])
     if len(argv) < 2:
-        raise Exception('missing underlying')
+        argv.extend(['all'])
     if len(argv) < 3:
         argv.extend(['ftx'])
     if len(argv) < 4:
-        argv.extend([30])
+        argv.extend([150])
 
     async def ftx_history_main_wrapper(*argv):
         exchange=open_exchange(argv[2],'')
@@ -330,8 +267,9 @@ def ftx_history_main(*argv):
         futures = futures[
             (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
             & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
-            & (futures['tokenizedEquity'] != True)
-            & (futures['underlying'] == argv[1])]
+            & (futures['tokenizedEquity'] != True)]
+        if argv[1]!='all':
+            futures = futures[futures['underlying'] == argv[1]]
 
         # volume screening
         hy_history = await build_history(futures, exchange,
