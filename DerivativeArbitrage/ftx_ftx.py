@@ -163,7 +163,7 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
 
     try:
         response = await exchange.publicGetSpotMarginHistory(exchange.extend(request, params))
-    except:
+    except Exception as e:
         return pd.DataFrame()
 
     if len(exchange.safe_value(response, 'result', []))==0: return pd.DataFrame()
@@ -187,7 +187,7 @@ def collateralWeightInitial(future):# TODO: API call to collateralWeight(Initial
 ### get all static fields
 async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):
     response = await exchange.publicGetFutures(params)
-
+    fetched = await exchange.fetch_markets()
     expired = await exchange.publicGetExpiredFutures(params) if includeExpired==True else []
     coin_details = await fetch_coin_details(exchange)
 
@@ -207,6 +207,10 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
         ## eg ADA has no coin details
         if not underlying in coin_details.index:
             if not includeIndex: continue
+        try:## eg BTT-PERP doesn't exist
+            new_symbol=next(item for item in fetched if item['id'] == exchange.safe_string(market, 'name'))['symbol']
+        except Exception as e:
+            new_symbol=exchange.safe_string(market, 'name')
 
         result.append({
             'ask':  exchange.safe_number(market, 'ask'),
@@ -217,6 +221,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'volumeUsd24h':  exchange.safe_number(market, 'volumeUsd24h'),
             'volume':  exchange.safe_number(market, 'volume'),
             'symbol': exchange.safe_string(market, 'name'),
+            'new_symbol': new_symbol,
             "enabled": exchange.safe_value(market, 'enabled'),
             "expired": exchange.safe_value(market, 'expired'),
             "expiry": exchange.safe_string(market, 'expiry') if exchange.safe_string(market, 'expiry') else 'None',
@@ -245,9 +250,10 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'fiat':coin_details.loc[underlying,'fiat'] if not includeIndex else 'coin_details not found',
             'expiryTime':dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None)
                             if exchange.safe_string(market, 'type') == 'future' else np.NaN
-        })
+            })
+
     return result
 
 async def fetch_latencyStats(exchange,days,subaccount_nickname):
-    #stats = await exchange.publicGetStatsLatencyStats({'days':days,'subaccount_nickname':subaccount_nickname})
-    return []#stats['result']
+    stats = await exchange.privateGetStatsLatencyStats({'days':days,'subaccount_nickname':subaccount_nickname})
+    return stats['result']
