@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import logging
 import os
 import sys
 import asyncio
@@ -8,7 +9,7 @@ if platform.system()=='Windows':
 import warnings
 import shutil
 from typing import Tuple
-import ccxt.async_support as ccxt
+import ccxtpro as ccxt
 #import ccxt
 import numpy as np
 import pandas as pd
@@ -130,6 +131,9 @@ def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':Fals
         except:  ###usually because file is open
             data.to_excel("Runtime/temporary_parquets/" + exchange_name + datatype + "copy.xlsx")
 
+min_iterations='ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU'
+max_iterations='RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm'
+
 def open_exchange(exchange_name,subaccount):
     if exchange_name=='ftx':
         exchange = ccxt.ftx({ ## David personnal
@@ -138,20 +142,7 @@ def open_exchange(exchange_name,subaccount):
             'secret': 'RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm',
         })
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
-#    elif exchange_name == 'ftx_auk':
-#        exchange = ccxt.ftx({  ## Benoit personnal
-#            'enableRateLimit': True,
-#            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
-#            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
-#        })
-        if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
- #   elif exchange_name == 'ftx_raj':
- #       exchange = ccxt.ftx({  ## Benoit personnal
- #           'enableRateLimit': True,
- #           'apiKey': 'HdXWK4kNDpeCA0m-_quL3ZPwml_5B9DXpGiXiQCN',
- #           'secret': 'DeDqbFBfhhujtB3yGlANrJfYxlFr2kzJo8sV-c6v',
- #       })
-        if subaccount!='': exchange.headers = {'FTX-SUBACCOUNT': subaccount}
+
     elif exchange_name == 'binance':
         exchange = ccxt.binance({# subaccount convexity
         'enableRateLimit': True,
@@ -204,3 +195,4 @@ def open_all_subaccounts(exchange_name):
 
     subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     return [open_exchange(exchange_name,subaccount) for subaccount in subaccount_list]
+

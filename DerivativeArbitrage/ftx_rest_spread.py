@@ -37,7 +37,7 @@ special_maker_minimum_size = {'BTC-PERP': 0.01, 'RUNE-PERP': 1.0}
 #    return wrapper_timer
 
 class PlacementStrategy:
-    async def __init__(self,exchange: Exchange,
+    async def __init__(self,exchange: ccxt.Exchange,
                               ticker: str,
                               side: str,
                               size: float  # in coin
@@ -49,7 +49,7 @@ class PlacementStrategy:
         return None
 
 class AggressivePost:
-    async def __init__(self, exchange: Exchange,
+    async def __init__(self, exchange: ccxt.Exchange,
                  ticker: str,
                  side: str,
                  size: float,  # in coin
@@ -71,20 +71,20 @@ class ExecutionLog:
         self.children = []# list of ExecutionLog
 
     # fetches exchange to populate benchmarks
-    async def initializeBenchmark(self,exchange: Exchange) -> None:
-        self._receivedAt=datetime.now()
+    async def initializeBenchmark(self,exchange: ccxt.Exchange) -> None:
+        self._receivedAt=datetime.fromtimestamp(exchange.seconds())
         fetched = await asyncio.gather(*[mkt_at_size(exchange,leg['ticker'],'asks' if leg['size']>0 else 'bids',np.abs(leg['size'])) for leg in self._legs])
-        if datetime.now()>self._receivedAt + timedelta(milliseconds=100): # 15ms is approx throttle..
+        if datetime.fromtimestamp(exchange.seconds())>self._receivedAt + timedelta(milliseconds=100): # 15ms is approx throttle..
             warnings.warn('mkt_at_size was slow',RuntimeWarning)
         self._legs = [leg | {'benchmark':
-                                 {'initial_mkt': f['mid'] * (1 + f['slippage']),
+                                 {'initial_mkt': f['side'],
                                   'initial_mid':f['mid']}}
                       for f,leg in zip(fetched,self._legs)]
 
     # only native orders receive values. Otherwise recurse on children.
     # assigns and returns legs
     # fillSize is just an assert
-    async def populateFill(self,exchange: Exchange) -> list:
+    async def populateFill(self,exchange: ccxt.Exchange) -> list:
         if self.children:
             children_list = await asyncio.gather(*[child.populateFill(exchange) for child in self.children])
             children_fills =[[child_leg for child in children_list for child_leg in child if child_leg['ticker'] == leg['ticker']]
@@ -124,7 +124,9 @@ class ExecutionLog:
         row ={
             'id':self._id,
             'type':self._type,
-            'receivedAt':self._receivedAt}
+            'receivedAt':self._receivedAt,
+            'vs_initial_mkt':self.bpCost()['vs_initial_mkt'],
+            'vs_initial_mid':self.bpCost()['vs_initial_mid']}
         i=0
         for leg in self._legs:
             for key,value in leg.items():
@@ -136,9 +138,9 @@ class ExecutionLog:
             i += 1
 
         df= pd.Series(row)
-        return pd.concat([df]+[child.to_df() for child in self.children])
+        return pd.concat([df]+[child.to_df() for child in self.children],axis=0)
 
-async def symbol_ordering(exchange: Exchange,ticker1: str,ticker2: str) -> Tuple:
+async def symbol_ordering(exchange: ccxt.Exchange,ticker1: str,ticker2: str) -> Tuple:
     ## get 5m histories
     nowtime = datetime.now().timestamp()
     since = nowtime - 5 * 60
@@ -158,7 +160,7 @@ async def symbol_ordering(exchange: Exchange,ticker1: str,ticker2: str) -> Tuple
 #################### low level orders, with checks and resend ##############################
 
 #@timer
-async def sure_cancel(exchange: Exchange,id: str) -> dict:
+async def sure_cancel(exchange: ccxt.Exchange,id: str) -> dict:
     order_status = await exchange.fetch_order(id)
     attempt = 0
     while order_status['status'] == 'open':
@@ -170,7 +172,7 @@ async def sure_cancel(exchange: Exchange,id: str) -> dict:
     return attempt
 
 #@timer
-async def monitored_market_order(exchange: Exchange,
+async def monitored_market_order(exchange: ccxt.Exchange,
                               ticker: str,
                               size: float  # in coin
                               ) -> ExecutionLog:
@@ -186,7 +188,7 @@ async def monitored_market_order(exchange: Exchange,
 # places limit right before top of book
 # if canceled (because through mid, typically), try farther and farther to fight momentum
 #@timer
-async def sure_post(exchange: Exchange,
+async def sure_post(exchange: ccxt.Exchange,
                               ticker: str,
                               size: float,  # in coin
                               px_increment: float,
@@ -227,7 +229,7 @@ async def sure_post(exchange: Exchange,
 
 # doesn't stop on partial fills
 # size in coin
-async def post_chase_trigger(exchange: Exchange,
+async def post_chase_trigger(exchange: ccxt.Exchange,
                             ticker: str, size: float,
                             taker_trigger: float) -> ExecutionLog:
     fetched = (await exchange.fetch_ticker(ticker))['info']
@@ -272,13 +274,12 @@ async def post_chase_trigger(exchange: Exchange,
         current_id = log.children[-1]._id
         order_status = await exchange.fetch_order(current_id)
 
-    await log.populateFill(exchange)
     return log
 
 #################### slicers: chose sequence and size for orders  ##############################
 
 # size are + or -, in USD
-async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, size_1: float, size_2: float, min_volume: float)->ExecutionLog:
+async def slice_spread_order(exchange: ccxt.Exchange, ticker_1: str, ticker_2: str, size_1: float, size_2: float, min_volume: float)->ExecutionLog:
     log = ExecutionLog(sys._getframe().f_code.co_name, [{'ticker': ticker_1, 'size': size_1},
                                                         {'ticker': ticker_2, 'size': size_2}])
     await log.initializeBenchmark(exchange)
@@ -341,12 +342,10 @@ async def slice_spread_order(exchange: Exchange, ticker_1: str, ticker_2: str, s
     log.children += [await slice_single_order(exchange, residual_ticker[1], residual_size[1],min_volume)]
     print('spread:single residual {} done in {}'.format(residual_ticker[1], residual_size[1]*residual_price[1]))
 
-    await log.populateFill(exchange)
-    pickleit(global_log, "Runtime/ExecutionLog.pickle")
     return log
 
 # size are + or -, in coin
-async def slice_single_order(exchange: Exchange, ticker: str, size: float,min_volume: float) -> ExecutionLog:
+async def slice_single_order(exchange: ccxt.Exchange, ticker: str, size: float,min_volume: float) -> ExecutionLog:
     fetched = (await exchange.fetch_ticker(ticker))['info']
     increment = (float(fetched['sizeIncrement']) if ticker != 'BTC-PERP' else 0.01)
     price = float(fetched['price'])
@@ -363,7 +362,6 @@ async def slice_single_order(exchange: Exchange, ticker: str, size: float,min_vo
         price = float((await exchange.fetch_ticker(ticker))['info']['price'])
         log.children += [await post_chase_trigger(exchange, ticker, np.sign(size) * slice_size,taker_trigger=taker_trigger)]
         amount_sliced += slice_size
-        df=log.to_df()
     print(f'single {ticker} done in {np.sign(size)*amount_sliced*price}')
 
     # residual, from book
@@ -376,13 +374,11 @@ async def slice_single_order(exchange: Exchange, ticker: str, size: float,min_vo
         log.children += [await post_chase_trigger(exchange, ticker,residual_size,taker_trigger=taker_trigger)]
         print(f'single residual {ticker} done in {residual_size*price}')
 
-    await log.populateFill(exchange)
-    pickleit(log, "Runtime/ExecutionLog.pickle")
     return log
 
 ########### executer: calls slicers in parallel
 
-async def executer_sysperp(exchange: Exchange,weights: pd.DataFrame) -> ExecutionLog:
+async def executer_sysperp(exchange: ccxt.Exchange,weights: pd.DataFrame) -> ExecutionLog:
     log=ExecutionLog(sys._getframe().f_code.co_name,[
         {'ticker':r['name'],
          'size':r['diff']}
@@ -411,7 +407,6 @@ async def executer_sysperp(exchange: Exchange,weights: pd.DataFrame) -> Executio
     n_orders = [None for r in orders_by_underlying if r.shape[0]>2]
     assert(len(n_orders)==0)
 
-    await log.populateFill(exchange)
     return log
         #leftover_delta =
         #if leftover_delta>slice_sizeUSD/slice_factor:
@@ -455,6 +450,7 @@ async def ftx_rest_spread_main_wrapper(*argv):
         await exchange.cancel_all_orders()
         stats = await fetch_latencyStats(exchange, days=1, subaccount_nickname='SysPerp')
         print(f'latencystats:{stats}')
+        await log.populateFill(exchange)
         await exchange.close()
 
     return log.to_df()

@@ -208,19 +208,19 @@ def forecast(exchange, input_futures, hy_history,
     # 2: integrals, and their median.
     intLongCarry = LongCarry.rolling(holding_hours).mean()
     intLongCarry[dated.index]= LongCarry[dated.index]
-    E_long = intLongCarry.rolling(int(signal_horizon.total_seconds()/3600)).median()
+    E_long = intLongCarry.rolling(int(signal_horizon.total_seconds()/3600)).mean()
     E_long[dated.index] = intLongCarry[dated.index]
 
     intShortCarry = ShortCarry.rolling(holding_hours).mean()
     intShortCarry[dated.index] = ShortCarry[dated.index]
-    E_short = intShortCarry.rolling(int(signal_horizon.total_seconds()/3600)).median()
+    E_short = intShortCarry.rolling(int(signal_horizon.total_seconds()/3600)).mean()
     E_short[dated.index] = intShortCarry[dated.index]
 
     intBorrow = Borrow.rolling(holding_hours).mean()
-    E_intBorrow = intBorrow.rolling(int(signal_horizon.total_seconds()/3600)).median()
+    E_intBorrow = intBorrow.rolling(int(signal_horizon.total_seconds()/3600)).mean()
 
     intUSDborrow = USDborrow.rolling(holding_hours).mean()
-    E_intUSDborrow = intUSDborrow.rolling(int(signal_horizon.total_seconds()/3600)).median()
+    E_intUSDborrow = intUSDborrow.rolling(int(signal_horizon.total_seconds()/3600)).mean()
 
     # TODO:3: spot premium (approximated using last funding) assumed to converge to median -> IR01 pnl
     # specifically, assume IR01 pnl of f-E[f] and then yield E[f]. More conservative than f stays better than E[f]...as long as holding>1d.
@@ -255,7 +255,7 @@ def forecast(exchange, input_futures, hy_history,
 # add slippage, fees and speed. Pls note we will trade both legs, at entry and exit.
 # Slippage override =spread to mid for a single leg, with fees = avg taker/maker.
 # Otherwise calculate from orderbook (override Only live is supported).
-async def fetch_rate_slippage(input_futures, exchange: Exchange,holding_period,
+async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_period,
                             slippage_override: int = -999, slippage_orderbook_depth: float = 0,
                             slippage_scaler: float = 1.0,params={'override_slippage':True,'fee_mode':'retail'}) -> None:
     futures=input_futures.copy()
@@ -374,8 +374,8 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
                 'fun': lambda x: excess_margin.call(x)['totalIM'] - equity*OPEN_ORDERS_HEADROOM}
     stopout_constraint = {'type': 'ineq',
                 'fun': lambda x: excess_margin.call(x)['totalMM']}
-    bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit*equity for w in futures['direction']]),
-                                   ub=np.asarray([0 if w<0 else  concentration_limit*equity for w in futures['direction']]))
+    bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit*equity for w in futures['direction']],dtype=object),
+                                   ub=np.asarray([0 if w<0 else  concentration_limit*equity for w in futures['direction']],dtype=object))
 
     # --------- breaks down pnl during optimization
     progress_display=[]
