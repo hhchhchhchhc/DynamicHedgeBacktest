@@ -1,4 +1,3 @@
-import ccxt
 from strategies import *
 from ftx_portfolio import *
 from ftx_rest_spread import *
@@ -78,18 +77,24 @@ def echo(update, context):
             else:
                 update.message.reply_text("mind your own book")
         elif split_message[0] == 'execreport':
-            diff = ftx_portoflio_main(*split_message)
-            dfi.export(diff, 'Runtime/dataframe.png')
-            update.message.bot.send_photo(update.message['chat']['id'], photo=open('Runtime/dataframe.png', 'rb'))
+            data = ftx_portoflio_main(*split_message)
+            filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+            data.to_excel(filename)
+            with open(filename, "rb") as file:
+                update.message.bot.sendDocument(update.message['chat']['id'], document=file)
 
         elif split_message[0]=='sysperp':
             data = strategies_main(*split_message)
-            dfi.export(data, 'Runtime/dataframe.png')
-            update.message.bot.send_photo(update.message['chat']['id'], photo=open('Runtime/dataframe.png', 'rb'))
+            filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+            data.to_excel(filename)
+            with open(filename, "rb") as file:
+                update.message.bot.sendDocument(update.message['chat']['id'], document=file)
         elif split_message[0]=='execute':
             data = ftx_rest_spread_main(*split_message)
-            dfi.export(data, 'Runtime/dataframe.png')
-            update.message.bot.send_photo(update.message['chat']['id'], photo=open('Runtime/dataframe.png', 'rb'))
+            filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+            data.to_excel(filename)
+            with open(filename, "rb") as file:
+                update.message.bot.sendDocument(update.message['chat']['id'], document=file)
 
         elif split_message[0]=='hist':
             argv=['build']+split_message[1:]

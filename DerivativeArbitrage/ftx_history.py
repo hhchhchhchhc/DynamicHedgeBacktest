@@ -251,36 +251,37 @@ async def spot_history(symbol, exchange,
 
     return data
 
+async def ftx_history_main_wrapper(*argv):
+    exchange=open_exchange(argv[2],'')
+    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
+    markets= await exchange.fetch_markets()
+
+   # qualitative screening
+    futures = futures[
+        (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
+        & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
+        & (futures['tokenizedEquity'] != True)]
+    if argv[1]!='all':
+        futures = futures[futures['underlying'] == argv[1]]
+
+    # volume screening
+    hy_history = await build_history(futures, exchange,
+                               timeframe='1h', end=datetime.now(), start=datetime.now()-timedelta(days=argv[3]),
+                               dirname='')
+    await exchange.close()
+    return hy_history
+
 def ftx_history_main(*argv):
     argv=list(argv)
     if len(argv) < 1:
         argv.extend(['build'])
     if len(argv) < 2:
-        argv.extend(['all'])
+        argv.extend(['DAWN'])
     if len(argv) < 3:
         argv.extend(['ftx'])
     if len(argv) < 4:
         argv.extend([150])
 
-    async def ftx_history_main_wrapper(*argv):
-        exchange=open_exchange(argv[2],'')
-        futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
-        markets= await exchange.fetch_markets()
-
-       # qualitative screening
-        futures = futures[
-            (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
-            & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
-            & (futures['tokenizedEquity'] != True)]
-        if argv[1]!='all':
-            futures = futures[futures['underlying'] == argv[1]]
-
-        # volume screening
-        hy_history = await build_history(futures, exchange,
-                                   timeframe='1h', end=datetime.now(), start=datetime.now()-timedelta(days=argv[3]),
-                                   dirname='')
-        await exchange.close()
-        return hy_history
     return asyncio.run(ftx_history_main_wrapper(*argv))
 
 if __name__ == "__main__":
