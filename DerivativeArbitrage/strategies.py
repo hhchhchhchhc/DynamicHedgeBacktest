@@ -4,19 +4,19 @@ from ftx_ftx import *
 #import seaborn as sns
 #from sklearn import *
 
-async def refresh_universe(exchange_name,universe_size):
+async def refresh_universe(exchange,universe_size):
     filename = 'Runtime/Configs/universe.xlsx'
     if os.path.isfile(filename):
         try:
             return pd.read_excel(filename,sheet_name=universe_size,index_col=0)
         except:
-            print('refreshing universe')
-    exchange=open_exchange(exchange_name)
+            raise Exception('invalid Runtime/Configs/universe.xlsx')
+
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets=await exchange.fetch_markets()
 
-    universe_start = datetime(2021, 9, 1)
-    universe_end = datetime(2021, 12, 1)
+    universe_start = datetime(2021, 10, 1)
+    universe_end = datetime(2022, 1, 1)
     borrow_decile = 0.1
     #type_allowed=['perpetual']
     screening_params=pd.DataFrame(
@@ -33,10 +33,10 @@ async def refresh_universe(exchange_name,universe_size):
         #& (futures['spotMargin'] == True)]
 
     # volume screening
-    hy_history = build_history(futures, exchange,
+    hy_history = await build_history(futures, exchange,
                                timeframe='1h', end=universe_end, start=universe_start,
-                               dirname='Runtime/Configs/universe_history')
-    universe_filter_window=hy_history[universe_start:universe_end].index
+                               dirname='')
+    universe_filter_window= hy_history[universe_start:universe_end].index
     futures['borrow_volume_decile'] =0
     futures.loc[futures['spotMargin']==True,'borrow_volume_decile'] = futures[futures['spotMargin']==True].apply(lambda f:
                             (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']*hy_history.loc[universe_filter_window,f.name+'/mark/o']).quantile(q=borrow_decile),axis=1)
@@ -61,6 +61,7 @@ async def refresh_universe(exchange_name,universe_size):
         screening_params.to_excel(writer, sheet_name='screening_params')
         #TODO: s3_upload_file(filename, 'gof.crypto.shared', 'ftx_universe_'+str(datetime.now())+'.xlsx')
 
+    print('refreshed universe')
     return futures
 
 async def perp_vs_cash_live(
@@ -73,7 +74,7 @@ async def perp_vs_cash_live(
     try:
         first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
         if max(first_history.index)>datetime.now().replace(minute=0,second=0,microsecond=0):
-            pass
+            pass# if fetched less on this hour
         else:
             for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)# otherwise do nothing and build_history will use what's there
     except:
@@ -87,7 +88,7 @@ async def perp_vs_cash_live(
     point_in_time = now_time.replace(minute=0, second=0, microsecond=0)
 
     # filtering params
-    universe=await refresh_universe('ftx',UNIVERSE)
+    universe=await refresh_universe(exchange,UNIVERSE)
     universe=universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = TYPE_ALLOWED
     max_nb_coins = 99
@@ -106,7 +107,9 @@ async def perp_vs_cash_live(
         equity = previous_weights_df.loc['total']
         previous_weights_df = previous_weights_df.drop(['USD', 'total'])
     else:
-        start_portfolio = await fetch_portfolio(open_exchange('ftx', EQUITY), now_time)
+        await exchange.close()
+        exchange=open_exchange('ftx', EQUITY)
+        start_portfolio = await fetch_portfolio(exchange, now_time)
         previous_weights_df = -start_portfolio.loc[
             start_portfolio['attribution'].isin(futures.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
@@ -205,7 +208,7 @@ async def perp_vs_cash_backtest(
     futures = pd.DataFrame(await fetch_futures(exchange,includeExpired=False)).set_index('name')
 
     # filtering params
-    universe = refresh_universe('ftx', UNIVERSE)
+    universe = refresh_universe(exchange, UNIVERSE)
     universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed=TYPE_ALLOWED
     max_nb_coins = 99
@@ -385,3 +388,8 @@ def strategies_main(*argv):
 
 if __name__ == "__main__":
     strategies_main(*sys.argv[1:])
+
+
+
+
+
