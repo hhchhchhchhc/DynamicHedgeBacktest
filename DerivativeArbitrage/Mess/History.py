@@ -13,7 +13,7 @@ class RawHistory:
         self._start_date = datetime.now()
         self._end_date = datetime.now()
         self._history = pd.DataFrame()
-    def build(self,exchange: Exchange,timeframe: str,
+    def build(self,exchange: ccxt.Exchange,timeframe: str,
                  start_date: datetime.date,
                  end_date: datetime.date,
                 filename: str='') -> None:
@@ -24,7 +24,7 @@ class RawHistory:
                                                             self._timeframe, self._start_date, self._end_date,
                                                             filename)
     @staticmethod
-    def read_or_fetch_history(futures: pd.DataFrame, exchange: Exchange,
+    def read_or_fetch_history(futures: pd.DataFrame, exchange: ccxt.Exchange,
                  timeframe: str,
                  start_date: datetime.date,
                  end_date: datetime.date,
@@ -56,7 +56,7 @@ class RawHistory:
         return hy_history
 
     @staticmethod
-    def fetch_history(futures: pd.DataFrame, exchange: Exchange,
+    def fetch_history(futures: pd.DataFrame, exchange: ccxt.Exchange,
                  timeframe: str,
                  start: datetime.date,
                  end: datetime.date) -> pd.DataFrame:
@@ -79,7 +79,7 @@ class RawHistory:
 
     ### only perps, only borrow and funding, only hourly
     @staticmethod
-    def fetch_borrow_history(spot: str, exchange: Exchange,
+    def fetch_borrow_history(spot: str, exchange: ccxt.Exchange,
                              start: datetime.date,
                              end: datetime.date) -> pd.DataFrame:
         max_funding_data = int(500)  # in hour. limit is 500 :(
@@ -116,7 +116,7 @@ class RawHistory:
 
     ######### annualized funding for perps
     @staticmethod
-    def fetch_funding_history(future: pd.Series, exchange: Exchange,
+    def fetch_funding_history(future: pd.Series, exchange: ccxt.Exchange,
                  start: datetime.date,
                  end: datetime.date) -> pd.DataFrame:
         max_funding_data = int(500)  # in hour. limit is 500 :(
@@ -153,7 +153,7 @@ class RawHistory:
 
     #### annualized rates for futures and perp
     @staticmethod
-    def fetch_rate_history(future: pd.Series, exchange: Exchange,
+    def fetch_rate_history(future: pd.Series, exchange: ccxt.Exchange,
                  timeframe: str,
                  start: datetime.date,
                  end: datetime.date) -> pd.DataFrame:
@@ -204,14 +204,14 @@ class RawHistory:
                                      indexes.loc[y.name, 'indexes/close'], future['expiryTime'],
                                      datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
             data['rate/h'] = data.apply(
-                lambda y: calc_basis(y['mark/h'], indexes.loc[y.name, 'indexes/high'], future['expiryTime'],
+                lambda y: calc_basis(y['mark/h'], indexes.loc[y.name, 'indexes/h'], future['expiryTime'],
                                      datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
             data['rate/l'] = data.apply(
                 lambda y: calc_basis(y['mark/l'], indexes.loc[y.name, 'indexes/low'], future['expiryTime'],
                                      datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
         elif future['type'] == 'perpetual': ### 1h funding = (mark/spot-1)/24
             data['rate/c'] = (mark['mark/c'] / indexes['indexes/close'] - 1)*365.25
-            data['rate/h'] = (mark['mark/h'] / indexes['indexes/high'] - 1)*365.25
+            data['rate/h'] = (mark['mark/h'] / indexes['indexes/h'] - 1)*365.25
             data['rate/l'] = (mark['mark/l'] / indexes['indexes/low'] - 1)*365.25
         else:
             print('what is ' + future['symbol'] + ' ?')
@@ -223,7 +223,7 @@ class RawHistory:
         return data
 
     @staticmethod
-    def fetch_price_history(symbol: str, exchange: Exchange,
+    def fetch_price_history(symbol: str, exchange: ccxt.Exchange,
                  timeframe: str,
                  start: datetime.date,
                  end: datetime.date) -> pd.DataFrame:
@@ -279,7 +279,7 @@ class ModelledAssets:
         self._estimator = EstimationModel(signal_horizon)
 
     ### Constant rate slippage calculation. Reads order book, or applies override.
-    def fetch_rate_slippage(self,exchange: Exchange,
+    def fetch_rate_slippage(self,exchange: ccxt.Exchange,
                         slippage_override: int=-999, slippage_orderbook_depth: float=0, slippage_scaler: float=1.0,
                         params: dict={'override_slippage':True}) -> None:
         # -------------------- transaction costs---------------
