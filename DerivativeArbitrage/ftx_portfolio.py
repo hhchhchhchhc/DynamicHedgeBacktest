@@ -239,42 +239,72 @@ async def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_bal
             None)] = greeks.sum(axis=1)
     return greeks
 
-async def live_risk(exchange_name='ftx',subaccount='SysPerp'):
+async def live_risk_wrapper(exchange_name='ftx',subaccount='SysPerp'):
     exchange = open_exchange(exchange_name,subaccount)
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False, includeIndex=True)).set_index('name')
-    markets = pd.DataFrame([r['info'] for r in await exchange.fetch_markets()]).set_index('name')
 
-    positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={})],dtype=float)#'showAvgPrice':True})
-    if not positions.empty:
-        positions['coin'] = positions['future'].apply(lambda f: f.split('-')[0])
-        positions = positions[positions['netSize'] != 0.0].set_index('coin').fillna(0.0)
-    else:
-        raise Exception('no position in account')
+    # contruct markets_by_id
+    markets = await exchange.fetch_markets()
+    d=dict()
+    [d.update({i['id']:
+                   {'info':{'price':float(i['info']['price']),'underlying':i['info']['underlying']}}})
+            for i in markets if i['info']['price']!=None]
 
-    balances=pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],dtype=float)#'showAvgPrice':True})
-    balances=balances[(balances['total']!=0.0)&(balances['coin']!='USD')].set_index('coin').fillna(0.0)
-
-    greeks=balances.join(positions,how='outer')
-    greeks['futureDelta'] = positions.apply(lambda f: f['netSize'] * futures.loc[f['future'], 'mark'], axis=1)
-    greeks['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
-    result=greeks[['futureDelta','spotDelta']].fillna(0.0)
-    result['netDelta'] = result['futureDelta'] + result['spotDelta']
-    result['futureMark'] = positions.apply(lambda f: futures.loc[f['future'], 'mark'], axis=1)
-    result['futureIndex'] = positions.apply(lambda f: futures.loc[f['future'], 'index'], axis=1)
-    result['spotMark'] = balances.apply(lambda f: (1.0 if f.name=='USD' else float(markets.loc[f.name+'/USD', 'price'])), axis=1)
-    result.loc['total', ['futureDelta', 'spotDelta', 'netDelta']] = result[['futureDelta', 'spotDelta', 'netDelta']].sum()
-
-    account_info = pd.DataFrame((await exchange.privateGetAccount())['result']).iloc[0, 1:8]
-    result.loc['total', account_info.index] = account_info.values
-
+    risk = await live_risk(exchange,d)
     await exchange.close()
-    return result
+    return risk
+
+async def live_risk(exchange,futures):
+    balances=pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],dtype=float)#'showAvgPrice':True})
+    balances=balances[(balances['total']!=0.0)&(balances['coin']!='USD')].fillna(0.0)
+    balances['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if f['coin'] == 'USD' else float(futures[f['coin'] + '/USD']['info']['price'])), axis=1)
+
+    positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={}) if r['info']['netSize']!=0],dtype=float)#'showAvgPrice':True})
+    if not positions.empty:
+        positions = positions[positions['netSize'] != 0.0].fillna(0.0)
+        positions['coin'] = positions['future'].apply(lambda f: futures[f]['info']['underlying'])
+        positions['futureDelta'] = positions.apply(lambda f: f['netSize'] * float(futures[f['future']]['info']['price']),axis=1)
+        positions['futureMark'] = positions.apply(lambda f: float(futures[f['future']]['info']['price']), axis=1)
+        positions['futureIndex'] = positions.apply(lambda f: float(futures[f['coin'] + '/USD']['info']['price']), axis=1)
+        result = balances.merge(positions, how='outer', on='coin').fillna(0.0)
+    else:
+        result=balances
+        result[['futureDelta','futureMark','futureIndex']]=0
+
+    result['netDelta'] = result['futureDelta'] + result['spotDelta']
+    result['spotMark'] = balances.apply(lambda f: (1.0 if f['coin']=='USD' else float(futures[f['coin']+'/USD']['info']['price'])), axis=1)
+    result.loc['total', ['futureDelta', 'spotDelta', 'netDelta']] = result[['futureDelta', 'spotDelta', 'netDelta']].sum()
+    result.loc['total', 'coin'] = 'total'
+
+    #account_info = pd.DataFrame((await exchange.privateGetAccount())['result']).iloc[0, 1:8]
+    #result.loc['total', account_info.index] = account_info.values
+
+    return result[['coin','futureDelta', 'spotDelta', 'netDelta','futureMark','futureIndex']].set_index('coin')
+
+async def fetch_current_portoflio(exchange: ccxt.Exchange) -> list:
+    positions = await exchange.fetch_positions()
+    positions = [{'symbol':position['symbol'],
+                 'delta':float(position['notional']*(1 if position['side']=='long' else -1)),
+                 'underlying':exchange.market(position['symbol'])['base']}
+                 for position in positions]
+
+    balances = await exchange.fetch_balance()
+    balances = [{'symbol':key+'/USD',
+                 'delta':float(balance['total'])*float(exchange.market(key+'/USD')['info']['price']),
+                 'underlying':key}
+                for key,balance in balances.items() if key in exchange.currencies.keys() and key!='USD']
+
+    portfolio = pd.DataFrame(positions+balances)
+    portfolio['netDelta']=portfolio['underlying'].apply(lambda coin: portfolio.groupby(by='underlying')['delta'].sum()[coin])
+    portfolio = portfolio.set_index('symbol').T.to_dict()
+
+    return portfolio
 
 # diff is in coin
 async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
     # open file
     future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
-    future_weights = future_weights[(future_weights['name'] != 'USD') & (future_weights['name'] != 'total')]
+    future_weights = future_weights[future_weights['name'].isin(['USD','total'])==False]
+    future_weights = future_weights[(np.abs(future_weights['optimalWeight'])>1)]
     future_weights['optimalWeight'] *= -.1
 
     cash_weights = future_weights.copy()
@@ -282,16 +312,18 @@ async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weigh
     cash_weights['optimalWeight'] *= -1
     target = future_weights.append(cash_weights)
 
-    async def fetch_balances_positions(exchange: Exchange) -> pd.DataFrame:
+    async def fetch_balances_positions(exchange: ccxt.Exchange) -> pd.DataFrame:
         positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={})],
                                  dtype=float).rename(
             columns={'future': 'name', 'netSize': 'total'})  # 'showAvgPrice':True})
+
         balances = pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],
                                 dtype=float)  # 'showAvgPrice':True})
         balances = balances[balances['coin'] != 'USD']
         balances['name'] = balances['coin'] + '/USD'
 
         current = positions.append(balances)[['name', 'total']]
+        current = current[current['total'] != 0]
 
         return current
 
@@ -302,10 +334,14 @@ async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weigh
     diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['total']],how='outer')
     diffs=diffs.fillna(0.0).reset_index()
     tickers=pd.DataFrame(await exchange.fetch_tickers()).T
-    tickers['symbol']=tickers['symbol'].apply(lambda s: s.replace('/USD:USD','-PERP'))
-    diffs['price']=diffs['name'].apply(lambda x:tickers.loc[tickers['symbol']==x,'close'].values[0])
+    tickers['symbol']=tickers['symbol'].apply(lambda s: exchange.market(s)['id'])
+    #we ignore the basis for scaling the perps. Too volatile.
+    diffs['approx_price']=diffs['name'].apply(lambda x:
+                                       tickers.loc[exchange.market(x)['base']+'/USD','close'] if exchange.market(x)['swap']
+                                       else tickers.loc[tickers['symbol']==x,'close'].values[0])
     diffs['underlying'] = diffs['name'].apply(lambda x: x.split('-')[0].split('/USD')[0])
-    diffs['diff']=diffs['optimalWeight']/diffs['price']-diffs['total']
+    diffs['target'] = diffs['optimalWeight'] / diffs['approx_price']
+    diffs['diff']=diffs['target']-diffs['total']
 
     return diffs
 
@@ -646,9 +682,15 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-async def run_plex(exchange_name,subaccount,dirname='Runtime/RiskPnL/'):
+async def run_plex_wrapper(exchange_name='ftx',subaccount='SysPerp'):
+    exchange = open_exchange(exchange_name,subaccount)
+    plex= await run_plex()
+    await exchange.close()
+    return plex
 
-    filename = dirname+'portfolio_history_'+exchange_name+'_'+subaccount+'.xlsx'
+async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
+
+    filename = dirname+'portfolio_history_'+exchange.describe()['id']+'_'+exchange.headers['FTX-SUBACCOUNT']+'.xlsx'
     if not os.path.isfile(filename):
         risk_history = pd.DataFrame()
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
@@ -692,9 +734,9 @@ async def run_plex(exchange_name,subaccount,dirname='Runtime/RiskPnL/'):
 def ftx_portoflio_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['plex'])
+        argv.extend(['execreport'])
     if len(argv) < 3:
-        argv.extend(['ftx', 'SysPerp'])
+        argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
     if argv[0] == 'fills_anaysis':
         exchange = open_exchange(argv[1], argv[2])
@@ -709,11 +751,11 @@ def ftx_portoflio_main(*argv):
         print(diff[diff['diff'].apply(np.abs)>10])
         return diff
     elif argv[0] == 'risk':
-        risk=asyncio.run(live_risk(argv[1], argv[2]))
+        risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
         print(risk[risk.columns[:3]])
         return risk
     elif argv[0] == 'plex':
-        plex= asyncio.run(run_plex(*argv[1:]))
+        plex= asyncio.run(run_plex_wrapper(*argv[1:]))
         print(plex)
         return plex
     else:
