@@ -91,8 +91,8 @@ async def funding_history(future,exchange,
 async def fetch_trades_history(symbol,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
-                         frequency='1s',
-                    dirname='Runtime/temporary_parquets'):
+                         frequency=timedelta(minutes=1),
+                    dirname=''):
     parquet_filename = dirname + '/' + symbol.split('/USD')[0] + "_trades.parquet"
     if dirname!='':
         if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
@@ -102,20 +102,24 @@ async def fetch_trades_history(symbol,exchange,
 
     ### grab data per batch of 5000, try weekly
     trades=[]
-    end_time = end.timestamp()
-    start_time = (datetime.fromtimestamp(end_time) - timedelta(weeks=1)).timestamp()
+    end_time = (start + timedelta(hours=1)).timestamp()
+    start_time = start.timestamp()
 
-    while end_time > start.timestamp():
-        if start_time<start.timestamp(): start_time=start.timestamp()
-
+    while start_time < end.timestamp():
         new_trades =  (await exchange.publicGetMarketsMarketNameTrades(
             {'market_name': symbol, 'start_time': start_time, 'end_time': end_time}
                                                         ))['result']
-        if (len(new_trades) == 0): break
         trades.extend(new_trades)
-        end_time = min(start_time,dateutil.parser.isoparse(new_trades[-1]['time']).timestamp())
-        start_time = (datetime.fromtimestamp(end_time) - timedelta(
-            weeks=1)).timestamp()
+
+        if len(new_trades) > 0:
+            last_trade_time = dateutil.parser.isoparse(new_trades[0]['time']).timestamp()
+            if last_trade_time > end.timestamp(): break
+            if (len(new_trades)<max_trades_data)&(end_time>end.timestamp()): break
+            start_time = last_trade_time if len(new_trades)==max_trades_data else end_time
+        else:
+            start_time=end_time
+        end_time = (datetime.fromtimestamp(start_time) + timedelta(
+            hours=1)).timestamp()
 
     data = pd.DataFrame(data=trades)
     data['size'] = data['size'].astype(float)
@@ -125,12 +129,12 @@ async def fetch_trades_history(symbol,exchange,
     data['time']=data['time'].apply(dateutil.parser.isoparse)
     data.set_index('time',inplace=True)
 
-    vwap=data[['size','volume','count']].resample(frequency).sum().ffill()
+    vwap=data[['size','volume','count']].resample(frequency).sum()
     vwap['vwap']=vwap['volume']/vwap['size']
 
     vwap.columns = [symbol.split('/USD')[0] + '/trades/' + column for column in vwap.columns]
     #data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
-    vwap = vwap[~vwap.index.duplicated()].sort_index()
+    vwap = vwap[~vwap.index.duplicated()].sort_index().ffill()
 
 
     if dirname != '': vwap.to_parquet(parquet_filename)
