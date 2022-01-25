@@ -57,6 +57,8 @@ async def borrow_history(spot,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data=data[~data.index.duplicated()].sort_index()
 
+    if dirname != '': data.to_parquet(parquet_filename)
+
     return data
 
 ######### annualized funding for perps
@@ -65,7 +67,7 @@ async def funding_history(future,exchange,
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                     dirname='Runtime/temporary_parquets'):
     parquet_filename=dirname+'/allfundings.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)[[future+'/rate/funding']]
+    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)[[future['name']+'/rate/funding']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
 
@@ -85,6 +87,8 @@ async def funding_history(future,exchange,
     data=data[['time',future['symbol'] + '/rate/funding']].set_index('time')
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
+
+    if dirname != '': data.to_parquet(parquet_filename)
 
     return data
 
@@ -214,7 +218,7 @@ async def rate_history(future,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
-    if dirname!='':data.to_parquet(dirname+'/'+future['symbol']+"_futures.parquet")
+    if dirname != '': data.to_parquet(parquet_filename)
 
     return data
 
@@ -251,27 +255,32 @@ async def spot_history(symbol, exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
-    if dirname!='': data.to_parquet(dirname+'/'+ symbol.replace('/USD','') + "_price.parquet")
+    if dirname!='': data.to_parquet(parquet_filename)
 
     return data
 
 async def ftx_history_main_wrapper(*argv):
     exchange=open_exchange(argv[2],'')
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
+    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True)).set_index('name')
     markets= await exchange.fetch_markets()
+    await exchange.load_markets()
 
-   # qualitative screening
-    futures = futures[
-        (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
-        & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
-        & (futures['tokenizedEquity'] != True)]
-    if argv[1]!='all':
-        futures = futures[futures['underlying'] == argv[1]]
+    #argv[1] is either 'all', either a universe name, or a list of currencies
+    filename = 'Runtime/Configs/universe.xlsx'
+    try:
+        universe_list=pd.read_excel(filename,sheet_name='screening_params',index_col=0).columns
+    except:
+        universe_list=pd.DataFrame()
+    if isinstance(argv[1],str) and argv[1] in universe_list:
+        universe = pd.read_excel(filename,sheet_name=argv[1],index_col=0).index
+    elif argv[1]=='all': universe=exchange.markets_by_id
+    else: universe = [id for id,data in exchange.markets_by_id.items() if data['base'] in argv[1] and data['derivative']]
+    futures = futures[futures.index.isin(universe)]
 
     # volume screening
     hy_history = await build_history(futures, exchange,
                                timeframe='1h', end=datetime.now(), start=datetime.now()-timedelta(days=argv[3]),
-                               dirname='')
+                               dirname=argv[4])
     await exchange.close()
     return hy_history
 
@@ -280,11 +289,13 @@ def ftx_history_main(*argv):
     if len(argv) < 1:
         argv.extend(['build'])
     if len(argv) < 2:
-        argv.extend(['DAWN'])
+        argv.extend(['wide']) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
-        argv.extend(['ftx'])
+        argv.extend(['ftx']) # exchange_name
     if len(argv) < 4:
-        argv.extend([150])
+        argv.extend([150])# nb days
+    if len(argv) < 5:
+        argv.extend([''])# cache directory
 
     return asyncio.run(ftx_history_main_wrapper(*argv))
 
