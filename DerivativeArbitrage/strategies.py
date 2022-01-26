@@ -5,12 +5,12 @@ from ftx_ftx import *
 #from sklearn import *
 
 async def refresh_universe(exchange,universe_size):
-    filename = 'Runtime/Configs/universe.xlsx'
+    filename = 'Runtime/configs/universe.xlsx'
     if os.path.isfile(filename):
         try:
             return pd.read_excel(filename,sheet_name=universe_size,index_col=0)
         except:
-            raise Exception('invalid Runtime/Configs/universe.xlsx')
+            raise Exception('invalid Runtime/configs/universe.xlsx')
 
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets=await exchange.fetch_markets()

@@ -266,7 +266,7 @@ async def ftx_history_main_wrapper(*argv):
     await exchange.load_markets()
 
     #argv[1] is either 'all', either a universe name, or a list of currencies
-    filename = 'Runtime/Configs/universe.xlsx'
+    filename = 'Runtime/configs/universe.xlsx'
     try:
         universe_list=pd.read_excel(filename,sheet_name='screening_params',index_col=0).columns
     except:
