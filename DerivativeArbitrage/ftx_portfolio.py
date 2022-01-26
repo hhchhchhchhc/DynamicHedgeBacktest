@@ -280,25 +280,6 @@ async def live_risk(exchange,futures):
 
     return result[['coin','futureDelta', 'spotDelta', 'netDelta','futureMark','futureIndex']].set_index('coin')
 
-async def fetch_current_portoflio(exchange: ccxt.Exchange) -> list:
-    positions = await exchange.fetch_positions()
-    positions = [{'symbol':position['symbol'],
-                 'delta':float(position['notional']*(1 if position['side']=='long' else -1)),
-                 'underlying':exchange.market(position['symbol'])['base']}
-                 for position in positions]
-
-    balances = await exchange.fetch_balance()
-    balances = [{'symbol':key+'/USD',
-                 'delta':float(balance['total'])*float(exchange.market(key+'/USD')['info']['price']),
-                 'underlying':key}
-                for key,balance in balances.items() if key in exchange.currencies.keys() and key!='USD']
-
-    portfolio = pd.DataFrame(positions+balances)
-    portfolio['netDelta']=portfolio['underlying'].apply(lambda coin: portfolio.groupby(by='underlying')['delta'].sum()[coin])
-    portfolio = portfolio.set_index('symbol').T.to_dict()
-
-    return portfolio
-
 # diff is in coin
 async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
     # open file
@@ -336,11 +317,11 @@ async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weigh
     tickers=pd.DataFrame(await exchange.fetch_tickers()).T
     tickers['symbol']=tickers['symbol'].apply(lambda s: exchange.market(s)['id'])
     #we ignore the basis for scaling the perps. Too volatile.
-    diffs['approx_price']=diffs['name'].apply(lambda x:
+    diffs['spot_price']=diffs['name'].apply(lambda x:
                                        tickers.loc[exchange.market(x)['base']+'/USD','close'] if exchange.market(x)['swap']
                                        else tickers.loc[tickers['symbol']==x,'close'].values[0])
     diffs['underlying'] = diffs['name'].apply(lambda x: x.split('-')[0].split('/USD')[0])
-    diffs['target'] = diffs['optimalWeight'] / diffs['approx_price']
+    diffs['target'] = diffs['optimalWeight'] / diffs['spot_price']
     diffs['diff']=diffs['target']-diffs['total']
 
     return diffs

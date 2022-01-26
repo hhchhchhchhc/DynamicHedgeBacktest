@@ -143,7 +143,7 @@ async def fetch_trades_history(symbol,exchange,
 
     if dirname != '': vwap.to_parquet(parquet_filename)
 
-    return vwap
+    return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
 
 
 #### annualized rates for futures and perp, volumes are daily
