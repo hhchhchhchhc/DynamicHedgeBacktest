@@ -15,7 +15,7 @@ amend_trigger = 0.005
 taker_trigger = 0.0025
 max_slice_factor = 50.# in USD
 time_budget = 5*60 # in sec
-entry_tolerance = 0.1
+entry_tolerance = 0.25
 global_log = []
 audit = []
 

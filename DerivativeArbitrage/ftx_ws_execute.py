@@ -260,7 +260,7 @@ async def execution_request(exchange, weights):
                            sum([float(exchange.market(name)['info']['price']) * data['target'] for name, data in
                                 coin_data.items()])
                            + sum([data['series'] * data['target'] for name, data in
-                                  coin_data.items()]).dropna().diff().quantile(0.6).values[0]}
+                                  coin_data.items()]).dropna().diff().quantile(entry_tolerance).values[0]}
                       | {name:
                              {field: field_data for field, field_data in data.items() if field != 'series'}
                          for name, data in coin_data.items()}
@@ -294,7 +294,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         'enableRateLimit': True,
         'apiKey': min_iterations,
         'secret': max_iterations}) if argv[1]=='ftx' else None
-    exchange.verbose = False
+    exchange.verbose = True
     exchange.headers =  {'FTX-SUBACCOUNT': argv[2]}
     exchange.authenticate()
 
