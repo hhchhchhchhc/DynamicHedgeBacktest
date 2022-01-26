@@ -5,11 +5,7 @@ import asyncio
 import pandas as pd
 
 from ftx_rest_spread import *
-from ftx_portfolio import live_risk,fetch_current_portoflio
-
-previous_delta = pd.DataFrame()
-current_delta = pd.DataFrame()
-
+from ftx_portfolio import live_risk
 import logging
 logging.basicConfig(level=logging.INFO)
 
@@ -19,14 +15,17 @@ def loop_and_callback(func):
         while True:
             try:
                 value = await func(*args, **kwargs)
-            except myFtx.DoneDeal as a:
-                logging.info(a)
-                raise myFtx.DoneDeal()
+            except myFtx.DoneDeal as e:
+                logging.info(e)
+                raise e
                 break
-            except myFtx.LimitBreached as a:
-                logging.info(a)
-                raise myFtx.LimitBreached()
+            except myFtx.LimitBreached as e:
+                logging.info(e)
+                raise e
                 break
+            except ccxt.base.errors.RequestTimeout as e:
+                print('reconnect..')
+                continue
             except Exception as e:
                 logging.exception(e)
 
@@ -49,11 +48,60 @@ class myFtx(ccxtpro.ftx):
             self.limit = limit
             self.check_frequency = check_frequency
             
+    class Risk(dict):
+        def __init__(self):
+            super().__init__()
+    
     def __init__(self, config={}):
         super().__init__(config=config)
         self._localLog = myFtx.myLogging()
-        self._pv = None #temporary
-        self._absolute_risk = None # temporary
+        self.limit = myFtx.LimitBreached()
+        self.risk = myFtx.Risk()
+        self.pv = None
+
+    # updates risk. Should be handle_my_trade but needs a coroutine :(
+    async def fetch_risk(self, params={}):
+        # {coin:{'netDelta':netDelta,symbol1:{'volume','spot_price','diff','target'}]}]
+        # [coin:{'netDelta':netDelta,'legs':{symbol:delta}]]
+        positions = await self.fetch_positions()
+        # delta is noisy for perps, so override to delta 1.
+        positions = {self.market(position['symbol'])['base']:
+                         {position['symbol']:
+                              {'delta':
+                                   (float(position['notional'])
+                                    if self.market(position['symbol'])['type'] == 'future'
+                                    else float(position['info']['size']) * float(
+                                       self.market(self.market(position['symbol'])['base'] + '/USD')[
+                                           'info']['price']))
+                                   * (1 if position['side'] == 'long' else -1)
+                               }
+                          }
+                     for position in positions}
+
+        balances = await self.fetch_balance()
+        self.pv = sum(balance['total'] * (float(self.market(coin + '/USD')['info']['price']) if coin !='USD' else 1) for coin,balance in balances.items() if coin in self.currencies)
+
+        balances = {key:
+                        {key + '/USD':
+                             {'delta':
+                                  float(balance['total']) * float(self.market(key + '/USD')['info']['price'])
+                              }
+                         }
+                    for key, balance in balances.items() if key in self.currencies.keys() and key != 'USD'}
+
+        self.risk = {key:
+                         (positions[key] if key in positions.keys() else {})
+                         | (balances[key] if key in balances.keys() else {})
+                         | {'netDelta': sum(positions[key][symbol]['delta'] for symbol in
+                                            (positions[key].keys() if key in positions.keys() else {}))
+                                        + (balances[key][key + '/USD']['delta'] if key in balances.keys() else 0)}
+                     for key in positions.keys() | balances.keys()}
+
+
+
+        absolute_risk=sum(abs(data['netDelta']) for data in self.risk.values())
+        if absolute_risk>self.limit.limit:
+            raise self.limit
 
     def logList(self,item: dict):
         self._localLog._list += [item]
@@ -78,133 +126,166 @@ class myFtx(ccxtpro.ftx):
             previous_opposite = pair[0]
         return {'side':previous_side,'opposite':previous_opposite}
 
-    #size in usd
-    async def aggressive_order(self,symbol,size,depth,edit_scaler,stop_scaler):
+    #size in coin
+    #scalers are in number of bid asks
+    async def update_orders(self,symbol,size,depth,edit_trigger_scaler,edit_price_scaler,stop_scaler):
         orders = await self.fetch_open_orders(symbol=symbol)
         if len(orders)>3:
             for item in orders[:-1]:
                 await self.cancel_order(item['id'])
             warnings.warn('!!!!!!!!!! duplicates orders removed !!!!!!!!!!')
     
-        deep_book=self.mkt_at_depth_orderbook(symbol,depth)
-        price = deep_book['opposite']
-        opposite_side = deep_book['opposite']
+        price,opposite_side = float(self.markets[symbol]['info']['ask' if size<0 else 'bid']),float(self.market(symbol)['info']['ask' if size>0 else 'bid'])
+        mid = 0.5*(price+opposite_side)
         priceIncrement = float(self.markets[symbol]['info']['priceIncrement'])
         sizeIncrement = float(self.markets[symbol]['info']['sizeIncrement'])
-        if np.abs(size) < sizeIncrement * opposite_side * 1.1:
-            return orders
+        if np.abs(size) < sizeIncrement:
+            order_size =0
+            return None
+        else:
+            order_size = int(np.abs(size)/sizeIncrement)*sizeIncrement
 
-        # triggers are in units of bis/ask at size
-        stop_trigger = stop_scaler * np.abs(opposite_side/price-1)
-        edit_trigger = edit_scaler * np.abs(opposite_side/price-1)
-        edit_price = opposite_side - priceIncrement * (1 if size>0 else -1)
-    
+        # triggers are in units of bid/ask at size
+        stop_trigger = max(1,int((stop_scaler * np.abs(opposite_side-price))/priceIncrement))*priceIncrement
+        edit_trigger = max(1,int((edit_trigger_scaler * np.abs(opposite_side-price))/priceIncrement))*priceIncrement
+        edit_price = opposite_side - max(1,int(edit_price_scaler * np.abs(opposite_side - price) * (1 if size>0 else -1))/priceIncrement)*priceIncrement
+
         if not orders:
-            order = await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', np.abs(size) / edit_price, price=edit_price, params={'postOnly': True})
+            await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', order_size, price=edit_price, params={'postOnly': True})
 
         for item in orders:
             # panic stop. we could rather place a trailing stop: more robust to latency, less generic.
-            if (1 if item['side']=='buy' else -1)*(opposite_side/item['price']-1)>stop_trigger:
-                order = await self.edit_order(item['id'], symbol, 'market', 'buy' if size>0 else 'sell', np.abs(size) / opposite_side)
+            if (1 if item['side']=='buy' else -1)*(opposite_side-item['price'])>stop_trigger:
+                order = await self.edit_order(item['id'], symbol, 'market', 'buy' if size>0 else 'sell', order_size)
             # chase
-            if (1 if item['side']=='buy' else -1)*(price/item['price']-1)>edit_trigger:
-                order = await self.edit_order(item['id'], symbol, 'limit', 'buy' if size>0 else 'sell', np.abs(size) / edit_price,price=edit_price,params={'postOnly': True})
+            if (1 if item['side']=='buy' else -1)*(price-item['price'])>edit_trigger:
+                order = await self.edit_order(item['id'], symbol, 'limit', 'buy' if size>0 else 'sell', order_size,price=edit_price,params={'postOnly': True})
             #print(str(price/item['price']-1) + ' ' + str(opposite_side / item['price'] - 1))
     
-        return orders
+        return None
 
-    # size in usd
-    async def passive_order(self, symbol, size, depth, edit_scaler, stop_scaler):
-        orders = await self.fetch_open_orders(symbol=symbol)
-        if len(orders) > 3:
-            for item in orders[:-1]:
-                await self.cancel_order(item['id'])
-            warnings.warn('!!!!!!!!!! duplicates orders removed !!!!!!!!!!')
-
-        deep_book = self.mkt_at_depth_orderbook(symbol, depth)
-        price = deep_book['side']
-        opposite_side = deep_book['opposite']
-        priceIncrement = float(self.markets[symbol]['info']['priceIncrement'])
-        sizeIncrement = float(self.markets[symbol]['info']['sizeIncrement'])
-        if np.abs(size) < sizeIncrement * price * 1.1:
-            return orders
-
-        edit_trigger = edit_scaler * np.abs(opposite_side / price - 1)
-        edit_price = price + priceIncrement * (1 if size > 0 else -1)
-
-        if not orders:
-            order = await self.create_limit_order(symbol, 'buy' if size > 0 else 'sell', np.abs(size) / edit_price,
-                                                  price=edit_price, params={'postOnly': True})
-
-        for item in orders:
-            # chase
-            if (1 if item['side'] == 'buy' else -1) * (price / item['price'] - 1) > edit_trigger:
-                order = await self.edit_order(item['id'], symbol, 'limit', 'buy' if size > 0 else 'sell',
-                                              np.abs(size) / edit_price, price=edit_price, params={'postOnly': True})
-            # print(str(price/item['price']-1) + ' ' + str(opposite_side / item['price'] - 1))
-
-        return orders
-
+    # a mix of watch_ticker and handle_ticker. Can't inherit since handle needs coroutine.
     @loop_and_callback
-    async def execute_on_update(self,symbol,target):
+    async def execute_on_update(self,symbol,coin_request):
         top_of_book = await self.watch_ticker(symbol)
-        global current_delta
-        size = target['size']-current_delta.loc[coin,'spotDelta' if type == 'spot' else 'futureDelta']
-        netDelta = current_delta.loc[coin,'netDelta']
-        target['spread']
-        target['spread_']
+        coin = self.markets[symbol]['base']
+        symbol_request = coin_request[symbol]
+
+        # size to do
+        size = symbol_request['target']
+        netDelta = 0
+        if coin in self.risk:
+            netDelta = self.risk[coin]['netDelta']
+            if symbol in self.risk[coin]:
+                size -= self.risk[coin][symbol]['delta']
+
+        size = np.sign(size)*min([np.abs(size),symbol_request['exec_parameters']['slice_size']])
 
         # if increases risk, go passive
         if np.abs(netDelta+size)>np.abs(netDelta):
-            depth = 10*size
-            edit_scaler=2
-            stop_scaler=10
-            order = await self.passive_order(symbol,size,depth,edit_scaler,stop_scaler)
+            # wait for good level
+            current_basket_price = sum(float(self.markets[symbol]['info']['price'])*symbol_data['target'] for symbol,symbol_data in coin_request.items() if symbol in self.markets)
+            if current_basket_price<coin_request['entry_level']:
+                depth = 0
+                edit_trigger_scaler=symbol_request['exec_parameters']['edit_trigger_scaler']
+                edit_price_scaler=symbol_request['exec_parameters']['edit_price_scaler']
+                stop_scaler=999999
+                order = await self.update_orders(symbol,size,0,edit_trigger_scaler,edit_price_scaler,stop_scaler)
         else:
-            depth = 10 * size
-            edit_scaler = 2
-            stop_scaler = 10
-            order = await self.aggressive_order(symbol, size, depth, edit_scaler, stop_scaler)
+            depth = 0
+            edit_trigger_scaler=symbol_request['exec_parameters']['edit_trigger_scaler']
+            edit_price_scaler=symbol_request['exec_parameters']['edit_price_scaler']
+            stop_scaler=symbol_request['exec_parameters']['edit_price_scaler']
+            order = await self.update_orders(symbol,size,0,edit_trigger_scaler,edit_price_scaler,stop_scaler)
 
     @loop_and_callback
     async def monitor_fills(self):
         orders = await self.watch_my_trades()
-        global current_delta,previous_delta
-        current_delta= await fetch_current_portoflio(self)# TODO: don;t use live_risk, use states
-        delta_change=pd.DataFrame(current_delta)-pd.DataFrame(previous_delta)
-        logging.info(delta_change)
-        previous_delta= current_delta
-    
-        return orders
+        previous_risk = self.risk
+        await self.fetch_risk()
+        #risk_change=self.risk - previous_risk
+        #logging.info(risk_change)
 
     ## redundant minutely risk check
     @loop_and_callback
-    async def fetch_risk(self):
-        current_delta = await fetch_current_portoflio(self)
-        self._absolute_risk=sum(abs(delta['netDelta']) for delta in current_delta.values())
-        if self._absolute_risk>myFtx.LimitBreached.limit:
-            raise myFtx.LimitBreached()
-        await asyncio.sleep(myFtx.LimitBreached.check_frequency)
-        return None
+    async def monitor_risk(self):
+        await self.fetch_risk()
+        await asyncio.sleep(self.limit.check_frequency)
 
     async def watch_order_book(self,symbol):
         super().watch_order_book(symbol)
 
-async def executer_ws(exchange, targets):
-    while True:
-        try:
-            await asyncio.gather(*([exchange.monitor_fills(),exchange.fetch_risk()]+
-                                   [exchange.execute_on_update(symbol, symbol_data['target'])
-                                    for coin,target in targets.items() for symbol,symbol_data in target.items() if symbol in exchange.markets]+
-                                   [exchange.watch_order_book(symbol)
-                                    for coin, target in targets.items() for symbol, symbol_data in target.items() if symbol in exchange.markets]))
-        except myFtx.LimitBreached as e:
-            logging.exception(e)
-            break
-        except Exception as e:
-            logging.exception(e)
+# target_sub_portfolios = {coin:{'entry_level_increment':entry_level_increment,symbol1:{'volume','spot_price','diff','target'}]}]
+# add info to target_sub_portfolios dictionary. Here only weeds out slow underlyings (should be in strategy)
+async def execution_request(exchange, weights):
+    frequency = timedelta(minutes=1)
+    end = datetime.now()
+    start = end - timedelta(hours=1)
 
-    return log
+    trades_history_list = await asyncio.gather(*[fetch_trades_history(
+        exchange.market(symbol)['id'], exchange, start, end, frequency=frequency)
+        for symbol in weights['name']])
+
+    weights['name'] = weights['name'].apply(lambda s: exchange.market(s)['symbol'])
+    weights.set_index('name', inplace=True)
+    coin_list = weights['underlying'].unique()
+
+    # {coin:{symbol1:{data1,data2...},sumbol2:...}}
+    data_dict = {coin:
+                     {df['symbol']:
+                          {'volume': df['vwap'].filter(like='/trades/volume').mean().values[0] / frequency.total_seconds(),
+                           'spot_price': weights.loc[df['symbol'], 'spot_price'],
+                           'diff': weights.loc[df['symbol'], 'diff'],
+                           'target': weights.loc[df['symbol'], 'target'],
+                           'exec_parameters': {  # depend on risk tolerance other execution parameters...
+                               'slice_size': max([float(exchange.market(df['symbol'])['info']['minProvideSize']),
+                                                  0.1 * weights.loc[df['symbol'], 'diff']]),  # in usd
+                               'edit_trigger_scaler': 10,
+                               'edit_price_scaler': 1,
+                               'stop_scaler': 50},
+                           'series': df['vwap'].filter(like='/trades/vwap')}
+                      for df in trades_history_list if df['coin']==coin}
+                 for coin in coin_list}
+
+    # exclude coins with slow symbols
+    volume_list = {coin:
+                       coin_data for coin, coin_data in data_dict.items()
+                   if min([data['volume'] * time_budget / data['spot_price'] / max(1, np.abs(data['diff']))
+                           for name, data in coin_data.items()]) > 1}
+
+    # get times series of target baskets, compute quantile of increments and add to last price
+    # remove series
+    light_list = {coin:
+                      {'entry_level':
+                           sum([float(exchange.market(name)['info']['price']) * data['target'] for name, data in
+                                coin_data.items()])
+                           + sum([data['series'] * data['target'] for name, data in
+                                  coin_data.items()]).dropna().diff().quantile(0.6).values[0]}
+                      | {name:
+                             {field: field_data for field, field_data in data.items() if field != 'series'}
+                         for name, data in coin_data.items()}
+                  for coin, coin_data in volume_list.items()}
+
+    print('Executing:')
+    print(weights)
+    return light_list
+
+async def executer_ws(exchange, targets):
+    try:
+        await asyncio.gather(*([exchange.monitor_fills()]+#,exchange.monitor_risk()]+
+                               [exchange.execute_on_update(symbol, target)
+                                for coin,target in targets.items() for symbol,symbol_data in target.items() if symbol in exchange.markets.keys()]
+                               ))
+    except myFtx.LimitBreached as e:
+        logging.exception(e)
+        #break
+    except ccxt.base.errors.RequestTimeout as e:
+        print('reconnect..')
+        #continue
+    except Exception as e:
+        logging.exception(e)
+
+    return exchange._localLog
 
 async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     exchange = myFtx({
@@ -229,7 +310,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     current_delta = current_delta.append(zero_delta).fillna(0)
     previous_delta = current_delta
 
-    target_sub_portfolios = await entry_level_increment(exchange, target_sub_portfolios)
+    request = await execution_request(exchange, target_sub_portfolios)
 
     #coin='OMG'
     #target_sub_portfolios = target_sub_portfolios[target_sub_portfolios['name'].isin([coin+'/USD',coin+'-PERP'])]
@@ -238,8 +319,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     log = ExecutionLog('dummy', [])
     try:
         if len(target_sub_portfolios)==0: warnings.warn('nothing to execute')
-        log = await executer_ws(exchange, target_sub_portfolios)
-        # asyncio.run(clean_dust(exchange))
+        log = await executer_ws(exchange, request)
         end_time = datetime.now().timestamp()
         with pd.ExcelWriter('Runtime/execution_diagnosis.xlsx', engine='xlsxwriter') as writer:
             pd.DataFrame(await exchange.fetch_orders(params={'start_time': start_time, 'end_time': end_time})).to_excel(
@@ -250,60 +330,14 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     except Exception as e:
         logging.exception(e)
     finally:
-        # pickleit(log, "Runtime/ExecutionLog.pickle")
         await exchange.cancel_all_orders()
+        # asyncio.run(clean_dust(exchange))
         stats = await fetch_latencyStats(exchange, days=1, subaccount_nickname='SysPerp')
         print(f'latencystats:{stats}')
         await log.populateFill(exchange)
         await exchange.close()
 
     return log.to_df()
-
-# target_sub_portfolios = {coin:[{symbol:[{'target_size':target_size,'info1':info1...}]}]
-# add info to target_sub_portfolios dictionary. Here only weeds out slow underlyings (should be in strategy)
-async def entry_level_increment(exchange, weights):
-    frequency=timedelta(minutes=1)
-    end=datetime.now()
-    start=end - timedelta(hours=1)
-
-    trades_history_list = await asyncio.gather(*[fetch_trades_history(
-        symbol, exchange, start, end, frequency=frequency)
-        for symbol in weights['name']])
-
-    weights['name']=weights['name'].apply(lambda s: s.split('/USD')[0])
-    weights.set_index('name',inplace=True)
-    coin_list = weights['underlying'].unique()
-
-    #{coin:{symbol1:{data1,data2...},sumbol2:...}}
-    data_dict = {coin: {df.columns[0].split('/')[0]:
-                                {'volume':df.filter(like='/trades/volume').mean().values[0]/frequency.total_seconds(),
-                                 'approx_price':weights.loc[df.columns[0].split('/')[0],'approx_price'],
-                                 'diff':weights.loc[df.columns[0].split('/')[0],'diff'],
-                                 'target':weights.loc[df.columns[0].split('/')[0],'target'],
-                                 'series':df[df.columns[0].split('/')[0]+'/trades/vwap']}
-                           for df in trades_history_list if coin in df.columns[0]}
-                   for coin in coin_list}
-
-    # exclude coins with slow symbols
-    volume_list = {coin: coin_data for coin,coin_data in data_dict.items()
-    if min([data['volume']*time_budget / data['approx_price'] / max(1, np.abs(data['diff']))
-         for name, data in coin_data.items()])>1}
-
-    # get times series of target baskets
-    weighted_vwap_list = {coin: coin_data|{'series':sum([data['series']*data['diff']
-                           for name,data in coin_data.items()])}
-                   for coin,coin_data in volume_list.items()}
-
-    # quantile of the increments
-    quantiles = {coin: {'entry_level_increment':coin_data['series'].dropna().diff().quantile(1-entry_tolerance)}|
-                       {exchange.market(symbol)['symbol'] if symbol in exchange.markets_by_id else symbol+'/USD' : {
-                           fields:fields_data for fields,fields_data in symbol_data.items() if fields!='series'
-                       } for symbol,symbol_data in coin_data.items() if symbol!='series'}
-                   for coin,coin_data in weighted_vwap_list.items()}
-
-    print(' were too slow. Only doing:')
-    print(weights)
-    return quantiles
 
 def ftx_ws_spread_main(*argv):
     argv=list(argv)
