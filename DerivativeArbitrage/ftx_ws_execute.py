@@ -1,13 +1,15 @@
 import time
 import ccxtpro
 import asyncio
-
 import pandas as pd
 
 from ftx_rest_spread import *
 from ftx_portfolio import live_risk
 import logging
 logging.basicConfig(level=logging.INFO)
+
+entry_tolerance = 0.5
+time_budget = 5*60
 
 def loop_and_callback(func):
     @functools.wraps(func)
@@ -48,16 +50,17 @@ class myFtx(ccxtpro.ftx):
             self.limit = limit
             self.check_frequency = check_frequency
             
-    class Risk(dict):
+    class Risk:
         def __init__(self):
-            super().__init__()
+            self.delta={}
+            self.pv=0
+            self.timestamp=(0,0)
     
     def __init__(self, config={}):
         super().__init__(config=config)
         self._localLog = myFtx.myLogging()
         self.limit = myFtx.LimitBreached()
         self.risk = myFtx.Risk()
-        self.pv = None
 
     # updates risk. Should be handle_my_trade but needs a coroutine :(
     async def fetch_risk(self, params={}):
@@ -79,7 +82,7 @@ class myFtx(ccxtpro.ftx):
                      for position in positions}
 
         balances = await self.fetch_balance()
-        self.pv = sum(balance['total'] * (float(self.market(coin + '/USD')['info']['price']) if coin !='USD' else 1) for coin,balance in balances.items() if coin in self.currencies)
+        self.risk.pv = sum(balance['total'] * (float(self.market(coin + '/USD')['info']['price']) if coin !='USD' else 1) for coin,balance in balances.items() if coin in self.currencies)
 
         balances = {key:
                         {key + '/USD':
@@ -89,7 +92,7 @@ class myFtx(ccxtpro.ftx):
                          }
                     for key, balance in balances.items() if key in self.currencies.keys() and key != 'USD'}
 
-        self.risk = {key:
+        self.risk.delta = {key:
                          (positions[key] if key in positions.keys() else {})
                          | (balances[key] if key in balances.keys() else {})
                          | {'netDelta': sum(positions[key][symbol]['delta'] for symbol in
@@ -97,9 +100,7 @@ class myFtx(ccxtpro.ftx):
                                         + (balances[key][key + '/USD']['delta'] if key in balances.keys() else 0)}
                      for key in positions.keys() | balances.keys()}
 
-
-
-        absolute_risk=sum(abs(data['netDelta']) for data in self.risk.values())
+        absolute_risk=sum(abs(data['netDelta']) for data in self.risk.delta.values())
         if absolute_risk>self.limit.limit:
             raise self.limit
 
@@ -158,8 +159,8 @@ class myFtx(ccxtpro.ftx):
             if (1 if item['side']=='buy' else -1)*(opposite_side-item['price'])>stop_trigger:
                 order = await self.edit_order(item['id'], symbol, 'market', 'buy' if size>0 else 'sell', order_size)
             # chase
-            if (1 if item['side']=='buy' else -1)*(price-item['price'])>edit_trigger:
-                order = await self.edit_order(item['id'], symbol, 'limit', 'buy' if size>0 else 'sell', order_size,price=edit_price,params={'postOnly': True})
+            if (1 if item['side']=='buy' else -1)*(price-item['price'])>edit_trigger and np.abs(edit_price-item['price'])>=priceIncrement:
+                order = await self.edit_order(item['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
             #print(str(price/item['price']-1) + ' ' + str(opposite_side / item['price'] - 1))
     
         return None
@@ -168,23 +169,24 @@ class myFtx(ccxtpro.ftx):
     @loop_and_callback
     async def execute_on_update(self,symbol,coin_request):
         top_of_book = await self.watch_ticker(symbol)
+        if self.risk.delta=={}: return  # not ready, need to refresh risk first
         coin = self.markets[symbol]['base']
         symbol_request = coin_request[symbol]
 
         # size to do
         size = symbol_request['target']
         netDelta = 0
-        if coin in self.risk:
-            netDelta = self.risk[coin]['netDelta']
-            if symbol in self.risk[coin]:
-                size -= self.risk[coin][symbol]['delta']
+        if coin in self.risk.delta:
+            netDelta = self.risk.delta[coin]['netDelta']
+            if symbol in self.risk.delta[coin]:
+                size -= self.risk.delta[coin][symbol]['delta']
 
         size = np.sign(size)*min([np.abs(size),symbol_request['exec_parameters']['slice_size']])
 
         # if increases risk, go passive
         if np.abs(netDelta+size)>np.abs(netDelta):
             # wait for good level
-            current_basket_price = sum(float(self.markets[symbol]['info']['price'])*symbol_data['target'] for symbol,symbol_data in coin_request.items() if symbol in self.markets)
+            current_basket_price = sum(float(self.markets[symbol]['info']['price'])*symbol_data['diff'] for symbol,symbol_data in coin_request.items() if symbol in self.markets)
             if current_basket_price<coin_request['entry_level']:
                 depth = 0
                 edit_trigger_scaler=symbol_request['exec_parameters']['edit_trigger_scaler']
@@ -233,7 +235,7 @@ async def execution_request(exchange, weights):
     # {coin:{symbol1:{data1,data2...},sumbol2:...}}
     data_dict = {coin:
                      {df['symbol']:
-                          {'volume': df['vwap'].filter(like='/trades/volume').mean().values[0] / frequency.total_seconds(),
+                          {'volume': df['vwap'].filter(like='/trades/volume').mean().values[0] / frequency.total_seconds(),# in coin per second
                            'spot_price': weights.loc[df['symbol'], 'spot_price'],
                            'diff': weights.loc[df['symbol'], 'diff'],
                            'target': weights.loc[df['symbol'], 'target'],
@@ -250,17 +252,20 @@ async def execution_request(exchange, weights):
     # exclude coins with slow symbols
     volume_list = {coin:
                        coin_data for coin, coin_data in data_dict.items()
-                   if min([data['volume'] * time_budget / data['spot_price'] / max(1, np.abs(data['diff']))
-                           for name, data in coin_data.items()]) > 1}
+                   if all(data['volume'] * time_budget > max(1, np.abs(data['diff']))
+                           for name, data in coin_data.items())}
+
+    def basket_vwap_quantile(series_list,diff_list):
+        series = pd.concat(series_list,axis=1).dropna(axis=0)-diff_list
+        return series.sum(axis=1).diff().quantile(entry_tolerance)
 
     # get times series of target baskets, compute quantile of increments and add to last price
     # remove series
     light_list = {coin:
                       {'entry_level':
-                           sum([float(exchange.market(name)['info']['price']) * data['target'] for name, data in
-                                coin_data.items()])
-                           + sum([data['series'] * data['target'] for name, data in
-                                  coin_data.items()]).dropna().diff().quantile(entry_tolerance).values[0]}
+                           sum([float(exchange.market(name)['info']['price']) * data['diff']
+                                for name, data in coin_data.items()])
+                           + basket_vwap_quantile([data['series'] for data in coin_data.values()],[data['diff'] for data in coin_data.values()])}
                       | {name:
                              {field: field_data for field, field_data in data.items() if field != 'series'}
                          for name, data in coin_data.items()}
@@ -272,7 +277,7 @@ async def execution_request(exchange, weights):
 
 async def executer_ws(exchange, targets):
     try:
-        await asyncio.gather(*([exchange.monitor_fills()]+#,exchange.monitor_risk()]+
+        await asyncio.gather(*([exchange.monitor_fills(),exchange.monitor_risk()]+
                                [exchange.execute_on_update(symbol, target)
                                 for coin,target in targets.items() for symbol,symbol_data in target.items() if symbol in exchange.markets.keys()]
                                ))
@@ -294,9 +299,10 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         'enableRateLimit': True,
         'apiKey': min_iterations,
         'secret': max_iterations}) if argv[1]=='ftx' else None
-    exchange.verbose = True
+    exchange.verbose = False
     exchange.headers =  {'FTX-SUBACCOUNT': argv[2]}
     exchange.authenticate()
+    await exchange.load_markets()
 
     #weigths and delta
     target_sub_portfolios = await diff_portoflio(exchange, argv[3])
@@ -304,6 +310,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     balances = (await exchange.fetch_balance(params={}))['info']['result']
     positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={})],
                              dtype=float)# 'showAvgPrice':True})
+    #prices = (await exchange.fetch_tickers(params={}))[symbol]['info']['result']
     #prices = (await exchange.fetch_tickers(params={}))[symbol]['info']['result']
     current_delta = await live_risk(exchange,exchange.markets_by_id)
     zero_delta = pd.DataFrame(index=list(target_sub_portfolios.loc[target_sub_portfolios['underlying'].isin(current_delta.index)==False,'underlying'].unique()))

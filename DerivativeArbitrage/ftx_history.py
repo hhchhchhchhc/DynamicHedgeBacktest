@@ -125,6 +125,7 @@ async def fetch_trades_history(symbol,exchange,
         end_time = (datetime.fromtimestamp(start_time) + timedelta(
             hours=1)).timestamp()
 
+    if len(trades)==0: return pd.DataFrame()
     data = pd.DataFrame(data=trades)
     data['size'] = data['size'].astype(float)
     data['volume'] = data['size'] * data['price'].astype(float)

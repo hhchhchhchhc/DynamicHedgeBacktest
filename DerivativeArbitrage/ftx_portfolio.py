@@ -286,10 +286,10 @@ async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weigh
     future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
     future_weights = future_weights[future_weights['name'].isin(['USD','total'])==False]
     future_weights = future_weights[(np.abs(future_weights['optimalWeight'])>1)]
-    future_weights['optimalWeight'] *= -.1
+    future_weights['optimalWeight'] *= -1
 
     cash_weights = future_weights.copy()
-    cash_weights['name']=cash_weights['name'].apply(lambda x: x.split('-')[0]+'/USD')
+    cash_weights['name']=cash_weights['name'].apply(lambda x: exchange.market(x)['base']+'/USD')
     cash_weights['optimalWeight'] *= -1
     target = future_weights.append(cash_weights)
 
@@ -320,7 +320,7 @@ async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weigh
     diffs['spot_price']=diffs['name'].apply(lambda x:
                                        tickers.loc[exchange.market(x)['base']+'/USD','close'] if exchange.market(x)['swap']
                                        else tickers.loc[tickers['symbol']==x,'close'].values[0])
-    diffs['underlying'] = diffs['name'].apply(lambda x: x.split('-')[0].split('/USD')[0])
+    diffs['underlying'] = diffs['name'].apply(lambda x: exchange.market(x)['base'])
     diffs['target'] = diffs['optimalWeight'] / diffs['spot_price']
     diffs['diff']=diffs['target']-diffs['total']
 
@@ -328,6 +328,7 @@ async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weigh
 
 async def diff_portoflio_wrapper(*argv):
     exchange=open_exchange(*argv)
+    await exchange.load_markets()
     diff = await diff_portoflio(exchange)
     await exchange.close()
     return diff
@@ -729,7 +730,7 @@ def ftx_portoflio_main(*argv):
             all_fills.to_excel(writer, sheet_name='all_fills')
     elif argv[0] == 'execreport':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
-        print(diff[diff['diff'].apply(np.abs)>10])
+        print(diff[diff['spot_price']*diff['diff'].apply(np.abs)>10])
         return diff
     elif argv[0] == 'risk':
         risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
