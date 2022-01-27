@@ -7,6 +7,7 @@ from ftx_rest_spread import *
 from ftx_portfolio import live_risk
 import logging
 logging.basicConfig(level=logging.INFO)
+from ftx_rest_spread import ExecutionLog
 
 entry_tolerance = 0.5
 time_budget = 5*60
@@ -29,7 +30,7 @@ def loop_and_callback(func):
                 print('reconnect..')
                 continue
             except Exception as e:
-                logging.exception(e)
+                logging.exception(e,exc_info=True)
 
     return wrapper_loop
 
@@ -58,7 +59,7 @@ class myFtx(ccxtpro.ftx):
     
     def __init__(self, config={}):
         super().__init__(config=config)
-        self._localLog = myFtx.myLogging()
+        self._localLog = ExecutionLog('dummy',[])
         self.limit = myFtx.LimitBreached()
         self.risk = myFtx.Risk()
 
@@ -129,7 +130,7 @@ class myFtx(ccxtpro.ftx):
 
     #size in coin
     #scalers are in number of bid asks
-    async def update_orders(self,symbol,size,depth,edit_trigger_scaler,edit_price_scaler,stop_scaler):
+    async def update_orders(self,symbol,size,depth,edit_trigger_scaler,edit_price_scaler,stop_scaler=None):
         orders = await self.fetch_open_orders(symbol=symbol)
         if len(orders)>3:
             for item in orders[:-1]:
@@ -147,22 +148,23 @@ class myFtx(ccxtpro.ftx):
             order_size = int(np.abs(size)/sizeIncrement)*sizeIncrement
 
         # triggers are in units of bid/ask at size
-        stop_trigger = max(1,int((stop_scaler * np.abs(opposite_side-price))/priceIncrement))*priceIncrement
+        if stop_scaler:
+            stop_trigger = max(1,int((stop_scaler * np.abs(opposite_side-price))/priceIncrement))*priceIncrement
         edit_trigger = max(1,int((edit_trigger_scaler * np.abs(opposite_side-price))/priceIncrement))*priceIncrement
-        edit_price = opposite_side - max(1,int(edit_price_scaler * np.abs(opposite_side - price) * (1 if size>0 else -1))/priceIncrement)*priceIncrement
+        edit_price = opposite_side - (1 if size>0 else -1)*max(1,int(edit_price_scaler * np.abs(opposite_side - price))/priceIncrement)*priceIncrement
 
         if not orders:
-            await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', order_size, price=edit_price, params={'postOnly': True})
+            order = await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', order_size, price=edit_price, params={'postOnly': True})
+        else:
+            for item in orders:
+                # panic stop. we could rather place a trailing stop: more robust to latency, less generic.
+                if stop_scaler and (1 if item['side']=='buy' else -1)*(opposite_side-item['price'])>stop_trigger:
+                    order = await self.edit_order(item['id'], symbol, 'market', 'buy' if size>0 else 'sell', order_size)
+                # chase
+                if (1 if item['side']=='buy' else -1)*(price-item['price'])>edit_trigger and np.abs(edit_price-item['price'])>=priceIncrement:
+                    order = await self.edit_order(item['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
+                #print(str(price/item['price']-1) + ' ' + str(opposite_side / item['price'] - 1))
 
-        for item in orders:
-            # panic stop. we could rather place a trailing stop: more robust to latency, less generic.
-            if (1 if item['side']=='buy' else -1)*(opposite_side-item['price'])>stop_trigger:
-                order = await self.edit_order(item['id'], symbol, 'market', 'buy' if size>0 else 'sell', order_size)
-            # chase
-            if (1 if item['side']=='buy' else -1)*(price-item['price'])>edit_trigger and np.abs(edit_price-item['price'])>=priceIncrement:
-                order = await self.edit_order(item['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
-            #print(str(price/item['price']-1) + ' ' + str(opposite_side / item['price'] - 1))
-    
         return None
 
     # a mix of watch_ticker and handle_ticker. Can't inherit since handle needs coroutine.
@@ -192,13 +194,23 @@ class myFtx(ccxtpro.ftx):
                 edit_trigger_scaler=symbol_request['exec_parameters']['edit_trigger_scaler']
                 edit_price_scaler=symbol_request['exec_parameters']['edit_price_scaler']
                 stop_scaler=999999
+
+                log = ExecutionLog('passive', [{'symbol': symbol, 'size': size}])
+                await log.initializeBenchmark(self)
                 order = await self.update_orders(symbol,size,0,edit_trigger_scaler,edit_price_scaler,stop_scaler)
+                log._id = order['id']
         else:
             depth = 0
             edit_trigger_scaler=symbol_request['exec_parameters']['edit_trigger_scaler']
             edit_price_scaler=symbol_request['exec_parameters']['edit_price_scaler']
             stop_scaler=symbol_request['exec_parameters']['edit_price_scaler']
+
+            log = ExecutionLog('aggressive', [{'symbol': symbol, 'size': size}])
+            await log.initializeBenchmark(self)
             order = await self.update_orders(symbol,size,0,edit_trigger_scaler,edit_price_scaler,stop_scaler)
+            log._id = order['id']
+
+        self._localLog+=[log]
 
     @loop_and_callback
     async def monitor_fills(self):
@@ -271,24 +283,32 @@ async def execution_request(exchange, weights):
                          for name, data in coin_data.items()}
                   for coin, coin_data in volume_list.items()}
 
+    first_pair=next(iter(light_list.items()))
+    first_dict={first_pair[0]:first_pair[1]}
+
     print('Executing:')
     print(weights)
-    return light_list
+    return first_dict
 
 async def executer_ws(exchange, targets):
     try:
+        exchange._localLog = ExecutionLog('basket',[{'symbol':symbol,'size':data['diff']}
+                                                    for coin in targets.values() for symbol,data in coin.items() if symbol in exchange.markets])
+        await exchange.fetch_risk()
+        await exchange._localLog.initializeBenchmark(exchange)
         await asyncio.gather(*([exchange.monitor_fills(),exchange.monitor_risk()]+
                                [exchange.execute_on_update(symbol, target)
-                                for coin,target in targets.items() for symbol,symbol_data in target.items() if symbol in exchange.markets.keys()]
+                                for coin,target in targets.items()
+                                for symbol,symbol_data in target.items() if symbol in exchange.markets.keys()]
                                ))
     except myFtx.LimitBreached as e:
-        logging.exception(e)
+        logging.exception(e,exc_info=True)
         #break
     except ccxt.base.errors.RequestTimeout as e:
         print('reconnect..')
         #continue
     except Exception as e:
-        logging.exception(e)
+        logging.exception(e,exc_info=True)
 
     return exchange._localLog
 
@@ -323,28 +343,27 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     #target_sub_portfolios = target_sub_portfolios[target_sub_portfolios['name'].isin([coin+'/USD',coin+'-PERP'])]
 
     start_time = datetime.now().timestamp()
-    log = ExecutionLog('dummy', [])
     try:
         if len(target_sub_portfolios)==0: warnings.warn('nothing to execute')
-        log = await executer_ws(exchange, request)
+        await executer_ws(exchange, request)
         end_time = datetime.now().timestamp()
         with pd.ExcelWriter('Runtime/execution_diagnosis.xlsx', engine='xlsxwriter') as writer:
             pd.DataFrame(await exchange.fetch_orders(params={'start_time': start_time, 'end_time': end_time})).to_excel(
                 writer, sheet_name='fills')
             pd.DataFrame(audit).to_excel(writer, sheet_name='audit')
-        print(log.bpCost())
 
     except Exception as e:
-        logging.exception(e)
+        logging.exception(e,exc_info=True)
     finally:
         await exchange.cancel_all_orders()
         # asyncio.run(clean_dust(exchange))
         stats = await fetch_latencyStats(exchange, days=1, subaccount_nickname='SysPerp')
         print(f'latencystats:{stats}')
-        await log.populateFill(exchange)
+        await exchange._localLog.populateFill(exchange)
+        print(exchange._localLog.bpCost())
         await exchange.close()
 
-    return log.to_df()
+    return exchange._localLog()
 
 def ftx_ws_spread_main(*argv):
     argv=list(argv)
