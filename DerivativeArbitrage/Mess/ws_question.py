@@ -55,13 +55,13 @@ async def main(*argv,**kwargs):
         'apiKey': min_iterations,
         'secret': max_iterations})
     exchange.verbose = False
-    exchange.headers =  {'FTX-SUBACCOUNT': 'debug'}
+    exchange.headers =  {'FTX-SUBACCOUNT': 'SysPerp'}
     exchange.authenticate()
 
-    await asyncio.gather(*[exchange.trade_on_update(kwargs['symbol'],kwargs['size']),
-                           exchange.watch_orders(kwargs['symbol'])])
+    await asyncio.gather(*[exchange.trade_on_update(symbol,size) for symbol,size in zip(kwargs['symbols'],kwargs['size'])]+
+                          [exchange.watch_orders(symbol) for symbol in kwargs['symbols']])
 
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(main(symbol='AAVE/USD',size=-10,loop=loop))
+    loop.run_until_complete(main(symbols=['DAWN/USD','DAWN/USD:USD'],size=[10,-10],loop=loop))

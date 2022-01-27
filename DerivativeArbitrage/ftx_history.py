@@ -280,7 +280,7 @@ async def ftx_history_main_wrapper(*argv):
 
     # volume screening
     hy_history = await build_history(futures, exchange,
-                               timeframe='1h', end=datetime.now(), start=datetime.now()-timedelta(days=argv[3]),
+                               timeframe='1h', end=datetime.now(), start=datetime.now()-timedelta(days=int(argv[3])),
                                dirname=argv[4])
     await exchange.close()
     return hy_history

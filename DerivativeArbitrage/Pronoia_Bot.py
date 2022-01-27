@@ -41,10 +41,10 @@ def start(update, context):
 def help(update, context):
     """Send a message when the command /help is issued."""
     update.message.reply_text('example requests:')
-    update.message.reply_text('* risk [echange] [subaccount]-> live risk')
-    update.message.reply_text('* plex [echange] [subaccount]-> compute plex')
-    update.message.reply_text('* hist BTC [7] [15m] [ftx]-> history of BTC and related futures/borrow every 15m for past 7d')
-    update.message.reply_text('* basis [future] [10000] [ftx] -> futures basis on ftx in size 10000')
+    update.message.reply_text('* risk [exchange] [subaccount]-> live risk')
+    update.message.reply_text('* plex [exchange] [subaccount]-> compute plex')
+    update.message.reply_text('* hist BTC [exchange] [days]-> history of BTC and related futures/borrow every 15m for past 7d')
+    update.message.reply_text('* basis [future] [size] [exchange] -> futures basis on ftx in size 10000')
     update.message.reply_text('* sysperp [holding period] [signal horizon]: optimal perps')
     update.message.reply_text('* execute: executes latest sysperp run')
     update.message.reply_text('* execreport: live portoflio vs target')
@@ -65,15 +65,19 @@ def echo(update, context):
         if split_message[0]=='risk':
             if update.effective_message.chat['first_name'] in whitelist:
                 risk = ftx_portoflio_main(*split_message)
-                dfi.export(risk[risk.columns[:3]], 'Runtime/dataframe.png')
-                update.message.bot.send_photo(update.message['chat']['id'],photo=open('Runtime/dataframe.png', 'rb'))
+                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+                risk.to_excel(filename)
+                with open(filename, "rb") as file:
+                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
             else:
                 update.message.reply_text("mind your own book")
         elif split_message[0]=='plex':
             if update.effective_message.chat['first_name'] in whitelist:
                 plex = ftx_portoflio_main(*split_message)
-                dfi.export(plex, 'Runtime/dataframe.png')
-                update.message.bot.send_photo(update.message['chat']['id'],photo=open('Runtime/dataframe.png', 'rb'))
+                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+                plex.to_excel(filename)
+                with open(filename, "rb") as file:
+                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
             else:
                 update.message.reply_text("mind your own book")
         elif split_message[0] == 'execreport':
