@@ -90,7 +90,7 @@ async def fetch_coin_details(exchange):
     lending_rates.rename(columns={'estimate': 'lend'}, inplace=True)
 
     borrow_volumes = pd.DataFrame((await exchange.public_get_spot_margin_borrow_summary())['result']).astype(dtype={'coin': 'str', 'size': 'float'}).set_index('coin')
-    borrow_volumes.rename(columns={'size': 'funding_volume'}, inplace=True)
+    borrow_volumes.rename(columns={'size': 'borrow_open_interest'}, inplace=True)
 
     all= pd.concat([coin_details,borrow_rates,lending_rates,borrow_volumes],join='outer',axis=1)
     all.loc[coin_details['spotMargin'] == False,'borrow']= None ### hope this throws an error...
@@ -116,7 +116,7 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
     result = pd.DataFrame(exchange.safe_value(response, 'result', [])).astype({'coin':str,'time':str,'size':float,'rate':float})
     result['time']=result['time'].apply(lambda t:dateutil.parser.isoparse(t).timestamp()*1000)
     result['rate']*=24*365.25*(1+500*(await exchange.fetch_trading_fees())['taker'])
-    result['size']*=1 # borrow size is for one day
+    result['size']*=1 # borrow size is an open interest
 
     return result
 
@@ -130,7 +130,7 @@ def collateralWeightInitial(future):# TODO: API call to collateralWeight(Initial
     else:
         return future['collateralWeight']-0.05
 
-### get all static fields
+### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
 async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):
     response = await exchange.publicGetFutures(params)
     fetched = await exchange.fetch_markets()
@@ -154,9 +154,9 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
         if not underlying in coin_details.index:
             if not includeIndex: continue
         try:## eg BTT-PERP doesn't exist
-            new_symbol=next(item for item in fetched if item['id'] == exchange.safe_string(market, 'name'))['symbol']
+            symbol=next(item for item in fetched if item['id'] == exchange.safe_string(market, 'name'))['symbol']
         except Exception as e:
-            new_symbol=exchange.safe_string(market, 'name')
+            symbol=exchange.safe_string(market, 'name')#TODO: why ?
 
         result.append({
             'ask':  exchange.safe_number(market, 'ask'),
@@ -167,7 +167,6 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'volumeUsd24h':  exchange.safe_number(market, 'volumeUsd24h'),
             'volume':  exchange.safe_number(market, 'volume'),
             'symbol': exchange.safe_string(market, 'name'),
-            'new_symbol': new_symbol,
             "enabled": exchange.safe_value(market, 'enabled'),
             "expired": exchange.safe_value(market, 'expired'),
             "expiry": exchange.safe_string(market, 'expiry') if exchange.safe_string(market, 'expiry') else 'None',

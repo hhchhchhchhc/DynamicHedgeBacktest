@@ -10,10 +10,9 @@ from ftx_history import *
 from ftx_ftx import *
 
 # adds info, transcation costs, and basic screening
-async def enricher(exchange,input_futures,holding_period,equity,
+async def enricher(exchange,futures,holding_period,equity,
              slippage_override= -999, slippage_orderbook_depth= 0,
              slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':['perpetual'],'fee_mode':'retail'}):
-    futures=input_futures.copy()
     markets=await exchange.fetch_markets()
 
     # basic screening
@@ -26,7 +25,7 @@ async def enricher(exchange,input_futures,holding_period,equity,
     ########### add borrows
     coin_details = pd.DataFrame((await exchange.publicGetWalletCoins())['result'], dtype=float).set_index('id')
     borrows = await fetch_coin_details(exchange)
-    futures = pd.merge(futures, borrows[['borrow', 'lend', 'funding_volume']], how='left', left_on='underlying',
+    futures = pd.merge(futures, borrows[['borrow', 'lend', 'borrow_open_interest']], how='left', left_on='underlying',
                        right_index=True)
     futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
     futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
@@ -43,7 +42,7 @@ async def enricher(exchange,input_futures,holding_period,equity,
             lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
 
     #### need borrow to be present
-    #futures = futures[futures['funding_volume']>0]
+    #futures = futures[futures['borrow_open_interest']>0]
     futures.loc[~futures['spotMargin'],'borrow']=999
 
     # transaction costs
@@ -94,8 +93,8 @@ async def enricher(exchange,input_futures,holding_period,equity,
 def enricher_wrapper(exchange_name,type,depth):
     async def enricher_subwrapper(exchange_name,type,depth):
         exchange=open_exchange(exchange_name,'')
-        futures = pd.DataFrame(await fetch_futures(exchange))
-        data = await enricher(exchange, futures, timedelta(weeks=1), depth,
+        futures = pd.DataFrame(await fetch_futures(exchange)).set_index('name')
+        data = await enricher(exchange, futures, timedelta(weeks=1), equity=1.0,
                         slippage_override=-999, slippage_orderbook_depth=depth,
                         slippage_scaler=1.0,
                         params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
@@ -103,10 +102,8 @@ def enricher_wrapper(exchange_name,type,depth):
         return data
     return asyncio.run(enricher_subwrapper(exchange_name,type,depth))
 
-def update(input_futures,point_in_time,history,equity,
+def update(futures,point_in_time,history,equity,
            intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow):
-    futures=input_futures.copy()
-
     ####### spot quantities. Not used by optimizer. Careful about foresight bias when using those !
     # add borrows
     futures['borrow']=futures['underlying'].apply(lambda f:history.loc[point_in_time,f + '/rate/borrow'])
@@ -121,8 +118,8 @@ def update(input_futures,point_in_time,history,equity,
         lambda f:history.loc[point_in_time,f.name+'/mark/o'],axis=1)
     futures['index'] = futures.apply(
         lambda f: history.loc[point_in_time, f.name + '/indexes/o'],axis=1)
-    futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future','symbol'].apply(
-        lambda f: history.loc[point_in_time, f + '/rate/T'])
+    futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future'].apply(
+        lambda f: history.loc[point_in_time, f.name + '/rate/T'],axis=1)
     futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
         lambda f: calc_basis(f['mark'], f['index'],
                              dateutil.parser.isoparse(f['expiry']).replace(tzinfo=None),
@@ -170,11 +167,10 @@ def update(input_futures,point_in_time,history,equity,
     return futures,excess_margin
 
 # return rolling expectations of integrals
-def forecast(exchange, input_futures, hy_history,
+def forecast(exchange, futures, hy_history,
                   holding_period,  # to convert slippage into rate
                   signal_horizon,  # historical window for expectations
                   filename=''):             # use external rather than order book
-    futures=input_futures.copy()
     dated = futures[futures['type'] == 'future']
     ### remove blanks for this
     hy_history = hy_history.fillna(method='ffill',limit=2).dropna(axis=1,how='all')

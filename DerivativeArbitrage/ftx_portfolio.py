@@ -540,7 +540,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             if type(f)!=str: continue
             if f in futures.index:
                 spot_ticker = futures.loc[f, 'underlying'] + '/USD'
-                mark_ticker = futures.loc[futures['symbol']==f,'new_symbol'].values[0]
+                mark_ticker = futures.loc[futures['symbol']==f,'symbol'].values[0]
             else:
                 spot_ticker = f + ('' if ('/USD' in f) else '/USD')
                 mark_ticker = spot_ticker
@@ -666,7 +666,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
 async def run_plex_wrapper(exchange_name='ftx',subaccount='SysPerp'):
     exchange = open_exchange(exchange_name,subaccount)
-    plex= await run_plex()
+    plex= await run_plex(exchange)
     await exchange.close()
     return plex
 
@@ -692,7 +692,6 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
     start_portfolio = risk_history[(risk_history['time']<start_time+timedelta(milliseconds= 1000)) \
                 &(risk_history['time']>start_time-timedelta(milliseconds= 1000))]#TODO: precision!
 
-    exchange = open_exchange(exchange_name,subaccount)
     end_time = datetime.now() - timedelta(seconds=14)  # 16s is to avoid looking into the future to fetch prices
     end_portfolio = await fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
 
@@ -709,14 +708,12 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
         pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
         summary.to_excel(writer, sheet_name='summary')
 
-    await exchange.close()
     return summary
-#    shutil.copy2(filename,
-#        dirname+'Archive/portfolio_history_"+exchange_name+'_'+account+'_'+end_time.strftime('%Y-%m-%d')+".xlsx")
+
 def ftx_portoflio_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['execreport'])
+        argv.extend(['plex'])
     if len(argv) < 3:
         argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
@@ -728,7 +725,7 @@ def ftx_portoflio_main(*argv):
         with pd.ExcelWriter('fills.xlsx', engine='xlsxwriter') as writer:
             fill_analysis.to_excel(writer, sheet_name='fill_analysis')
             all_fills.to_excel(writer, sheet_name='all_fills')
-    elif argv[0] == 'execreport':
+    elif argv[0] == 'execprogress':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
         print(diff[diff['spot_price']*diff['diff'].apply(np.abs)>10])
         return diff
@@ -741,7 +738,7 @@ def ftx_portoflio_main(*argv):
         print(plex)
         return plex
     else:
-        print(f'commands fills_anaysis,execreport,risk,plex')
+        print(f'commands fills_anaysis,execprogress,risk,plex')
 
 if __name__ == "__main__":
     ftx_portoflio_main(*sys.argv[1:])

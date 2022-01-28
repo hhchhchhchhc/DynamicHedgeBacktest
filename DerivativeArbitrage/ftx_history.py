@@ -11,7 +11,7 @@ async def build_history(futures,exchange,
         timeframe='1h',
         end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
         start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                  dirname='Runtime/temporary_parquets'):
+                  dirname=''):
     print('building history for :')
     print(futures['symbol'].values)
     data=pd.concat(await asyncio.gather(*(
@@ -33,7 +33,7 @@ async def build_history(futures,exchange,
 async def borrow_history(spot,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                   dirname='Runtime/temporary_parquets'):
+                   dirname=''):
     parquet_filename = dirname+'/allborrows.parquet'
     if os.path.isfile(parquet_filename):
          return from_parquet(parquet_filename)[[spot+'/rate/borrow',spot+'/rate/size']]
@@ -65,9 +65,9 @@ async def borrow_history(spot,exchange,
 async def funding_history(future,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
-                    dirname='Runtime/temporary_parquets'):
+                    dirname=''):
     parquet_filename=dirname+'/allfundings.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)[[future['name']+'/rate/funding']]
+    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)[[exchange.market(future['symbol'])['id']+'/rate/funding']]
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
 
@@ -78,13 +78,13 @@ async def funding_history(future,exchange,
     start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     lists = await asyncio.gather(*[
-        exchange.fetch_funding_rate_history(future['new_symbol'], params={'start_time':start_time, 'end_time':start_time+f})
+        exchange.fetch_funding_rate_history(exchange.market(future['symbol'])['symbol'], params={'start_time':start_time, 'end_time':start_time+f})
                                 for start_time in start_times])
     funding = [y for x in lists for y in x]
     data = pd.DataFrame(funding)
     data['time']=data['timestamp'].astype(dtype='int64')
-    data[future['symbol'] + '/rate/funding']=data['fundingRate']*365.25*24
-    data=data[['time',future['symbol'] + '/rate/funding']].set_index('time')
+    data[exchange.market(future['symbol'])['id'] + '/rate/funding']=data['fundingRate']*365.25*24
+    data=data[['time',exchange.market(future['symbol'])['id'] + '/rate/funding']].set_index('time')
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
@@ -152,9 +152,9 @@ async def rate_history(future,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                  timeframe='1h',
-                 dirname='Runtime/temporary_parquets'):
+                 dirname=''):
     if dirname!='':
-        parquet_filename=dirname+'/'+future['symbol']+'_futures.parquet'
+        parquet_filename=dirname+'/'+exchange.market(future['symbol'])['id']+'_futures.parquet'
         if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
 
     max_mark_data = int(1500)
@@ -167,7 +167,7 @@ async def rate_history(future,exchange,
     start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     mark_indexes = await asyncio.gather(*[
-        exchange.fetch_ohlcv(future['new_symbol'], timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
+        exchange.fetch_ohlcv(exchange.market(future['symbol'])['symbol'], timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
             for start_time in start_times
                 for params in [{'start_time':start_time, 'end_time':start_time+f-int(resolution)},
                                {'start_time':start_time, 'end_time':start_time+f-int(resolution),'price':'index'}]])
@@ -176,9 +176,9 @@ async def rate_history(future,exchange,
 
     if ((len(indexes) == 0) | (len(mark) == 0)):
         return pd.DataFrame(columns=
-                         [future['symbol'] + '/mark/' + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
-                        +[future['symbol'] + '/indexes/'  + c for c in ['t', 'open', 'high', 'low', 'close', 'volume']]
-                        +[future['symbol'] + '/rate/' + c for c in ['T','c','h','l']])
+                         [exchange.market(future['symbol'])['id'] + '/mark/' + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
+                        +[exchange.market(future['symbol'])['id'] + '/indexes/'  + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
+                        +[exchange.market(future['symbol'])['id'] + '/rate/' + c for c in ['T','c','h','l']])
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
     ###### indexes
@@ -215,7 +215,7 @@ async def rate_history(future,exchange,
     else:
         print('what is ' + future['symbol'] + ' ?')
         return
-    data.columns = [future['symbol'] + '/' + c for c in data.columns]
+    data.columns = [exchange.market(future['symbol'])['id'] + '/' + c for c in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
@@ -228,7 +228,7 @@ async def spot_history(symbol, exchange,
                        end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                        start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                        timeframe='1h',
-                       dirname='Runtime/temporary_parquets'):
+                       dirname=''):
     if dirname!='':
         parquet_filename = dirname +'/' + symbol.replace('/USD','') + '_price.parquet'
         if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
