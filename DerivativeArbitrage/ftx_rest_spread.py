@@ -14,8 +14,6 @@ amend_speed = 10.# in sec
 amend_trigger = 0.005
 taker_trigger = 0.0025
 max_slice_factor = 50.# in USD
-time_budget = 5*60 # in sec
-entry_tolerance = 0.25
 global_log = []
 audit = []
 
@@ -66,8 +64,8 @@ class ExecutionLog:
                  legs: list): # len is 1 or 2, needs 'symbol' and 'size'
         self._id = ExecutionLog._logCounter # orverriden to orderID for leafs
         ExecutionLog._logCounter +=1
-        self._type = order_type
-        self._legs = legs # len is 1 or 2, 'symbol' and 'size', later benchmarks and fills(average,filled,status)
+        self.order_type = order_type #{type,delta,netDelta}
+        self._legs = legs # len is 1 or 2, 'symbol' and 'size', later benchmarks and fills(average,filled,status) and risk
         self._receivedAt = None # temporary
         self.children = []# list of ExecutionLog
 
@@ -77,9 +75,15 @@ class ExecutionLog:
         fetched = await asyncio.gather(*[mkt_at_size(exchange,leg['symbol'],'asks' if leg['size']>0 else 'bids',np.abs(leg['size'])) for leg in self._legs])
         if datetime.fromtimestamp(exchange.seconds())>self._receivedAt + timedelta(milliseconds=100): # 15ms is approx throttle..
             warnings.warn('mkt_at_size was slow',RuntimeWarning)
+
         self._legs = [leg | {'benchmark':
                                  {'initial_mkt': f['side'],
-                                  'initial_mid':f['mid']}}
+                                  'initial_mid':f['mid']}} |
+                      {'delta':exchange.risk.delta[exchange.markets[leg['symbol']]['base']][leg['symbol']]['delta']
+                          if exchange.markets[leg['symbol']]['base'] in exchange.risk.delta.keys() and
+                          leg['symbol'] in exchange.risk.delta[exchange.markets[leg['symbol']]['base']].keys() else 0.0,
+                     'netDelta':exchange.risk.delta[exchange.markets[leg['symbol']]['base']]['netDelta']
+                            if exchange.markets[leg['symbol']]['base'] in exchange.risk.delta.keys() else 0.0}
                       for f,leg in zip(fetched,self._legs)]
 
     # only native orders receive values. Otherwise recurse on children.
@@ -103,7 +107,7 @@ class ExecutionLog:
                 fills = await exchange.fetch_order(self._id)
             except Exception as e:
                 if self._legs[0]['size'] < float(
-                        (await exchange.fetch_ticker(self._legs[0]['symbol']))['info']['sizeIncrement']):
+                        exchange.market(self._legs[0]['symbol'])['info']['sizeIncrement']):
                     self._legs[0] = self._legs[0] | {'average': -1., 'filled': 0., 'status': 'closed'}
                     return self._legs
 
@@ -124,7 +128,9 @@ class ExecutionLog:
     def to_df(self):
         row ={
             'id':self._id,
-            'type':self._type,
+            'type':self._order_context['type'],
+            'delta': self._order_context['delta'],
+            'netDelta': self._order_context['netDelta'],
             'receivedAt':self._receivedAt,
             'vs_initial_mkt':self.bpCost()['vs_initial_mkt'],
             'vs_initial_mid':self.bpCost()['vs_initial_mid']}
@@ -470,14 +476,3 @@ def ftx_rest_spread_main(*argv):
 
 if __name__ == "__main__":
     ftx_rest_spread_main(*sys.argv[1:])
-
-if False:
-    data=pd.DataFrame()
-    with open('Runtime/ExecutionLog.pickle', 'rb') as file:
-        try:
-            while True:
-                df=pickle.load(file)
-                data=data.append(df)
-        except EOFError:
-            print('l')
-
