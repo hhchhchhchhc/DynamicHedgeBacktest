@@ -43,18 +43,18 @@ def help(update, context):
     update.message.reply_text('example requests:')
     update.message.reply_text('* risk [exchange] [subaccount]-> live risk')
     update.message.reply_text('* plex [exchange] [subaccount]-> compute plex')
-    update.message.reply_text('* hist BTC [exchange] [days]-> history of BTC and related futures/borrow every 15m for past 7d')
+    update.message.reply_text('* hist [coin] [exchange] [days]-> history of BTC and related futures/borrow every 15m for past 7d')
     update.message.reply_text('* basis [future] [size] [exchange] -> futures basis on ftx in size 10000')
     update.message.reply_text('* sysperp [holding period] [signal horizon]: optimal perps')
     update.message.reply_text('* execute: executes latest sysperp run')
-    update.message.reply_text('* execreport: live portoflio vs target')
+    update.message.reply_text('* execprogress: live portoflio vs target')
 
 def echo(update, context):
     try:
         split_message = update.effective_message.text.lower().split()
         whitelist = ['daviidarr']
         if not update.effective_message.chat['first_name'] in whitelist:
-            update.message.reply_text("https://www.voltz.xyz/litepaper")
+            update.message.reply_text("https://arxiv.org/pdf/1904.05234.pdf")
             update.message.reply_text("Hey " + update.effective_message.chat['first_name'] + ": my code is so slow you have time to read that")
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
                               'date':[str(update.effective_message['date'])],
@@ -62,55 +62,45 @@ def echo(update, context):
             outputit(log,'','Runtime/chatlog',params={'pickleit':True,'excelit':False})
             excelit("Runtime/chatlog.pickle","Runtime/chathistory.xlsx")
 
-        if split_message[0]=='risk':
-            if update.effective_message.chat['first_name'] in whitelist:
+        if update.effective_message.chat['first_name'] in whitelist:
+            if split_message[0]=='risk':
                 risk = ftx_portoflio_main(*split_message)
                 filename = "Runtime/temporary_parquets/telegram_file.xlsx"
                 risk.to_excel(filename)
                 with open(filename, "rb") as file:
                     update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-            else:
-                update.message.reply_text("mind your own book")
-        elif split_message[0]=='plex':
-            if update.effective_message.chat['first_name'] in whitelist:
+            elif split_message[0]=='plex':
                 plex = ftx_portoflio_main(*split_message)
                 filename = "Runtime/temporary_parquets/telegram_file.xlsx"
                 plex.to_excel(filename)
                 with open(filename, "rb") as file:
                     update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-            else:
-                update.message.reply_text("mind your own book")
-        elif split_message[0] == 'execreport':
-            data = ftx_portoflio_main(*split_message)
-            filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-            data.to_excel(filename)
-            with open(filename, "rb") as file:
-                update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-
-        elif split_message[0]=='sysperp':
-            data = strategies_main(*split_message)
-            filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-            data.to_excel(filename)
-            with open(filename, "rb") as file:
-                update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-        elif split_message[0]=='execute':
-            data = ftx_rest_spread_main(*split_message)
-            filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-            data.to_excel(filename)
-            with open(filename, "rb") as file:
-                update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-
-        elif split_message[0]=='hist':
-            argv=['build']+split_message[1:]
-            data = ftx_history_main(*argv)
-
-            ### send xls
-            if update.effective_message.chat['first_name'] in whitelist:
-                filename="Runtime/temporary_parquets/telegram_file.xlsx"
+            elif split_message[0] == 'execprogress':
+                data = ftx_portoflio_main(*split_message)
+                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
                 data.to_excel(filename)
                 with open(filename, "rb") as file:
-                    update.message.bot.sendDocument(update.message['chat']['id'],document=file)
+                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
+            elif split_message[0]=='sysperp':
+                data = strategies_main(*split_message)
+                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+                data.to_excel(filename)
+                with open(filename, "rb") as file:
+                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
+            elif split_message[0]=='execute':
+                data = ftx_rest_spread_main(*split_message)
+                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+                data.to_excel(filename)
+                with open(filename, "rb") as file:
+                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
 
+        if split_message[0]=='hist':
+            argv=['build']+split_message[1:]
+            data = ftx_history_main(*argv)
+            filename="Runtime/temporary_parquets/telegram_file.xlsx"
+            data.to_excel(filename)
+            with open(filename, "rb") as file:
+                update.message.bot.sendDocument(update.message['chat']['id'],document=file)
         elif split_message[0]=='basis':
             type='future' if len(split_message)<2 else str(split_message[1])
             depth=1000 if len(split_message)<3 else int(split_message[2])
@@ -118,17 +108,12 @@ def echo(update, context):
             update.message.reply_text('ok so basis for ' + type + ' for size ' + str(depth))
 
             data=enricher_wrapper(exchange_name,type,depth)
-
             data.sort_values('carry_mid',ascending=False).to_excel("Runtime/temporary_parquets/" + exchange_name + "basis.xlsx")
 
-            ### send xls
-            if True:# update.effective_message.chat['first_name'] == 'daviidarr':
-                with open("Runtime/temporary_parquets/" + exchange_name + "basis.xlsx", "rb") as file:
-                    update.message.bot.sendDocument(update.message['chat']['id'],document=file)
-
+            with open("Runtime/temporary_parquets/" + exchange_name + "basis.xlsx", "rb") as file:
+                update.message.bot.sendDocument(update.message['chat']['id'],document=file)
         else:
-            help(update,context)
-
+            update.message.reply_text('unknown command, type /help')
     except Exception as e:
         update.message.reply_text(str(e))
 

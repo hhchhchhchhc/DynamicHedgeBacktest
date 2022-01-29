@@ -272,10 +272,11 @@ async def ftx_history_main_wrapper(*argv):
         universe_list=pd.read_excel(filename,sheet_name='screening_params',index_col=0).columns
     except:
         universe_list=pd.DataFrame()
+
     if isinstance(argv[1],str) and argv[1] in universe_list:
         universe = pd.read_excel(filename,sheet_name=argv[1],index_col=0).index
     elif argv[1]=='all': universe=exchange.markets_by_id
-    else: universe = [id for id,data in exchange.markets_by_id.items() if data['base'] in argv[1] and data['derivative']]
+    else: universe = [id for id,data in exchange.markets_by_id.items() if data['base']==argv[1].upper() and data['derivative']]
     futures = futures[futures.index.isin(universe)]
 
     # volume screening
