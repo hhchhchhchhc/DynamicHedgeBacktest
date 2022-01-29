@@ -9,7 +9,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 from ftx_rest_spread import ExecutionLog
 
-entry_tolerance = 0.5
+entry_tolerance = .6
 time_budget = 5*60
 
 def loop_and_callback(func):
@@ -19,8 +19,7 @@ def loop_and_callback(func):
             try:
                 value = await func(*args, **kwargs)
             except myFtx.DoneDeal as e:
-                logging.info(e)
-                raise e
+                logging.info(f'{args[1]} done')
                 break
             except myFtx.LimitBreached as e:
                 logging.info(e)
@@ -56,7 +55,7 @@ class myFtx(ccxtpro.ftx):
             self.delta={}
             self.pv=0
             self.timestamp=(0,0)
-    
+
     def __init__(self, config={}):
         super().__init__(config=config)
         self._localLog = ExecutionLog('dummy',[])
@@ -103,7 +102,7 @@ class myFtx(ccxtpro.ftx):
 
         absolute_risk=sum(abs(data['netDelta']) for data in self.risk.delta.values())
         if absolute_risk>self.limit.limit:
-            raise self.limit
+            logging.warn(self.limit)
 
     def logList(self,item: dict):
         self._localLog._list += [item]
@@ -111,7 +110,7 @@ class myFtx(ccxtpro.ftx):
 
     # size in usd
     def mkt_at_depth_orderbook(self,symbol,size):
-        #make new_symbol resistant
+        #make symbol resistant
         depth = 0
         previous_side = self.orderbooks[symbol]['bids' if size >= 0 else 'asks'][0][0]
         for pair in self.orderbooks[symbol]['bids' if size>=0 else 'asks']:
@@ -128,11 +127,11 @@ class myFtx(ccxtpro.ftx):
             previous_opposite = pair[0]
         return {'side':previous_side,'opposite':previous_opposite}
 
-    #size in coin
+    #size in coin, already filtered
     #scalers are in number of bid asks
-    async def update_orders(self,symbol,size,depth,edit_trigger_scaler,edit_price_scaler,stop_scaler=None):
+    async def update_orders(self,symbol,size,depth,edit_trigger_depth,edit_price_depth,stop_depth=None):
         orders = await self.fetch_open_orders(symbol=symbol)
-        if len(orders)>3:
+        if len(orders)>2:
             for item in orders[:-1]:
                 await self.cancel_order(item['id'])
             warnings.warn('!!!!!!!!!! duplicates orders removed !!!!!!!!!!')
@@ -140,77 +139,73 @@ class myFtx(ccxtpro.ftx):
         price,opposite_side = float(self.markets[symbol]['info']['ask' if size<0 else 'bid']),float(self.market(symbol)['info']['ask' if size>0 else 'bid'])
         mid = 0.5*(price+opposite_side)
         priceIncrement = float(self.markets[symbol]['info']['priceIncrement'])
-        sizeIncrement = float(self.markets[symbol]['info']['sizeIncrement'])
-        if np.abs(size) < sizeIncrement:
-            order_size =0
-            return None
-        else:
-            order_size = int(np.abs(size)/sizeIncrement)*sizeIncrement
 
         # triggers are in units of bid/ask at size
-        if stop_scaler:
-            stop_trigger = max(1,int((stop_scaler * np.abs(opposite_side-price))/priceIncrement))*priceIncrement
-        edit_trigger = max(1,int((edit_trigger_scaler * np.abs(opposite_side-price))/priceIncrement))*priceIncrement
-        edit_price = opposite_side - (1 if size>0 else -1)*max(1,int(edit_price_scaler * np.abs(opposite_side - price))/priceIncrement)*priceIncrement
+        if stop_depth:
+            stop_trigger = max(1,int(stop_depth / priceIncrement))*priceIncrement
+        edit_trigger = max(1,int(edit_trigger_depth / priceIncrement))*priceIncrement
+        edit_price = opposite_side - (1 if size>0 else -1)*max(1,int(edit_price_depth/priceIncrement))*priceIncrement
 
+        order = None
         if not orders:
-            order = await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', order_size, price=edit_price, params={'postOnly': True})
+            order = await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', np.abs(size), price=edit_price, params={'postOnly': True})
         else:
-            for item in orders:
-                # panic stop. we could rather place a trailing stop: more robust to latency, less generic.
-                if stop_scaler and (1 if item['side']=='buy' else -1)*(opposite_side-item['price'])>stop_trigger:
-                    order = await self.edit_order(item['id'], symbol, 'market', 'buy' if size>0 else 'sell', order_size)
-                # chase
-                if (1 if item['side']=='buy' else -1)*(price-item['price'])>edit_trigger and np.abs(edit_price-item['price'])>=priceIncrement:
-                    order = await self.edit_order(item['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
-                #print(str(price/item['price']-1) + ' ' + str(opposite_side / item['price'] - 1))
+            # panic stop. we could rather place a trailing stop: more robust to latency, less generic.
+            if stop_depth and (1 if orders[0]['side']=='buy' else -1)*(opposite_side-orders[0]['price'])>stop_trigger:
+                order = await self.edit_order(orders[0]['id'], symbol, 'market', 'buy' if size>0 else 'sell',None)
+            # chase
+            if (1 if orders[0]['side']=='buy' else -1)*(price-orders[0]['price'])>edit_trigger and np.abs(edit_price-orders[0]['price'])>=priceIncrement:
+                order = await self.edit_order(orders[0]['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
+            #print(str(price/orders[0]['price']-1) + ' ' + str(opposite_side / orders[0]['price'] - 1))
 
-        return None
+        return order
 
     # a mix of watch_ticker and handle_ticker. Can't inherit since handle needs coroutine.
     @loop_and_callback
     async def execute_on_update(self,symbol,coin_request):
         top_of_book = await self.watch_ticker(symbol)
-        if self.risk.delta=={}: return  # not ready, need to refresh risk first
+        if self.risk.delta=={}: await asyncio.sleep(0.1)  # not ready, need to refresh risk first
         coin = self.markets[symbol]['base']
         symbol_request = coin_request[symbol]
 
-        # size to do
+        # size to do: aim at target and don't overshoot
         size = symbol_request['target']
         netDelta = 0
         if coin in self.risk.delta:
             netDelta = self.risk.delta[coin]['netDelta']
             if symbol in self.risk.delta[coin]:
-                size -= self.risk.delta[coin][symbol]['delta']
+                size = symbol_request['target'] - self.risk.delta[coin][symbol]['delta']
 
         size = np.sign(size)*min([np.abs(size),symbol_request['exec_parameters']['slice_size']])
-
+        sizeIncrement = float(self.markets[symbol]['info']['minProvideSize'])
+        if np.abs(size) < sizeIncrement:
+            size =0
+            raise myFtx.DoneDeal()
+        else:
+            size = np.sign(size)*int(np.abs(size)/sizeIncrement)*sizeIncrement
+        assert(np.abs(size)>=sizeIncrement)
         # if increases risk, go passive
         if np.abs(netDelta+size)>np.abs(netDelta):
-            # wait for good level
+            # set limit at target quantile
             current_basket_price = sum(float(self.markets[symbol]['info']['price'])*symbol_data['diff'] for symbol,symbol_data in coin_request.items() if symbol in self.markets)
-            if current_basket_price<coin_request['entry_level']:
-                depth = 0
-                edit_trigger_scaler=symbol_request['exec_parameters']['edit_trigger_scaler']
-                edit_price_scaler=symbol_request['exec_parameters']['edit_price_scaler']
-                stop_scaler=999999
+            edit_price_depth = max([0,(current_basket_price-coin_request['entry_level'])/symbol_request['diff']])
+            edit_trigger_depth=symbol_request['exec_parameters']['edit_trigger_depth']
 
-                log = ExecutionLog('passive', [{'symbol': symbol, 'size': size}])
-                await log.initializeBenchmark(self)
-                order = await self.update_orders(symbol,size,0,edit_trigger_scaler,edit_price_scaler,stop_scaler)
-                log._id = order['id']
+            log = ExecutionLog('passive', [{'symbol': symbol, 'size': size}])
+            await log.initializeBenchmark(self)
+            order = await self.update_orders(symbol,size,0,edit_trigger_depth,edit_price_depth,None)
+            if order != None: log._id = order['id']
         else:
-            depth = 0
-            edit_trigger_scaler=symbol_request['exec_parameters']['edit_trigger_scaler']
-            edit_price_scaler=symbol_request['exec_parameters']['edit_price_scaler']
-            stop_scaler=symbol_request['exec_parameters']['edit_price_scaler']
+            edit_trigger_depth=symbol_request['exec_parameters']['edit_trigger_depth']
+            edit_price_depth=symbol_request['exec_parameters']['edit_price_depth']
+            stop_depth=symbol_request['exec_parameters']['edit_price_depth']
 
             log = ExecutionLog('aggressive', [{'symbol': symbol, 'size': size}])
             await log.initializeBenchmark(self)
-            order = await self.update_orders(symbol,size,0,edit_trigger_scaler,edit_price_scaler,stop_scaler)
-            log._id = order['id']
+            order = await self.update_orders(symbol,size,0,edit_trigger_depth,edit_price_depth,stop_depth)
+            if order != None: log._id = order['id']
 
-        self._localLog+=[log]
+        if order != None: self._localLog.children+=[log]
 
     @loop_and_callback
     async def monitor_fills(self):
@@ -253,10 +248,10 @@ async def execution_request(exchange, weights):
                            'target': weights.loc[df['symbol'], 'target'],
                            'exec_parameters': {  # depend on risk tolerance other execution parameters...
                                'slice_size': max([float(exchange.market(df['symbol'])['info']['minProvideSize']),
-                                                  0.1 * weights.loc[df['symbol'], 'diff']]),  # in usd
-                               'edit_trigger_scaler': 10,
-                               'edit_price_scaler': 1,
-                               'stop_scaler': 50},
+                                                  0.1 * np.abs(weights.loc[df['symbol'], 'diff'])]),  # in usd
+                               'edit_trigger_depth': 10,
+                               'edit_price_depth': 1,
+                               'stop_depth': 50},
                            'series': df['vwap'].filter(like='/trades/vwap')}
                       for df in trades_history_list if df['coin']==coin}
                  for coin in coin_list}
@@ -283,12 +278,9 @@ async def execution_request(exchange, weights):
                          for name, data in coin_data.items()}
                   for coin, coin_data in volume_list.items()}
 
-    first_pair=next(iter(light_list.items()))
-    first_dict={first_pair[0]:first_pair[1]}
-
     print('Executing:')
     print(weights)
-    return first_dict
+    return light_list
 
 async def executer_ws(exchange, targets):
     try:
@@ -325,7 +317,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     await exchange.load_markets()
 
     #weigths and delta
-    target_sub_portfolios = await diff_portoflio(exchange, argv[3])
+    target_sub_portfolios = (await diff_portoflio(exchange, argv[3]))
     global current_delta,previous_delta
     balances = (await exchange.fetch_balance(params={}))['info']['result']
     positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={})],
@@ -360,7 +352,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         stats = await fetch_latencyStats(exchange, days=1, subaccount_nickname='SysPerp')
         print(f'latencystats:{stats}')
         await exchange._localLog.populateFill(exchange)
-        print(exchange._localLog.bpCost())
+#        print(exchange._localLog.bpCost())
         await exchange.close()
 
     return exchange._localLog()
