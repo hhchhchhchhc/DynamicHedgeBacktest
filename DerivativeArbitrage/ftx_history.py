@@ -30,16 +30,16 @@ async def build_history(futures,exchange,
     return data[~data.index.duplicated()].sort_index()
 
 ### only perps, only borrow and funding, only hourly
-async def borrow_history(spot,exchange,
+async def borrow_history(coin,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                    dirname=''):
-    parquet_filename = dirname+'/allborrows.parquet'
-    if os.path.isfile(parquet_filename):
-         return from_parquet(parquet_filename)[[spot+'/rate/borrow',spot+'/rate/size']]
+    if dirname!='':
+        parquet_filename=dirname+'/'+coin+'_borrow.parquet'
+        if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+        
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
-
 
     e = end.timestamp()
     s = start.timestamp()
@@ -47,13 +47,13 @@ async def borrow_history(spot,exchange,
     start_times = [e - k * f for k in range(1 + int((e - s) / f)) if e - k * f > s] + [s]
 
     data = pd.concat(await asyncio.gather(*[
-        fetch_borrow_rate_history(exchange,spot,start_time,start_time+f-int(resolution))
+        fetch_borrow_rate_history(exchange,coin,start_time,start_time+f-int(resolution))
             for start_time in start_times]),axis=0,join='outer')
     if data.empty:
         return data
     data = data.astype(dtype={'time': 'int64'}).set_index(
         'time')[['rate','size']]
-    data.rename(columns={'rate':spot+'/rate/borrow','size':spot+'/rate/size'},inplace=True)
+    data.rename(columns={'rate':coin+'/rate/borrow','size':coin+'/rate/size'},inplace=True)
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data=data[~data.index.duplicated()].sort_index()
 
@@ -66,11 +66,12 @@ async def funding_history(future,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                     dirname=''):
-    parquet_filename=dirname+'/allfundings.parquet'
-    if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)[[exchange.market(future['symbol'])['id']+'/rate/funding']]
+    if dirname!='':
+        parquet_filename=dirname+'/'+exchange.market(future['symbol'])['id']+'_funding.parquet'
+        if os.path.isfile(parquet_filename): return from_parquet(parquet_filename)
+        
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
-
 
     e = end.timestamp()
     s = start.timestamp()
@@ -81,6 +82,10 @@ async def funding_history(future,exchange,
         exchange.fetch_funding_rate_history(exchange.market(future['symbol'])['symbol'], params={'start_time':start_time, 'end_time':start_time+f})
                                 for start_time in start_times])
     funding = [y for x in lists for y in x]
+
+    if len(funding)==0:
+        return pd.DataFrame(columns=[exchange.market(future['symbol'])['id'] + '/rate/funding'])
+
     data = pd.DataFrame(funding)
     data['time']=data['timestamp'].astype(dtype='int64')
     data[exchange.market(future['symbol'])['id'] + '/rate/funding']=data['fundingRate']*365.25*24

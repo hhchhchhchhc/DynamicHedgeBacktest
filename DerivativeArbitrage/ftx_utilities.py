@@ -8,6 +8,7 @@ if platform.system()=='Windows':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import warnings
 import shutil
+import json
 from typing import Tuple
 import ccxtpro as ccxt
 #import ccxt
@@ -149,14 +150,24 @@ def open_exchange(exchange_name,subaccount):
         'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
         'secret': '1rUn4jITdmck2vSSsnTDtR9vBS3oqLkNzx70SV1mijmr3BcVR2lwOkzWHpbULWc7',
     })
-    elif exchange_name == 'okex':
+    elif exchange_name == 'okex5':
         exchange = ccxt.okex5({
             'enableRateLimit': True,
             'apiKey': '6a72779d-0a4a-4554-a283-f28a17612747',
             'secret': '1F0CA69C0766727542A11EE602163883',
+            'password': 'etvoilacestencoreokex'
+        })
+        if subaccount != 'convexity':
+            warnings.warn('subaccount override: convexity')
+            exchange.headers = {'FTX-SUBACCOUNT': 'convexity'}
+    elif exchange_name == 'huobi':
+        exchange = ccxt.huobi({
+            'enableRateLimit': True,
+            'apiKey': 'b7d9d6f8-ce6a01b8-8b6ab42f-mn8ikls4qg',
+            'secret': '40aefa97-cf88ddd6-dbb4171d-44360',
         })
     elif exchange_name == 'deribit':
-        exchange = ccxt.okex5({
+        exchange = ccxt.deribit({
             'enableRateLimit': True,
             'apiKey': '4vc_41O4',
             'secret': 'viEFbpRQpQLgUAujPrwWleL6Xutq9I8YVUVMkEfQG1E',
@@ -196,3 +207,46 @@ def open_all_subaccounts(exchange_name):
     subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     return [open_exchange(exchange_name,subaccount) for subaccount in subaccount_list]
 
+
+import collections
+def flatten(dictionary, parent_key=False, separator='.'):
+    """
+    All credits to https://github.com/ScriptSmith
+    Turn a nested dictionary into a flattened dictionary
+    :param dictionary: The dictionary to flatten
+    :param parent_key: The string to prepend to dictionary's keys
+    :param separator: The string used to separate flattened keys
+    :return: A flattened dictionary
+    """
+
+    items = []
+    for key, value in dictionary.items():
+        new_key = str(parent_key) + separator + key if parent_key else key
+        if isinstance(value, collections.MutableMapping):
+            items.extend(flatten(value, new_key, separator).items())
+        elif isinstance(value, list):
+            for k, v in enumerate(value):
+                items.extend(flatten({str(k): v}, new_key).items())
+        else:
+            items.append((new_key, value))
+    return dict(items)
+
+def deepen(dictionary, parent_key=False, separator='.'):
+    """
+    All credits to https://github.com/ScriptSmith
+    Turn a flattened dictionary into a nested dictionary
+    :return: A flattened dictionary
+    """
+    top_keys = set(key.split(separator)[0] for key in dictionary.keys())
+    result = {}
+    for top_key in top_keys:
+        sub_dict={}
+        for key, value in dictionary.items():
+            if separator in key and key.split(separator)[0]==top_key:
+                    sub_dict|={key.split(separator, 1)[1]:value}
+        result |= deepen(sub_dict,parent_key=parent_key,separator=separator) \
+            if sub_dict!={} else {top_key:value}
+
+    return result
+
+deepen(json.load(open('request.json')))
