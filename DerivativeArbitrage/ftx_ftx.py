@@ -185,6 +185,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'upperBound': exchange.safe_value(market, 'upperBound'),
             'type': exchange.safe_string(market, 'type'),
          ### additionnals
+            'openInterestUsd': exchange.safe_number(market,'openInterestUsd'),
             'account_leverage': float(account_leverage['leverage']),
             'collateralWeight':coin_details.loc[underlying,'collateralWeight'] if not includeIndex else 'coin_details not found',
             'underlyingType': getUnderlyingType(coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
