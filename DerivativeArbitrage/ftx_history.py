@@ -24,8 +24,16 @@ async def build_history(futures,exchange,
             [borrow_history(f, exchange, end, start, dirname)
                 for f in (list(futures.loc[futures['spotMargin'], 'underlying'].unique())+['USD'])]
                                                       )),join='outer',axis=1)
-    data=pd.concat([data]+[pd.DataFrame(index=data.index, columns=[f + '/rate/size', f + '/rate/borrow'], data=999)
-                    for f in futures.loc[~futures['spotMargin'], 'underlying'].unique()],join='outer',axis=1)
+    data=pd.concat([data]+
+                   [pd.DataFrame(index=data.index, columns=[f + '/rate/borrow'], data=999)
+                    for f in futures.loc[~futures['spotMargin'], 'underlying'].unique()]+
+                   [pd.DataFrame(index=data.index, columns=[f + '/rate/size'], data=0)
+                    for f in futures.loc[~futures['spotMargin'], 'underlying'].unique()],
+                   join='outer',axis=1)
+
+    # convert borrow size in usd
+    for f in futures['underlying'].unique():
+        data[f + '/rate/size']*=data[f + '/price/o']
 
     return data[~data.index.duplicated()].sort_index()
 
