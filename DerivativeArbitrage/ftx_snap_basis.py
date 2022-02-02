@@ -1,4 +1,5 @@
 import dateutil.parser
+import numpy as np
 import pandas as pd
 import scipy.optimize
 from scipy.stats import norm
@@ -92,7 +93,7 @@ async def enricher(exchange,futures,holding_period,equity,
 
 def enricher_wrapper(exchange_name,type,depth):
     async def enricher_subwrapper(exchange_name,type,depth):
-        exchange=open_exchange(exchange_name,'')
+        exchange= await open_exchange(exchange_name,'')
         futures = pd.DataFrame(await fetch_futures(exchange)).set_index('name')
         data = await enricher(exchange, futures, timedelta(weeks=1), equity=1.0,
                         slippage_override=-999, slippage_orderbook_depth=depth,
@@ -367,11 +368,22 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     #loss_tolerance_constraint = {'type': 'ineq',
     #            'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
     margin_constraint = {'type': 'ineq',
-                'fun': lambda x: excess_margin.call(x)['totalIM'] - equity*OPEN_ORDERS_HEADROOM}
+                         'fun': lambda x: excess_margin.call(x)['totalIM'] - equity*OPEN_ORDERS_HEADROOM}
     stopout_constraint = {'type': 'ineq',
-                'fun': lambda x: excess_margin.call(x)['totalMM']}
-    bounds = scipy.optimize.Bounds(lb=np.asarray([0 if w>0 else -concentration_limit*equity for w in futures['direction']],dtype=object),
-                                   ub=np.asarray([0 if w<0 else  concentration_limit*equity for w in futures['direction']],dtype=object))
+                          'fun': lambda x: excess_margin.call(x)['totalMM']}
+
+    lower_bound = futures.apply(lambda future: 0 if future['direction'] > 0 else
+    -min(1*equity,(future['concentration_limit'] if future['spotMargin'] else 0)) # 0 bounds if short  + no spotMargin...invalid for institutionals
+                                ,axis=1)
+    upper_bound = futures.apply(lambda future: 0 if future['direction'] < 0 else
+    min(1*equity,future['concentration_limit'])
+                                , axis=1)
+    new_bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values*concentration_limit,dtype=object),
+                                   ub=np.asarray(upper_bound.values*concentration_limit,dtype=object))
+
+    bounds = scipy.optimize.Bounds(
+        lb=np.asarray([0 if w > 0 else -concentration_limit * equity for w in futures['direction']], dtype=object),
+        ub=np.asarray([0 if w < 0 else concentration_limit * equity for w in futures['direction']], dtype=object))
 
     # --------- breaks down pnl during optimization
     progress_display=[]
@@ -456,5 +468,5 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
                 pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
 
         return summary
-
+    a=0
     return summarize()
