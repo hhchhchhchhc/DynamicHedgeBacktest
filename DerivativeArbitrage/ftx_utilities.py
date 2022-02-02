@@ -135,78 +135,48 @@ def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':Fals
 min_iterations='ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU'
 max_iterations='RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm'
 
-def open_exchange(exchange_name,subaccount):
+async def open_exchange(exchange_name,subaccount,config={}):
     if exchange_name=='ftx':
-        exchange = ccxt.ftx({ ## David personnal
+        exchange = ccxt.ftx(config={ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
             'secret': 'RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm',
-        })
+            'asyncio_loop': config['asyncio_loop'] if 'asyncio_loop' in config else asyncio.get_running_loop()
+        }|config)
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
 
     elif exchange_name == 'binance':
-        exchange = ccxt.binance({# subaccount convexity
+        exchange = ccxt.binance(config={# subaccount convexity
         'enableRateLimit': True,
         'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
         'secret': '1rUn4jITdmck2vSSsnTDtR9vBS3oqLkNzx70SV1mijmr3BcVR2lwOkzWHpbULWc7',
-    })
+    }|config)
     elif exchange_name == 'okex5':
-        exchange = ccxt.okex5({
+        exchange = ccxt.okex5(config={
             'enableRateLimit': True,
             'apiKey': '6a72779d-0a4a-4554-a283-f28a17612747',
             'secret': '1F0CA69C0766727542A11EE602163883',
             'password': 'etvoilacestencoreokex'
-        })
+        }|config)
         if subaccount != 'convexity':
             warnings.warn('subaccount override: convexity')
             exchange.headers = {'FTX-SUBACCOUNT': 'convexity'}
     elif exchange_name == 'huobi':
-        exchange = ccxt.huobi({
+        exchange = ccxt.huobi(config={
             'enableRateLimit': True,
             'apiKey': 'b7d9d6f8-ce6a01b8-8b6ab42f-mn8ikls4qg',
             'secret': '40aefa97-cf88ddd6-dbb4171d-44360',
-        })
+        }|config)
     elif exchange_name == 'deribit':
-        exchange = ccxt.deribit({
+        exchange = ccxt.deribit(config={
             'enableRateLimit': True,
             'apiKey': '4vc_41O4',
             'secret': 'viEFbpRQpQLgUAujPrwWleL6Xutq9I8YVUVMkEfQG1E',
-        })
-
+        }|config)
+    #subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     else: print('what exchange?')
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     return exchange
-
-def open_all_subaccounts(exchange_name):
-    if exchange_name=='ftx':
-        exchange = ccxt.ftx({ ## David personnal
-            'enableRateLimit': True,
-            'apiKey': 'SRHF4xLeygyOyi4Z_P_qB9FRHH9y73Y9jUk4iWvI',
-            'secret': 'NHrASsA9azwQkvu_wOgsDrBFZOExb1E43ECXrZgV',
-        })
-#    elif exchange_name == 'ftx_auk':
-#        exchange = ccxt.ftx({  ## Benoit personnal
-#            'enableRateLimit': True,
-#            'apiKey': 'nEAyW--EaRBqBJ0yG9H04cQMWD3fCv_jetzaw8Xx',
-#            'secret': 'xp-oPdGBn5I60RZOxv-cbySLUE40rtmAtoI7p95J',
-#        })
-#    elif exchange_name == 'ftx_raj':
-#        exchange = ccxt.ftx({  ## Munraj personnal
-#            'enableRateLimit': True,
-#            'apiKey': 'HdXWK4kNDpeCA0m-_quL3ZPwml_5B9DXpGiXiQCN',
-#            'secret': 'DeDqbFBfhhujtB3yGlANrJfYxlFr2kzJo8sV-c6v',
-#        })
-    elif exchange_name == 'binance':
-        exchange = ccxt.binance({
-        'enableRateLimit': True,
-        'apiKey': 'pMaBWUoEVqsRJXZJoQ31JkA13QJHNRZyb6N0uZSAlwJscBMXprjgDQqKAfOLdGPK',
-        'secret': 'neVVDD4oOyXbti1Xi5gI3nckEsIWz8BJ7CNd4UsRtK34GsWTMqS2D3xc0wY8mtxY',
-    })
-    else: print('what exchange?')
-
-    subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
-    return [open_exchange(exchange_name,subaccount) for subaccount in subaccount_list]
-
 
 import collections
 def flatten(dictionary, parent_key=False, separator='.'):
@@ -241,11 +211,17 @@ def deepen(dictionary, parent_key=False, separator='.'):
     result = {}
     for top_key in top_keys:
         sub_dict={}
+        sub_result={}
         for key, value in dictionary.items():
-            if separator in key and key.split(separator)[0]==top_key:
-                    sub_dict|={key.split(separator, 1)[1]:value}
-        result |= deepen(sub_dict,parent_key=parent_key,separator=separator) \
-            if sub_dict!={} else {top_key:value}
+            if key.split(separator)[0]==top_key:
+                if separator in key:
+                        sub_dict|={key.split(separator, 1)[1]:value}
+                else:
+                    sub_result |={key:value}
+        if sub_dict != {}:
+            result |= {top_key:deepen(sub_dict,parent_key=parent_key,separator=separator)}
+        else:
+            result |= sub_result
 
     return result
 

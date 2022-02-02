@@ -14,16 +14,18 @@ async def build_history(futures,exchange,
                   dirname=''):
     print('building history for :')
     print(futures['symbol'].values)
+
     data=pd.concat(await asyncio.gather(*(
             [funding_history(f,exchange,start,end,dirname)
-                for (i,f) in futures[futures['type']=='perpetual'].iterrows()]+
+             for (i,f) in futures[futures['type']=='perpetual'].iterrows()]+
             [rate_history(f, exchange, end, start, timeframe,dirname)
-                for (i, f) in futures.iterrows()]+
+             for (i, f) in futures.iterrows()]+
             [spot_history(f + '/USD', exchange, end, start, timeframe, dirname)
              for f in futures['underlying'].unique()]+
             [borrow_history(f, exchange, end, start, dirname)
-                for f in (list(futures.loc[futures['spotMargin'], 'underlying'].unique())+['USD'])]
-                                                      )),join='outer',axis=1)
+             for f in (list(futures.loc[futures['spotMargin'], 'underlying'].unique())+['USD'])]
+    )),join='outer',axis=1)
+
     data=pd.concat([data]+
                    [pd.DataFrame(index=data.index, columns=[f + '/rate/borrow'], data=999)
                     for f in futures.loc[~futures['spotMargin'], 'underlying'].unique()]+
@@ -57,8 +59,9 @@ async def borrow_history(coin,exchange,
     data = pd.concat(await asyncio.gather(*[
         fetch_borrow_rate_history(exchange,coin,start_time,start_time+f-int(resolution))
             for start_time in start_times]),axis=0,join='outer')
-    if data.empty:
-        return data
+    if len(data)==0:
+        return pd.DataFrame(columns=[coin+'/rate/borrow',coin+'/rate/size'])
+
     data = data.astype(dtype={'time': 'int64'}).set_index(
         'time')[['rate','size']]
     data.rename(columns={'rate':coin+'/rate/borrow','size':coin+'/rate/size'},inplace=True)
@@ -138,7 +141,11 @@ async def fetch_trades_history(symbol,exchange,
         end_time = (datetime.fromtimestamp(start_time) + timedelta(
             hours=1)).timestamp()
 
-    if len(trades)==0: return pd.DataFrame()
+    if len(trades)==0:
+        vwap=pd.DataFrame(columns=['size','volume','count','vwap'])
+        vwap.columns = [symbol.split('/USD')[0] + '/trades/' + column for column in vwap.columns]
+        return vwap
+
     data = pd.DataFrame(data=trades)
     data['size'] = data['size'].astype(float)
     data['volume'] = data['size'] * data['price'].astype(float)
@@ -261,6 +268,8 @@ async def spot_history(symbol, exchange,
     spot = [y for x in spot_lists for y in x]
 
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
+    if len(spot)==0:
+        return pd.DataFrame(columns=[symbol.replace('/USD','') + '/price/' + c for c in column_names])
 
     ###### spot
     data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
@@ -274,7 +283,7 @@ async def spot_history(symbol, exchange,
     return data
 
 async def ftx_history_main_wrapper(*argv):
-    exchange=open_exchange(argv[2],'')
+    exchange= await open_exchange(argv[2],'')
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True)).set_index('name')
     markets= await exchange.fetch_markets()
     await exchange.load_markets()

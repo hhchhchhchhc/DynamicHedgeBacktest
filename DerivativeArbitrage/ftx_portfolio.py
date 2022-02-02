@@ -240,7 +240,7 @@ async def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_bal
     return greeks
 
 async def live_risk_wrapper(exchange_name='ftx',subaccount='SysPerp'):
-    exchange = open_exchange(exchange_name,subaccount)
+    exchange = await open_exchange(exchange_name,subaccount)
 
     # contruct markets_by_id
     markets = await exchange.fetch_markets()
@@ -281,7 +281,7 @@ async def live_risk(exchange,futures):
     return result[['coin','futureDelta', 'spotDelta', 'netDelta','futureMark','futureIndex']].set_index('coin')
 
 # diff is in coin
-async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weights.xlsx'):
+async def diff_portoflio(exchange):
     # open file
     future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
     future_weights = future_weights[future_weights['name'].isin(['USD','total'])==False]
@@ -327,7 +327,7 @@ async def diff_portoflio(exchange,filename = 'Runtime/ApprovedRuns/current_weigh
     return diffs
 
 async def diff_portoflio_wrapper(*argv):
-    exchange=open_exchange(*argv)
+    exchange= await open_exchange(*argv)
     await exchange.load_markets()
     diff = await diff_portoflio(exchange)
     await exchange.close()
@@ -665,7 +665,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     return cash_flows.sort_values(by='time',ascending=True)
 
 async def run_plex_wrapper(exchange_name='ftx',subaccount='SysPerp'):
-    exchange = open_exchange(exchange_name,subaccount)
+    exchange = await open_exchange(exchange_name,subaccount)
     plex= await run_plex(exchange)
     await exchange.close()
     return plex
@@ -713,19 +713,11 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
 def ftx_portoflio_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['plex'])
+        argv.extend(['execprogress'])
     if len(argv) < 3:
         argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
-    if argv[0] == 'fills_anaysis':
-        exchange = open_exchange(argv[1], argv[2])
-        (fill_analysis, all_fills) = run_fills_analysis(exchange,
-                                                        end=datetime.now(),
-                                                        start=datetime.now() - timedelta(days=7))
-        with pd.ExcelWriter('fills.xlsx', engine='xlsxwriter') as writer:
-            fill_analysis.to_excel(writer, sheet_name='fill_analysis')
-            all_fills.to_excel(writer, sheet_name='all_fills')
-    elif argv[0] == 'execprogress':
+    if argv[0] == 'execprogress':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
         print(diff[diff['spot_price']*diff['diff'].apply(np.abs)>10])
         return diff
