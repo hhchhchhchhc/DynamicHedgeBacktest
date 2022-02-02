@@ -59,14 +59,12 @@ class ExecutionLog(dict):
         if time_spent> 1000: # 15ms is approx throttle, so 200 is a lot
             logging.info(f'mkt_at_size was {time_spent} ms')
 
-        self._legs = [leg | {'benchmark':
-                                 {'initial_mkt': f['side'],
-                                  'initial_mid':f['mid']}} |
-                      {'delta':exchange.risk.delta[exchange.markets[leg['symbol']]['base']][leg['symbol']]['delta']
-                          if exchange.markets[leg['symbol']]['base'] in exchange.risk.delta.keys() and
-                          leg['symbol'] in exchange.risk.delta[exchange.markets[leg['symbol']]['base']].keys() else 0.0,
-                     'netDelta':exchange.risk.delta[exchange.markets[leg['symbol']]['base']]['netDelta']
-                            if exchange.markets[leg['symbol']]['base'] in exchange.risk.delta.keys() else 0.0}
+        self._legs = [leg
+                      | {'benchmark':
+                             {'initial_mkt': f['side'],
+                              'initial_mid':f['mid']}}
+                      | exchange.market_state[exchange.markets[leg['symbol']]['base']][leg['symbol']]
+                      | exchange.risk_state[exchange.markets[leg['symbol']]['base']][leg['symbol']]
                       for f,leg in zip(fetched,self._legs)]
 
     # only native orders receive values. Otherwise recurse on children.
@@ -92,7 +90,7 @@ class ExecutionLog(dict):
                 fills = await exchange.fetch_order(self._id,self._legs[0]['symbol'],params={'start_time':int(self._receivedAt)})
             # if a leg is too small, don't complain. Note: Leaf orders have only one leg.
             except Exception as e:
-                if self._legs[0]['size'] < float(exchange.market(self._legs[0]['symbol'])['info']['sizeIncrement']):
+                if self._legs[0]['size'] < float(exchange.markets[self._legs[0]['symbol']]['info']['sizeIncrement']):
                     self._legs[0] = self._legs[0] | {'average': -1., 'filled': 0., 'status': 'closed'}
                     return self._legs
 
@@ -137,20 +135,15 @@ class myFtx(ccxtpro.ftx):
             super().__init__()
             self.limit = limit
             self.check_frequency = check_frequency
-            
-    class Risk:
-        def __init__(self):
-            self.delta={}
-            self.pv=0
-            self.timestamp=(0,0)
-        def flatten(self):
-            return flatten(self.delta|{'pv':self.pv,'timestamp':self.timestamp})
 
     def __init__(self, config={}):
         super().__init__(config=config)
         self._localLog = ExecutionLog('dummy',[])
         self.limit = myFtx.LimitBreached()
-        self.risk = myFtx.Risk()
+        self.pv = None
+        self.market_state = {}
+        self.risk_state = {}
+        self.exec_parameters = {}
 
     def __del__(self):
         asyncio.run(self.cancel_all_orders())
@@ -161,48 +154,36 @@ class myFtx(ccxtpro.ftx):
     async def fetch_risk(self, params={}):
         # {coin:{'netDelta':netDelta,symbol1:{'volume','spot_price','diff','target'}]}]
         # [coin:{'netDelta':netDelta,'legs':{symbol:delta}]]
-        start = self.milliseconds() / 1000
         positions = await self.fetch_positions()
-        mid = self.milliseconds() / 1000
+        position_timestamp = self.milliseconds() / 1000
         balances = await self.fetch_balance()
-        end = self.milliseconds() / 1000
+        balances_timestamp = self.milliseconds() / 1000
 
-        time_spent = end - mid
+        time_spent = balances_timestamp - position_timestamp
         if time_spent > 1000:  # 15ms is approx throttle, so 200 is a lot
             logging.info(f'balances vs positions: {time_spent} ms')
 
         # delta is noisy for perps, so override to delta 1.
-        positions = {self.market(position['symbol'])['base']:
-                         {position['symbol']:
-                              {'delta':
-                                   (float(position['notional'])
-                                    if self.market(position['symbol'])['type'] == 'future'
-                                    else float(position['info']['size']) * float(
-                                       self.market(self.market(position['symbol'])['base'] + '/USD')[
-                                           'info']['price']))
-                                   * (1 if position['side'] == 'long' else -1)
-                               }
-                          }
-                     for position in positions}
+        for position in positions:
+            if float(position['info']['size'])!=0:
+                coin = self.markets[position['symbol']]['base']
+                self.risk_state[coin][position['symbol']]['delta'] = float(position['notional']) \
+                                                                    if self.markets[position['symbol']]['type'] == 'future' \
+                                                                    else float(position['info']['size']) * float(self.market_state[coin][position['symbol']]['mid'])
+                self.risk_state[coin][position['symbol']]['delta_timestamp']=position_timestamp
 
+        for coin, balance in balances.items():
+                if coin in self.currencies.keys() and coin != 'USD' and balance['total']!=0:
+                    self.risk_state[coin][coin+'/USD']['delta'] = balance['total'] * float(self.market_state[coin][coin+'/USD']['mid'])
+                    self.risk_state[coin][coin + '/USD']['delta_timestamp'] = balances_timestamp
 
-        self.risk.pv = sum(balance['total'] * (float(self.market(coin + '/USD')['info']['price']) if coin !='USD' else 1) for coin,balance in balances.items() if coin in self.currencies)
+        for coin,coin_data in self.risk_state.items():
+            coin_data['netDelta']= sum([data['delta'] for symbol,data in coin_data.items() if symbol in self.markets and 'delta' in data.keys()])
+            coin_data['netDelta_timestamp'] = max([position_timestamp,balances_timestamp])
 
-        balances = {key:
-                        {key + '/USD':
-                             {'delta':
-                                  float(balance['total']) * float(self.market(key + '/USD')['info']['price'])
-                              }
-                         }
-                    for key, balance in balances.items() if key in self.currencies.keys() and key != 'USD'}
-
-        self.risk.delta = {key:
-                         (positions[key] if key in positions.keys() else {})
-                         | (balances[key] if key in balances.keys() else {})
-                         | {'netDelta': sum(positions[key][symbol]['delta'] for symbol in
-                                            (positions[key].keys() if key in positions.keys() else {}))
-                                        + (balances[key][key + '/USD']['delta'] if key in balances.keys() else 0)}
-                     for key in positions.keys() | balances.keys()}
+        self.pv = sum(balance['total'] * (float(self.market_state[coin][coin+'/USD']['mid'])
+                                          if coin !='USD' else 1)
+                      for coin,balance in balances.items() if coin in self.currencies and balance['total'] != 0)
 
     def logList(self,item: dict):
         self._localLog._list += [item]
@@ -236,9 +217,10 @@ class myFtx(ccxtpro.ftx):
                 await self.cancel_order(item['id'])
             logging.warning('!!!!!!!!!! duplicates orders removed !!!!!!!!!!')
     
-        price,opposite_side = float(self.markets[symbol]['info']['ask' if size<0 else 'bid']),float(self.market(symbol)['info']['ask' if size>0 else 'bid'])
-        mid = 0.5*(price+opposite_side)
-        priceIncrement = float(self.markets[symbol]['info']['priceIncrement'])
+        symbol_state = self.market_state[self.markets[symbol]['base']][symbol]
+        price,opposite_side = symbol_state['asks' if size<0 else 'bids'][0]['price'],symbol_state['asks' if size>0 else 'bids'][0]['price']
+        mid = symbol_state['mid']
+        priceIncrement = self.exec_parameters[self.markets[symbol]['base']][symbol]['priceIncrement']
 
         # triggers are in units of bid/ask at size
         if stop_depth:
@@ -262,21 +244,28 @@ class myFtx(ccxtpro.ftx):
 
     # a mix of watch_ticker and handle_ticker. Can't inherit since handle needs coroutine.
     @loop_and_callback
-    async def execute_on_update(self,symbol,coin_request):
+    async def execute_on_update(self,symbol):
         top_of_book = await self.watch_ticker(symbol)
-        if self.risk.delta=={}: await asyncio.sleep(0.1)  # not ready, need to refresh risk first
-        coin = self.markets[symbol]['base']
-        symbol_request = coin_request[symbol]
-
+        
+        coin = self.markets(symbol)['base']
+        coin_state = self.market_state[coin]
+        netDelta = coin_state['netDeta']
+        
+        symbol_state = coin_state[symbol]
+        
+        symbol_state['bids']=[{'price':top_of_book['bid'],'size':top_of_book['bid_size']}]
+        symbol_state['asks'] = [{'price':top_of_book['ask'],'size':top_of_book['ask_size']}]
+        symbol_state['mid']=0.5*(symbol_state['bids'][0]['price']+symbol_state['asks'][0]['price'])
+        symbol_state['market_timestamp'] = top_of_book['timestamp']
+        
+        if 'delta' not in symbol_state: 
+            await asyncio.sleep(1)  # not ready, need to initialize risk first
+            return
+        
         # size to do: aim at target and don't overshoot
-        size = symbol_request['target']
-        netDelta = 0
-        if coin in self.risk.delta:
-            netDelta = self.risk.delta[coin]['netDelta']
-            if symbol in self.risk.delta[coin]:
-                size = symbol_request['target'] - self.risk.delta[coin][symbol]['delta']
+        size = symbol_state['target'] - symbol_state['delta']
 
-        size = np.sign(size)*min([np.abs(size),symbol_request['exec_parameters']['slice_size']])
+        size = np.sign(size)*min([np.abs(size),symbol_state['exec_parameters']['slice_size']])
         sizeIncrement = float(self.markets[symbol]['info']['minProvideSize'])
         if np.abs(size) < sizeIncrement:
             size =0
@@ -287,18 +276,18 @@ class myFtx(ccxtpro.ftx):
         # if increases risk, go passive
         if np.abs(netDelta+size)>np.abs(netDelta):
             # set limit at target quantile
-            current_basket_price = sum(float(self.markets[symbol]['info']['price'])*symbol_data['diff'] for symbol,symbol_data in coin_request.items() if symbol in self.markets)
-            edit_price_depth = max([0,(current_basket_price-coin_request['entry_level'])/symbol_request['diff']])
-            edit_trigger_depth=symbol_request['exec_parameters']['edit_trigger_depth']
+            current_basket_price = sum(symbol_state['mid']*symbol_data['diff'] for symbol,symbol_data in coin_state.items() if symbol in self.markets)
+            edit_price_depth = max([0,(current_basket_price-coin_state['entry_level'])/symbol_state['diff']])
+            edit_trigger_depth=symbol_state['exec_parameters']['edit_trigger_depth']
 
             log = ExecutionLog('passive', [{'symbol': symbol, 'size': size}])
             await log.initializeBenchmark(self)
             order = await self.update_orders(symbol,size,0,edit_trigger_depth,edit_price_depth,None)
             if order != None: log._id = order['id']
         else:
-            edit_trigger_depth=symbol_request['exec_parameters']['edit_trigger_depth']
-            edit_price_depth=symbol_request['exec_parameters']['edit_price_depth']
-            stop_depth=symbol_request['exec_parameters']['edit_price_depth']
+            edit_trigger_depth=symbol_state['exec_parameters']['edit_trigger_depth']
+            edit_price_depth=symbol_state['exec_parameters']['edit_price_depth']
+            stop_depth=symbol_state['exec_parameters']['edit_price_depth']
 
             log = ExecutionLog('aggressive', [{'symbol': symbol, 'size': size}])
             await log.initializeBenchmark(self)
@@ -324,8 +313,8 @@ class myFtx(ccxtpro.ftx):
     async def monitor_risk(self):
         await self.fetch_risk()
 
-        self.limit.limit = self.risk.pv * delta_limit
-        absolute_risk = sum(abs(data['netDelta']) for data in self.risk.delta.values())
+        self.limit.limit = self.pv * delta_limit
+        absolute_risk = sum(abs(data['netDelta']) for data in self.risk_state.values())
         if absolute_risk > self.limit.limit:
             logging.warning(f'limit {self.limit}')
 
@@ -333,84 +322,102 @@ class myFtx(ccxtpro.ftx):
 
     async def watch_order_book(self,symbol):
         super().watch_order_book(symbol)
+    
+    # target_sub_portfolios = {coin:{entry_level_increment,
+    #                     symbol1:{'spot_price','diff','target'}]}]
+    # add info to target_sub_portfolios dictionary. Here only weeds out slow underlyings (should be in strategy)
+    async def build_state(self, weights):
+        frequency = timedelta(minutes=1)
+        end = datetime.now()
+        start = end - timedelta(hours=1)
+    
+        trades_history_list = await asyncio.gather(*[fetch_trades_history(
+            self.market(symbol)['id'], self, start, end, frequency=frequency)
+            for symbol in weights['name']])
+    
+        weights['name'] = weights['name'].apply(lambda s: self.market(s)['symbol'])
+        weights.set_index('name', inplace=True)
+        coin_list = weights['underlying'].unique()
+    
+        # {coin:{symbol1:{data1,data2...},sumbol2:...}}
+        data_dict = {coin:
+                         {df['symbol']:
+                              {'diff': weights.loc[df['symbol'], 'diff'],
+                               'target': weights.loc[df['symbol'], 'target'],
+                               'volume': df['vwap'].filter(like='/trades/volume').mean().values[0] / frequency.total_seconds(),# in coin per second
+                               'series': df['vwap'].filter(like='/trades/vwap')}
+                          for df in trades_history_list if df['coin']==coin}
+                     for coin in coin_list}
+    
+        def basket_vwap_quantile(series_list,diff_list,quantile):
+            series = pd.concat(series_list,axis=1).dropna(axis=0)-diff_list
+            return series.sum(axis=1).diff().quantile(quantile)
+        def move_quantile(series,quantile):# stdev of 1s prices * quantile
+            series = series.dropna(axis=0)
+            return series.std().values[0]*quantile
+    
+        # get times series of target baskets, compute quantile of increments and add to last price
+        # remove series
+        self.exec_parameters = {coin:
+                                    {'entry_level':
+                                         sum([float(self.markets[name]['info']['price']) * data['diff']
+                                              for name, data in coin_data.items()])
+                                         + basket_vwap_quantile([data['series'] for data in coin_data.values()],
+                                                                [data['diff'] for data in coin_data.values()],
+                                                                entry_tolerance)}
+                                    | {symbol:
+                                        {
+                                            # exclude coins too slow or too small
+                                            'skip': 'yes' if (any(data['volume'] * time_budget < max(1, np.abs(data['diff']))
+                                                                  for data in coin_data.values())
+                                                              |(np.abs(data['diff'])<float(self.markets[symbol]['info']['minProvideSize']))) else 'no',
+                                            'diff': weights.loc[symbol, 'diff'],
+                                            'target': weights.loc[symbol, 'target'],
+                                            'slice_size': max([float(self.markets[symbol]['info']['minProvideSize']),
+                                                               slice_factor * np.abs(data['diff'])]),  # in usd
+                                            'edit_trigger_depth': move_quantile(data['series'],edit_trigger_tolerance),
+                                            'edit_price_depth': 0, # only used for aggressive
+                                            'stop_depth': move_quantile(data['series'],stop_tolerance),
+                                            'priceIncrement': float(self.markets[symbol]['info']['priceIncrement']),
+                                            'sizeIncrement': float(self.markets[symbol]['info']['minProvideSize']),
+                                        }
+                                        for symbol, data in coin_data.items()}
+                                for coin, coin_data in data_dict.items()}
+        self.market_state = {coin:
+            {symbol:
+                {
+                    'bids': [{'price':float(self.markets[symbol]['info']['bid']),'size':0}],
+                    'asks': [{'price': float(self.markets[symbol]['info']['ask']), 'size': 0}],
+                    'mid': 0.5*(float(self.markets[symbol]['info']['bid'])+float(self.markets[symbol]['info']['ask'])),
+                    'market_timestamp': end.timestamp()
+                }
+                for symbol, data in coin_data.items()
+            }
+            for coin, coin_data in data_dict.items()
+        }
 
-# target_sub_portfolios = {coin:{'entry_level_increment':entry_level_increment,symbol1:{'volume','spot_price','diff','target'}]}]
-# add info to target_sub_portfolios dictionary. Here only weeds out slow underlyings (should be in strategy)
-async def execution_request(exchange, weights):
-    frequency = timedelta(minutes=1)
-    end = datetime.now()
-    start = end - timedelta(hours=1)
+        self.risk_state = {coin:
+                               {'netDelta':0,
+                                'netDelta_timestamp':end.timestamp()}
+                               | {symbol:
+                                   {
+                                       'delta': 0,
+                                       'delta_timestamp':end.timestamp(),
+                                   }
+                                   for symbol, data in coin_data.items()}
+                           for coin, coin_data in data_dict.items()}
+        await self.fetch_risk()
 
-    trades_history_list = await asyncio.gather(*[fetch_trades_history(
-        exchange.market(symbol)['id'], exchange, start, end, frequency=frequency)
-        for symbol in weights['name']])
-
-    weights['name'] = weights['name'].apply(lambda s: exchange.market(s)['symbol'])
-    weights.set_index('name', inplace=True)
-    coin_list = weights['underlying'].unique()
-
-    # {coin:{symbol1:{data1,data2...},sumbol2:...}}
-    data_dict = {coin:
-                     {df['symbol']:
-                          {'volume': df['vwap'].filter(like='/trades/volume').mean().values[0] / frequency.total_seconds(),# in coin per second
-                           'spot_price': weights.loc[df['symbol'], 'spot_price'],
-                           'diff': weights.loc[df['symbol'], 'diff'],
-                           'target': weights.loc[df['symbol'], 'target'],
-                           'exec_parameters': {  # depend on risk tolerance other execution parameters...
-                               'slice_size': max([float(exchange.market(df['symbol'])['info']['minProvideSize']),
-                                                  0.1 * np.abs(weights.loc[df['symbol'], 'diff'])]),  # in usd
-                               'edit_trigger_depth': None, # will be quantile
-                               'edit_price_depth': 0, # only used for agressive
-                               'stop_depth': None},# will be quantile
-                           'series': df['vwap'].filter(like='/trades/vwap')}
-                      for df in trades_history_list if df['coin']==coin}
-                 for coin in coin_list}
-
-    # exclude coins with slow symbols
-    volume_list = {coin:
-                       coin_data for coin, coin_data in data_dict.items()
-                   if all(data['volume'] * time_budget > max(1, np.abs(data['diff']))
-                           for data in coin_data.values())}
-
-    def basket_vwap_quantile(series_list,diff_list,quantile):
-        series = pd.concat(series_list,axis=1).dropna(axis=0)-diff_list
-        return series.sum(axis=1).diff().quantile(quantile)
-    def move_quantile(series,quantile):# stdev of 1s prices * quantile
-        series = series.dropna(axis=0)
-        return series.std().values[0]*quantile
-
-    # get times series of target baskets, compute quantile of increments and add to last price
-    # remove series
-    light_list = {coin:
-                      {'entry_level':
-                           sum([float(exchange.market(name)['info']['price']) * data['diff']
-                                for name, data in coin_data.items()])
-                           + basket_vwap_quantile([data['series'] for data in coin_data.values()],
-                                                  [data['diff'] for data in coin_data.values()],
-                                                  entry_tolerance)}
-                      | {name:
-                             {field: field_data for field, field_data in data.items() if field != 'series' and field != 'exec_parameters'}
-                             |{'exec_parameters': {  # depend on risk tolerance other execution parameters...
-                                 'slice_size': max([float(exchange.market(name)['info']['minProvideSize']),
-                                                    slice_factor * np.abs(data['diff'])]),  # in usd
-                                 'edit_trigger_depth': move_quantile(data['series'],edit_trigger_tolerance),
-                                 'edit_price_depth': 0, # only used for aggressive
-                                 'stop_depth': move_quantile(data['series'],stop_tolerance)}}# will be quantile
-                         for name, data in coin_data.items()}
-                  for coin, coin_data in volume_list.items()}
-
-    return {'LTC':light_list['LTC']}
-
-async def executer_ws(exchange, targets):
+async def executer_ws(exchange):
+    exchange._localLog = ExecutionLog('basket',[{'symbol':symbol,'size':data['diff']}
+                                                for coin in exchange.exec_parameters.values() for symbol,data in coin.items() if symbol in exchange.markets])
+    await exchange._localLog.initializeBenchmark(exchange)
     try:
-        exchange._localLog = ExecutionLog('basket',[{'symbol':symbol,'size':data['diff']}
-                                                    for coin in targets.values() for symbol,data in coin.items() if symbol in exchange.markets])
-        await exchange.fetch_risk()
-        await exchange._localLog.initializeBenchmark(exchange)
-        await asyncio.gather(*([exchange.monitor_fills(),exchange.monitor_risk()]+
+            await asyncio.gather(*([exchange.monitor_fills(),exchange.monitor_risk()]+
                                [exchange.execute_on_update(symbol, target)
-                                for coin,target in targets.items()
-                                for symbol,symbol_data in target.items() if symbol in exchange.markets.keys()]
+                                for symbol,target in exchange.exec_parameters.items()
+                                if symbol in exchange.markets.keys()
+                                and target['skip']=='no']
                                ))
     except myFtx.LimitBreached as e:
         logging.exception(e,exc_info=True)
@@ -436,17 +443,11 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     await exchange.load_markets()
 
     #weigths and delta
-    target_sub_portfolios = (await diff_portoflio(exchange))
-    target_sub_portfolios=target_sub_portfolios[target_sub_portfolios['diff'].apply(np.abs)>=target_sub_portfolios['name'].apply(lambda s: float(exchange.market(s)['info']['minProvideSize']))]
-    request = await execution_request(exchange, target_sub_portfolios)
-    with open("request.json", "w") as file:
-            json.dump(flatten(request),file)
+    target_sub_portfolios = await diff_portoflio(exchange)
+    await exchange.build_state(target_sub_portfolios)
 
-    if os.path.isfile("exec.json"): os.remove("exec.json")
-    #coin='OMG'
-    #target_sub_portfolios = target_sub_portfolios[target_sub_portfolios['name'].isin([coin+'/USD',coin+'-PERP'])]
     try:
-        await executer_ws(exchange, request)
+        await executer_ws(exchange)
     except KeyboardInterrupt:# TODO: this is not caught :(
         pass
     except Exception as e:
