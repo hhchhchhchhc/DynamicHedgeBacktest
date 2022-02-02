@@ -333,7 +333,7 @@ async def executer_sysperp(exchange: ccxt.Exchange,weights: pd.DataFrame) -> Exe
 
 
 async def ftx_rest_spread_main_wrapper(*argv):
-    exchange = open_exchange(argv[1], argv[2])
+    exchange = await open_exchange(argv[1], argv[2])
     weights = await diff_portoflio(exchange, argv[3])
 
     trades_history_list=await asyncio.gather(*[fetch_trades_history(
