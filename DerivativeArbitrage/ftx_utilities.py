@@ -225,4 +225,4 @@ def deepen(dictionary, parent_key=False, separator='.'):
 
     return result
 
-deepen(json.load(open('request.json')))
+#deepen(json.load(open('request.json')))
