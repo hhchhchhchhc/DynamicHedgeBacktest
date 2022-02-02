@@ -4,6 +4,27 @@ from ftx_ftx import *
 #import seaborn as sns
 #from sklearn import *
 
+#ignores borrow decile since depends on direction
+def populate_concentration_limit(futures, hy_history, universe_filter_window=[]):
+    if len(universe_filter_window) == 0:
+        universe_filter_window = hy_history.index
+    borrow_decile=0.5
+    futures['borrow_volume_decile'] =0
+    futures.loc[futures['spotMargin']==True,'borrow_volume_decile'] = futures[futures['spotMargin']==True].apply(lambda f:
+                                                                                                                 (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']).quantile(q=borrow_decile)
+                                                                                                                 ,axis=1)
+    futures['spot_volume_avg'] = futures.apply(lambda f:
+                                               (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean()
+                                               ,axis=1)
+    futures['future_volume_avg'] = futures.apply(lambda f:
+                                                 (hy_history.loc[universe_filter_window,f.name + '/mark/volume']).mean()
+                                                 ,axis=1)
+    futures['concentration_limit']=futures.apply(lambda f:
+                                                 min([f['borrow_volume_decile'] if f['spotMargin'] else f['openInterestUsd'],f['openInterestUsd'],f['spot_volume_avg']/24,f['future_volume_avg']/24])
+                                                 ,axis=1)
+
+    return futures
+
 async def refresh_universe(exchange,universe_size):
     filename = 'Runtime/configs/universe.xlsx'
     if os.path.isfile(filename):
@@ -17,33 +38,26 @@ async def refresh_universe(exchange,universe_size):
 
     universe_start = datetime(2021, 10, 1)
     universe_end = datetime(2022, 1, 1)
-    borrow_decile = 0.1
+    borrow_decile = 0.25
     #type_allowed=['perpetual']
     screening_params=pd.DataFrame(
         index=['future_volume_threshold','spot_volume_threshold','borrow_volume_threshold','open_interest_threshold'],
-        data={'max':[5e4,5e4,-1,5e4],
-              'wide':[2e5,2e5,2e5,2e5],# important that wide is first :(
-              'tight':[5e5,5e5,5e5,5e5]})
+        data={'max':[5e4,5e4,-1,5e4],# important that sets are decreasing  :(
+              'wide':[1e5,1e5,2e5,5e6],# to run say 1M after leverage
+              'institutional':[5e6,5e6,-1,1e7]})# instiutionals borrow OTC
 
-   # qualitative screening
+    # qualitative screening
     futures = futures[
         (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
         & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
         & (futures['tokenizedEquity'] != True)]
-        #& (futures['spotMargin'] == True)]
+    #& (futures['spotMargin'] == True)]
 
     # volume screening
     hy_history = await build_history(futures, exchange,
-                               timeframe='1h', end=universe_end, start=universe_start,
-                               dirname='')
-    universe_filter_window= hy_history[universe_start:universe_end].index
-    futures['borrow_volume_decile'] =0
-    futures.loc[futures['spotMargin']==True,'borrow_volume_decile'] = futures[futures['spotMargin']==True].apply(lambda f:
-                            (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']).quantile(q=borrow_decile),axis=1)
-    futures['spot_volume_avg'] = futures.apply(lambda f:
-                            (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean(),axis=1)
-    futures['future_volume_avg'] = futures.apply(lambda f:
-                            (hy_history.loc[universe_filter_window,f.name + '/mark/volume']).mean(),axis=1)
+                                     timeframe='1h', end=universe_end, start=universe_start,
+                                     dirname='Runtime/configs/universe_history_cache')
+    futures = populate_concentration_limit(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         for c in screening_params:# important that wide is first :(
@@ -72,17 +86,16 @@ async def perp_vs_cash(
         holding_period,
         slippage_override,
         concentration_limit,
-        exclusion_list=EXCLUSION_LIST+['AVAX','DOT','RAY','SOL','OMG'],
+        exclusion_list=EXCLUSION_LIST+['AVAX','OMG'],
         run_dir='',
         backtest_start = None,# None means live-only
         backtest_end = None):
     try:
         first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
-        if max(first_history.index)>datetime.now().replace(minute=0,second=0,microsecond=0):
+        if max(first_history.index)==datetime.now().replace(minute=0,second=0,microsecond=0):
             pass# if fetched less on this hour
         else:
-            pass
-            #for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)# otherwise do nothing and build_history will use what's there
+            for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)# otherwise do nothing and build_history will use what's there
     except:
         for file in os.listdir(run_dir): os.remove(run_dir + '/' + file)
 
@@ -97,7 +110,7 @@ async def perp_vs_cash(
     max_nb_coins = 99
     carry_floor = 0.4
     filtered = futures[(futures['type'].isin(type_allowed))
-                     & (futures['symbol'].isin(universe.index))]
+                       & (futures['symbol'].isin(universe.index))]
 
     # fee estimation params
     slippage_scaler = 1
@@ -116,26 +129,25 @@ async def perp_vs_cash(
         previous_weights_df = -start_portfolio.loc[
             start_portfolio['attribution'].isin(futures.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
-        equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values
+        equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # run a trajectory
-    if backtest_start == None:
+    if backtest_start == backtest_end:
         point_in_time = now_time.replace(minute=0, second=0, microsecond=0)
         backtest_start = point_in_time
         backtest_end = point_in_time
     else:
         point_in_time = backtest_start + signal_horizon + holding_period
 
-    ## ----------- enrich, get history, filter
+    ## ----------- enrich/filter, get history, populate concentration limit
     enriched = await enricher(exchange, filtered, holding_period, equity=equity,
-                        slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
-                        slippage_scaler=slippage_scaler,
-                        params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
-
-    #### get history ( this is sloooow)
+                              slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
+                              slippage_scaler=slippage_scaler,
+                              params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
     hy_history = await build_history(enriched, exchange,
-                               timeframe='1h', end=backtest_end, start=backtest_start-signal_horizon-holding_period,
-                               dirname=run_dir)
+                                     timeframe='1h', end=backtest_end, start=backtest_start-signal_horizon-holding_period,
+                                     dirname=run_dir)
+    enriched = populate_concentration_limit(enriched, hy_history)
 
     # ------- build derived data history
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
@@ -153,7 +165,7 @@ async def perp_vs_cash(
     previous_time = point_in_time
     trajectory = pd.DataFrame()
 
-    if backtest_start==None:
+    if backtest_start == backtest_end:
         previous_weights = previous_weights_df
     else:
         # set initial weights at non-silly values
@@ -256,9 +268,9 @@ async def perp_vs_cash(
 async def strategy_wrapper(**kwargs):
 
     if EQUITY.isnumeric() or '.xlsx' in EQUITY:
-        exchange = open_exchange(kwargs['exchange'], '')
+        exchange = await open_exchange(kwargs['exchange'], '')
     else:
-        exchange = open_exchange(kwargs['exchange'],EQUITY)
+        exchange = await open_exchange(kwargs['exchange'],EQUITY, config={'asyncio_loop':asyncio.get_running_loop()})
     await exchange.load_markets()
 
     result = await asyncio.gather(*[perp_vs_cash(
@@ -267,7 +279,7 @@ async def strategy_wrapper(**kwargs):
         signal_horizon=signal_horizon,
         holding_period=holding_period,
         slippage_override=slippage_override,
-        run_dir='Runtime/runs',
+        run_dir=kwargs['run_dir'],
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'])
         for concentration_limit in kwargs['concentration_limit']
@@ -281,7 +293,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['backtest'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -295,10 +307,10 @@ def strategies_main(*argv):
             run_dir='Runtime/Live_parquets',
             backtest_start=None,backtest_end=None))
     elif argv[0] == 'backtest':
-        concentration_limit=[2]
-        signal_horizon=[timedelta(hours=h) for h in [48]]
+        concentration_limit=[1]
+        signal_horizon=[timedelta(hours=h) for h in [12,48,60]]
         holding_period=[timedelta(hours=h) for h in [24]]
-        slippage_override=[0]
+        slippage_override=[0.0005]
         return asyncio.run(strategy_wrapper(
             exchange='ftx',
             concentration_limit=concentration_limit,
@@ -306,8 +318,8 @@ def strategies_main(*argv):
             holding_period=holding_period,
             slippage_override=slippage_override,
             run_dir='Runtime/runs',
-            backtest_start=datetime(2021,9,1),
-            backtest_end=datetime(2021,12,1)))
+            backtest_start=datetime(2021,11,1),
+            backtest_end=datetime(2022,2,1)))
     else:
         print(f'commands: sysperp [signal_horizon] [holding_period], backtest')
 
