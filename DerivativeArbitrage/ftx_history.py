@@ -144,7 +144,7 @@ async def fetch_trades_history(symbol,exchange,
     if len(trades)==0:
         vwap=pd.DataFrame(columns=['size','volume','count','vwap'])
         vwap.columns = [symbol.split('/USD')[0] + '/trades/' + column for column in vwap.columns]
-        return vwap
+        return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
 
     data = pd.DataFrame(data=trades)
     data['size'] = data['size'].astype(float)
