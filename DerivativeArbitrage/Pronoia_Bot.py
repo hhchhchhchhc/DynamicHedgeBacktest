@@ -1,6 +1,5 @@
 from strategies import *
 from ftx_portfolio import *
-from ftx_rest_spread import *
 import matplotlib.pyplot as plt
 import dataframe_image as dfi
 
@@ -52,15 +51,14 @@ def help(update, context):
 def echo(update, context):
     try:
         split_message = update.effective_message.text.lower().split()
-        whitelist = ['daviidarr']
+        whitelist = ['daviidarr','Stephan']
         if not update.effective_message.chat['first_name'] in whitelist:
             update.message.reply_text("https://arxiv.org/pdf/1904.05234.pdf")
             update.message.reply_text("Hey " + update.effective_message.chat['first_name'] + ": my code is so slow you have time to read that")
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
                               'date':[str(update.effective_message['date'])],
                               'message':[update.effective_message['text']]})
-            outputit(log,'','Runtime/chatlog',params={'pickleit':True,'excelit':False})
-            excelit("Runtime/chatlog.pickle","Runtime/chathistory.xlsx")
+            log.to_excel("Runtime/chathistory.xlsx")
 
         if update.effective_message.chat['first_name'] in whitelist:
             if split_message[0]=='risk':

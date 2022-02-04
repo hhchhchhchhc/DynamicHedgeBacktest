@@ -12,8 +12,8 @@ from ftx_ftx import *
 
 # adds info, transcation costs, and basic screening
 async def enricher(exchange,futures,holding_period,equity,
-             slippage_override= -999, slippage_orderbook_depth= 0,
-             slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':['perpetual'],'fee_mode':'retail'}):
+                   slippage_override= -999, slippage_orderbook_depth= 0,
+                   slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':['perpetual'],'fee_mode':'retail'}):
     markets=await exchange.fetch_markets()
 
     # basic screening
@@ -22,7 +22,7 @@ async def enricher(exchange,futures,holding_period,equity,
         & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
         & (futures['tokenizedEquity'] != True)
         & (futures['type'].isin(params['type_allowed'])==True)]
-    
+
     ########### add borrows
     coin_details = pd.DataFrame((await exchange.publicGetWalletCoins())['result'], dtype=float).set_index('id')
     borrows = await fetch_coin_details(exchange)
@@ -34,7 +34,7 @@ async def enricher(exchange,futures,holding_period,equity,
     if not futures[futures['type'] == 'perpetual'].empty:
         list = await asyncio.gather(*[
             exchange.publicGetFuturesFutureNameStats({'future_name': f})
-        for f in futures[futures['type'] == 'perpetual'].index])
+            for f in futures[futures['type'] == 'perpetual'].index])
         list = [float(l['result']['nextFundingRate'])*24*365.325 for l in list]
         futures.loc[futures['type'] == 'perpetual','basis_mid'] = list
 
@@ -48,8 +48,8 @@ async def enricher(exchange,futures,holding_period,equity,
 
     # transaction costs
     costs=await fetch_rate_slippage(futures, exchange, holding_period,
-        slippage_override, slippage_orderbook_depth, slippage_scaler,
-        params)
+                                    slippage_override, slippage_orderbook_depth, slippage_scaler,
+                                    params)
     futures = futures.join(costs, how = 'outer')
 
     # spot carries
@@ -64,30 +64,11 @@ async def enricher(exchange,futures,holding_period,equity,
 
     ##### max weights ---> TODO CHECK formulas, short < long no ??
     future_im = futures.apply(lambda f:
-            (f['imfFactor'] * np.sqrt(equity / f['mark'])).clip(min=1 / f['account_leverage']),
-                          axis=1)
+                              (f['imfFactor'] * np.sqrt(equity / f['mark'])).clip(min=1 / f['account_leverage']),
+                              axis=1)
     futures['MaxLongWeight'] = 1 / (1.1 + (future_im - futures['collateralWeight']))
     futures['MaxShortWeight'] = -1 / (future_im + 1.1 / futures.apply(lambda f:collateralWeightInitial(f),axis=1) - 1)
     futures.loc[~futures['spotMargin'],'MaxShortWeight']=0
-    ##### using 1d optimization...failed !
-#    IM_constraint=futures.apply(lambda f:
-#                {'type': 'ineq','fun':(lambda w: excessMargin(pd.DataFrame(f).T,w)['IM'])},
-#                                axis=1)
-#    MM_constraint=futures.apply(lambda f:
-#                {'type': 'ineq', 'fun': (lambda w: excessMargin(pd.DataFrame(f).T, w)['MM'])},
-#                                axis=1)
-#    futures[futures['direction_mid']>0,'MaxLongWeight'] = futures[futures['direction_mid']>0].apply(lambda f:
-#                    scipy.optimize.minimize(fun=(lambda w: (w*f['carryLong'])[0]), x0=np.array([5]), method='SLSQP',
-#                    constraints=[IM_constraint[f.name], MM_constraint[f.name]],  # ,loss_tolerance_constraint
-#                    bounds=scipy.optimize.Bounds(lb=np.array([0]),ub=np.array([10])),
-#                    options={'ftol': 1e-2, 'disp': False})['x'][0],
-#                                                                                            axis=1)
-#    futures[futures['direction_mid']<0,'MaxShortWeight'] = futures[futures['direction_mid']<0].apply(lambda f:
-#                    scipy.optimize.minimize(fun=(lambda w: (w*f['carryShort'])[0]), x0=np.array([-5]), method='SLSQP',
-#                    constraints=[IM_constraint[f.name], MM_constraint[f.name]],  # ,loss_tolerance_constraint
-#                    bounds=scipy.optimize.Bounds(lb=np.array([-10]),ub=np.array([0])),
-#                    options={'ftol': 1e-2, 'disp': False})['x'][0],
-#                                                                                            axis=1)
 
     return futures.drop(columns=['carryLong','carryShort'])
 
@@ -96,9 +77,9 @@ def enricher_wrapper(exchange_name,type,depth):
         exchange= await open_exchange(exchange_name,'')
         futures = pd.DataFrame(await fetch_futures(exchange)).set_index('name')
         data = await enricher(exchange, futures, timedelta(weeks=1), equity=1.0,
-                        slippage_override=-999, slippage_orderbook_depth=depth,
-                        slippage_scaler=1.0,
-                        params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
+                              slippage_override=-999, slippage_orderbook_depth=depth,
+                              slippage_scaler=1.0,
+                              params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
         await exchange.close()
         return data
     return asyncio.run(enricher_subwrapper(exchange_name,type,depth))
@@ -152,7 +133,7 @@ def update(futures,point_in_time,history,equity,
     # Freeze direction into Carry_t and assign max weights.
     futures['direction'] = 1
     futures.loc[futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] < 0,
-        'direction'] = -1
+                'direction'] = -1
     futures.loc[~futures['spotMargin'],'direction'] = 1
 
     # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
@@ -169,9 +150,9 @@ def update(futures,point_in_time,history,equity,
 
 # return rolling expectations of integrals
 def forecast(exchange, futures, hy_history,
-                  holding_period,  # to convert slippage into rate
-                  signal_horizon,  # historical window for expectations
-                  filename=''):             # use external rather than order book
+             holding_period,  # to convert slippage into rate
+             signal_horizon,  # historical window for expectations
+             filename=''):             # use external rather than order book
     dated = futures[futures['type'] == 'future']
     ### remove blanks for this
     hy_history = hy_history.fillna(method='ffill',limit=2).dropna(axis=1,how='all')
@@ -185,20 +166,20 @@ def forecast(exchange, futures, hy_history,
 
     # 1: spot time series
     LongCarry = futures.apply(lambda f:
-                    (- hy_history['USD/rate/borrow']+
-                        hy_history[f.name + '/rate/' + ('funding' if f['type']=='perpetual' else 'c')]),
-                        axis=1).T
+                              (- hy_history['USD/rate/borrow']+
+                               hy_history[f.name + '/rate/' + ('funding' if f['type']=='perpetual' else 'c')]),
+                              axis=1).T
     LongCarry.columns=futures.index.tolist()
 
     ShortCarry = futures.apply(lambda f:
-                    (- hy_history['USD/rate/borrow']+
-                        hy_history[f.name + '/rate/' + ('funding' if f['type']=='perpetual' else 'c')]
-                     + hy_history[f['underlying'] + '/rate/borrow']),
-                        axis=1).T
+                               (- hy_history['USD/rate/borrow']+
+                                hy_history[f.name + '/rate/' + ('funding' if f['type']=='perpetual' else 'c')]
+                                + hy_history[f['underlying'] + '/rate/borrow']),
+                               axis=1).T
     ShortCarry.columns = futures.index.tolist()
 
     Borrow = futures.apply(lambda f: hy_history[f['underlying'] + '/rate/borrow'],
-                               axis=1).T
+                           axis=1).T
     Borrow.columns = futures.index.tolist()
     USDborrow = hy_history['USD/rate/borrow']
 
@@ -236,9 +217,9 @@ def forecast(exchange, futures, hy_history,
             futures.to_excel(writer, sheet_name='futureinfo')
             for col in futures.index:
                 all = pd.concat([intLongCarry[col],
-                                intShortCarry[col],
-                                E_long[col],
-                                E_short[col],
+                                 intShortCarry[col],
+                                 E_long[col],
+                                 E_short[col],
                                  intBorrow[col],
                                  E_intBorrow[col]],axis = 1)
                 all.columns = ['intLongCarry', 'intShortCarry', 'E_long','E_short','intBorrow','E_intBorrow']
@@ -253,8 +234,8 @@ def forecast(exchange, futures, hy_history,
 # Slippage override =spread to mid for a single leg, with fees = avg taker/maker.
 # Otherwise calculate from orderbook (override Only live is supported).
 async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_period,
-                            slippage_override: int = -999, slippage_orderbook_depth: float = 0,
-                            slippage_scaler: float = 1.0,params={'override_slippage':True,'fee_mode':'retail'}) -> None:
+                              slippage_override: int = -999, slippage_orderbook_depth: float = 0,
+                              slippage_scaler: float = 1.0,params={'override_slippage':True,'fee_mode':'retail'}) -> None:
     futures=input_futures.copy()
     point_in_time=datetime.now()
     markets=await exchange.fetch_markets()
@@ -298,12 +279,12 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
     # buy is negative, sell is positive
     buy_slippage=futures['future_bid'] - futures['spot_ask']
     bid_rate_slippage = futures.apply(lambda f: \
-        (f['future_bid']- f['spot_ask']) \
-        / np.max([1, (f['expiryTime'] - point_in_time).total_seconds()/3600])*365.25*24,axis=1) # no less than 1h
+                                          (f['future_bid']- f['spot_ask']) \
+                                          / np.max([1, (f['expiryTime'] - point_in_time).total_seconds()/3600])*365.25*24,axis=1) # no less than 1h
     sell_slippage=futures['future_ask'] - futures['spot_bid']
     ask_rate_slippage = futures.apply(lambda f: \
-        (f['future_ask'] - f['spot_bid']) \
-        / np.max([1, (f['expiryTime'] - point_in_time).total_seconds()/3600])*365.25*24,axis=1) # no less than 1h
+                                          (f['future_ask'] - f['spot_bid']) \
+                                          / np.max([1, (f['expiryTime'] - point_in_time).total_seconds()/3600])*365.25*24,axis=1) # no less than 1h
 
     holding_hours = int(holding_period.total_seconds() / 3600)
     return pd.DataFrame({
@@ -320,12 +301,13 @@ def transaction_cost_calculator(dx,buy_slippage,sell_slippage):
     ])
 
 def cash_carry_optimizer(exchange, input_futures,excess_margin,
-                  previous_weights_df,
-                  holding_period,  # to convert slippag into rate
-                  signal_horizon,  # historical window for expectations
-                  concentration_limit,
-                  equity,# for markovitz
-                  optional_params=[]):             # use external rather than order book
+                         previous_weights_df,
+                         holding_period,  # to convert slippag into rate
+                         signal_horizon,  # historical window for expectations
+                         concentration_limit,
+                         mktshare_limit,
+                         equity,# for markovitz
+                         optional_params=[]):             # use external rather than order book
     futures=input_futures.copy()
 
     ###### then use in convex optimiziation
@@ -351,16 +333,16 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
             + E_intUSDborrow * min([equity,sum(x)]) \
             + (0 if ('cost_blind' in optional_params) else
                transaction_cost_calculator(x - xt,buy_slippage,sell_slippage))
-                            )
-            #+ marginal_coin_penalty*sum(np.array([np.min[1,np.abs(i)/0.001] for i in x]))
+    )
+    #+ marginal_coin_penalty*sum(np.array([np.min[1,np.abs(i)/0.001] for i in x]))
 
     objective_jac= lambda x: -(
             E_intCarry
             + (E_intUSDborrow if sum(x)<equity else np.zeros(len(x)))
             + (0 if ('cost_blind' in optional_params) else
-                        (np.array( [buy_slippage[i] if (x - xt)[i] > 0
-                        else sell_slippage[i] for i in range(len(x - xt))])))
-                            )
+               (np.array( [buy_slippage[i] if (x - xt)[i] > 0
+                           else sell_slippage[i] for i in range(len(x - xt))])))
+    )
 
     #subject to weight bounds, margin and loss probability ceiling
     n = len(futures.index)
@@ -373,13 +355,13 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
                           'fun': lambda x: excess_margin.call(x)['totalMM']}
 
     lower_bound = futures.apply(lambda future: 0 if future['direction'] > 0 else
-    -min(1*equity,(future['concentration_limit'] if future['spotMargin'] else 0)) # 0 bounds if short  + no spotMargin...invalid for institutionals
+    -min(concentration_limit*equity,(future['concentration_limit'] if future['spotMargin'] else 0)) # 0 bounds if short  + no spotMargin...invalid for institutionals
                                 ,axis=1)
     upper_bound = futures.apply(lambda future: 0 if future['direction'] < 0 else
-    min(1*equity,future['concentration_limit'])
+    min(concentration_limit*equity,future['concentration_limit'])
                                 , axis=1)
-    new_bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values*concentration_limit,dtype=object),
-                                   ub=np.asarray(upper_bound.values*concentration_limit,dtype=object))
+    new_bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values*mktshare_limit,dtype=object),
+                                       ub=np.asarray(upper_bound.values*mktshare_limit,dtype=object))
 
     bounds = scipy.optimize.Bounds(
         lb=np.asarray([0 if w > 0 else -concentration_limit * equity for w in futures['direction']], dtype=object),
@@ -468,5 +450,4 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
                 pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
 
         return summary
-    a=0
     return summarize()

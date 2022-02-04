@@ -96,7 +96,7 @@ async def monitored_market_order(exchange: ccxt.Exchange,
                               size: float  # in coin
                               ) -> ExecutionLog:
     log=ExecutionLog(sys._getframe().f_code.co_name, [{'symbol': symbol, 'size': size}])
-    await log.initializeBenchmark(exchange)
+    await log.populate_context(exchange)
     order = await exchange.createOrder(symbol, 'market', 'buy' if size>0 else 'sell', np.abs(size))
     await asyncio.sleep(placement_latency)
     log._id = order['id']
@@ -118,7 +118,7 @@ async def sure_post(exchange: ccxt.Exchange,
         warnings.warn(f'rounded up {symbol} in {size} to {sizeIncrement}',RuntimeWarning)
 
     log = ExecutionLog(sys._getframe().f_code.co_name, [{'symbol': symbol, 'size': size}])
-    await log.initializeBenchmark(exchange)
+    await log.populate_context(exchange)
 
     attempt = 1 # start one increment in front of tob
     status = 'canceled'
@@ -157,7 +157,7 @@ async def post_chase_trigger(exchange: ccxt.Exchange,
     trigger_level = float(fetched['price']) * (1 + taker_trigger * (1 if size > 0 else -1))
 
     log = ExecutionLog(sys._getframe().f_code.co_name, [{'symbol': symbol, 'size': size}])
-    await log.initializeBenchmark(exchange)
+    await log.populate_context(exchange)
 
     # post
     from_tob=increment
@@ -201,7 +201,7 @@ async def post_chase_trigger(exchange: ccxt.Exchange,
 async def slice_spread_order(exchange: ccxt.Exchange, symbol_1: str, symbol_2: str, size_1: float, size_2: float, min_volume: float)->ExecutionLog:
     log = ExecutionLog(sys._getframe().f_code.co_name, [{'symbol': symbol_1, 'size': size_1},
                                                         {'symbol': symbol_2, 'size': size_2}])
-    await log.initializeBenchmark(exchange)
+    await log.populate_context(exchange)
 
     (symbol1,symbol2) = await symbol_ordering(exchange, symbol_1, symbol_2)
     (size1,size2) = (size_1,size_2) if symbol1==symbol_1 else (size_2,size_1)
@@ -273,7 +273,7 @@ async def slice_single_order(exchange: ccxt.Exchange, symbol: str, size: float,m
     slice_size = max(increment, min(max_slice_factor,slice_factor)/price)
 
     log = ExecutionLog(sys._getframe().f_code.co_name, [{'symbol': symbol, 'size': size}])
-    await log.initializeBenchmark(exchange)
+    await log.populate_context(exchange)
 
     # split order into slice_size
     amount_sliced = 0
@@ -302,7 +302,7 @@ async def executer_sysperp(exchange: ccxt.Exchange,weights: pd.DataFrame) -> Exe
         {'symbol':r['name'],
          'size':r['diff']}
         for (i,r) in weights.iterrows()])
-    await log.initializeBenchmark(exchange)
+    await log.populate_context(exchange)
 
     orders_by_underlying = [r[1] for r in weights.groupby('underlying')]
     single_orders = [{'symbol':r.head(1)['name'].values[0], 'size':r.head(1)['diff'].values[0], 'volume':r.head(1)['volume'].values[0]}

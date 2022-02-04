@@ -323,6 +323,7 @@ async def diff_portoflio(exchange):
     diffs['underlying'] = diffs['name'].apply(lambda x: exchange.market(x)['base'])
     diffs['target'] = diffs['optimalWeight'] / diffs['spot_price']
     diffs['diff']=diffs['target']-diffs['total']
+    diffs['USDdiff'] = diffs['diff']*diffs['spot_price']
 
     return diffs
 
@@ -719,7 +720,7 @@ def ftx_portoflio_main(*argv):
     print(f'running {argv}')
     if argv[0] == 'execprogress':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
-        print(diff[diff['spot_price']*diff['diff'].apply(np.abs)>10])
+        print(diff.loc[diff['spot_price']*diff['diff'].apply(np.abs)>10,['underlying','name','optimalWeight','USDdiff']])
         return diff
     elif argv[0] == 'risk':
         risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
