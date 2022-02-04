@@ -327,7 +327,8 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
 async def diff_portoflio_wrapper(*argv):
     exchange= await open_exchange(*argv)
     await exchange.load_markets()
-    diff = await diff_portoflio(exchange)
+    future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
+    diff = await diff_portoflio(exchange,future_weights)
     await exchange.close()
     return diff
 
@@ -711,13 +712,13 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
 def ftx_portoflio_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['execprogress'])
+        argv.extend(['fromOptimal'])
     if len(argv) < 3:
         argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
-    if argv[0] == 'execprogress':
+    if argv[0] == 'fromOptimal':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
-        print(diff.loc[diff['diffUSD'].apply(np.abs)>10,['underlying','name','optimalWeight','USDdiff']])
+        print(diff.loc[diff['diffUSD'].apply(np.abs)>10,['coin','name','optimalUSD','diffUSD']])
         return diff
     elif argv[0] == 'risk':
         risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
@@ -728,7 +729,7 @@ def ftx_portoflio_main(*argv):
         print(plex)
         return plex
     else:
-        print(f'commands fills_anaysis,execprogress,risk,plex')
+        print(f'commands fromOptimal,risk,plex')
 
 if __name__ == "__main__":
     ftx_portoflio_main(*sys.argv[1:])

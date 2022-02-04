@@ -1,66 +1,37 @@
-import time
-import sys
 import ccxtpro
 import asyncio
-from ftx_utilities import *
 
-class myExchange(ccxtpro.ftx):
-    def __init__(self, config={}):
-        super().__init__(config=config)
-
-    async def watch_orders(self,symbol):
+class myExchange(ccxtpro.some_exchange):
+    def __init__(self,*args,**kwargs):
+        super(myExchange, self).__init__(*args,**kwargs) # kwargs include 'loop'
+        _data = logic1(*args,**kwargs)
+    def handle_xxx(self, client, message):
+        # called by ccxt in the background upon message receipt. syncronous.
+    async def watch_state(self):
+        # that waits for data and returns it when it comes. Once.
+    async def async_react_to_state(self):
+        await logic2(self,_data)
+    def sync_react_to_state(self):
+        logic3(self, _data)
+    async def loop_watch_state(self):
         while True:
             try:
-                await super().watch_orders(symbol)
+                data=self.watch_state()
+                # handle_xxx is called by ccxt in the background upon message receipt
+                self.react_to_state(data)
+            except NonCriticalError as e:
+                # for instance connection error
+                continue
             except Exception as e:
-                print(e)
+                break
+            finally:
+                cleanup()
 
-    async def trade_on_update(self,symbol,size):
-        while True:
-            try:
-                top_of_book = await self.watch_ticker(symbol)
-                price,opposite_side = float(self.markets[symbol]['info']['ask' if size<0 else 'bid']),float(self.market(symbol)['info']['ask' if size>0 else 'bid'])
-
-                priceIncrement = float(self.markets[symbol]['info']['priceIncrement'])
-                sizeIncrement = float(self.markets[symbol]['info']['sizeIncrement'])
-                if np.abs(size) < sizeIncrement:
-                    order_size =0
-                    return None
-                else:
-                    order_size = int(np.abs(size)/opposite_side/sizeIncrement)*sizeIncrement
-
-                # triggers are in units of bid/ask at size
-                edit_trigger = priceIncrement
-                edit_price = price - int(0.0001*price/priceIncrement)*priceIncrement * (1 if size>0 else -1)
-
-                orders = await self.fetch_open_orders(symbol=symbol)
-                if not orders:
-                    await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', order_size, price=edit_price, params={'postOnly': True})
-                else:# chase
-                    #if (1 if size>0 else -1)*(price-orders[0]['price'])>edit_trigger:
-                    if np.abs(edit_price - orders[0]['price']) >= priceIncrement:
-                        await self.edit_order(orders[0]['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
-                        print(f'chased to {edit_price}')
-
-            except Exception as e:
-                print(e)
-
-
-
-async def main(*argv,**kwargs):
-    exchange = myExchange(config={
-        'asyncioLoop': kwargs['loop'] if 'loop' in kwargs else None,
-        'newUpdates': True,
-        'enableRateLimit': True,
-        'apiKey': min_iterations,
-        'secret': max_iterations})
-    exchange.verbose = False
-    exchange.headers =  {'FTX-SUBACCOUNT': 'SysPerp'}
-    exchange.authenticate()
-
-    await asyncio.gather(*[exchange.trade_on_update(symbol,size) for symbol,size in zip(kwargs['symbols'],kwargs['size'])]+
-                          [exchange.watch_orders(symbol) for symbol in kwargs['symbols']])
-
+def main(*argv,**kwargs):
+    exchange=myExchange(*argv,**kwargs)
+    states_to_watch=['orderbooks', 'trades', 'balances','sometimes', 'markets']
+    while True:
+        await asyncio.gather([exchange.loop_watch_state() for state in states_to_watch])
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()

@@ -46,7 +46,7 @@ def help(update, context):
     update.message.reply_text('* basis [future] [size] [exchange] -> futures basis on ftx in size 10000')
     update.message.reply_text('* sysperp [holding period] [signal horizon]: optimal perps')
     update.message.reply_text('* execute: executes latest sysperp run')
-    update.message.reply_text('* execprogress: live portoflio vs target')
+    update.message.reply_text('* fromOptimal: live portoflio vs target')
 
 def echo(update, context):
     try:
@@ -73,7 +73,7 @@ def echo(update, context):
                 plex.to_excel(filename)
                 with open(filename, "rb") as file:
                     update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-            elif split_message[0] == 'execprogress':
+            elif split_message[0] == 'fromOptimal':
                 data = ftx_portoflio_main(*split_message)
                 filename = "Runtime/temporary_parquets/telegram_file.xlsx"
                 data.to_excel(filename)

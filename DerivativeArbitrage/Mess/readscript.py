@@ -8,7 +8,7 @@ with open('events.json','r') as file:
     events=pd.DataFrame(d)
 with open('request.json', 'r') as file:
     d = json.load(file)
-    request = pd.DataFrame(d)
+    request = pd.Series(d)
 with pd.ExcelWriter('logs.xlsx', engine='xlsxwriter') as writer:
     request.to_excel(writer,sheet_name='request')
     events.to_excel(writer, sheet_name='events')

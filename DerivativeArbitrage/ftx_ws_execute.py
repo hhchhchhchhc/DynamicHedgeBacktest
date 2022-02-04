@@ -300,12 +300,13 @@ class myFtx(ccxtpro.ftx):
         # size to do: aim at target, slice, round to sizeIncrement
         params = self.exec_parameters[coin][symbol]
         size = params['target'] - risk['delta']/mark
-        size = np.sign(size)*min([np.abs(size),params['slice_size']])
+
         sizeIncrement = params['sizeIncrement']
         if np.abs(size) < sizeIncrement:
             size =0
             raise myFtx.DoneDeal(symbol)
         else:
+            size = np.sign(size)*min([np.abs(size),params['slice_size']])
             size = np.sign(size)*int(np.abs(size)/sizeIncrement)*sizeIncrement
         assert(np.abs(size)>=sizeIncrement)
 
@@ -315,9 +316,9 @@ class myFtx(ccxtpro.ftx):
                 raise myFtx.DoneDeal(symbol)
                 return
             # set limit at target quantile
-            current_basket_price = sum(self.mark(symbol)*self.exec_parameters[coin][symbol]['diff']
-                                       for symbol in self.exec_parameters[coin].keys() if symbol in self.markets)
-            edit_price_depth = max([0,(current_basket_price-self.exec_parameters[coin]['entry_level'])/params['diff']])#TODO: sloppy logic assuming no correlation
+            #current_basket_price = sum(self.mark(symbol)*self.exec_parameters[coin][symbol]['diff']
+            #                           for symbol in self.exec_parameters[coin].keys() if symbol in self.markets)
+            #edit_price_depth = max([0,(current_basket_price-self.exec_parameters[coin]['entry_level'])/params['diff']])#TODO: sloppy logic assuming no correlation
             edit_price_depth = (np.abs(netDelta+size)-np.abs(netDelta))*params['stop_depth'] # pnl vol ~ profit if done
             edit_trigger_depth=params['edit_trigger_depth']
             order = await self.update_orders(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=None)
@@ -330,11 +331,11 @@ class myFtx(ccxtpro.ftx):
         if order != None:
             self.to_json([{'eventType':'top_of_book'}
                           |{key:self.tickers[symbol][key] for key in ['timestamp','symbol','bid','bidVolume','ask','askVolume','last']}
-                          |{'timestamp': self.tickers[symbol]['timestamp'] - self.exec_parameters['timestamp']}
+                          |{'timestamp': self.tickers[symbol]['timestamp']/1000 - self.exec_parameters['timestamp']}
                           |{'coin':coin}])
             self.to_json([{'eventType':'order'}
                           |{key:order[key] for key in ['timestamp','symbol','side','price','amount','type','id','filled']}
-                          |{'timestamp': order['timestamp'] - self.exec_parameters['timestamp']}
+                          |{'timestamp': order['timestamp']/1000 - self.exec_parameters['timestamp']}
                           |{'coin':coin}])
 
     @loop_and_callback
@@ -347,12 +348,20 @@ class myFtx(ccxtpro.ftx):
 
         self.to_json([{'eventType':'fill'}
                       |{translate(key):fill[key] for key in ['symbol','side','price','amount','takerOrMaker','order']}
-                      |{'timestamp':fill['timestamp']-self.exec_parameters['timestamp']}
+                      |{'timestamp':fill['timestamp']/1000-self.exec_parameters['timestamp']}
                       |{'feeUSD':fill['fee']['cost']*(1 if fill['fee']['currency']=='USD' else self.tickers[fill['fee']['currency']+'/USD']['ask'])}
                       for fill in fills])
         await self.fetch_risk()
+        for fill in fills:
+            logging.info('{}: {} {} {} at {}'.format(
+                *[[fill['timestamp'] / 1000 - self.exec_parameters['timestamp']] + [fill[key] for key in
+                ['side', 'amount', 'symbol', 'price']]]))
+            logging.info('risk from {} to {} target {}'.format(
+                self.exec_parameters[self.markets[fill['symbol']]][fill['symbol']]['diff']*fill['price'],
+                self.risk_state[self.markets[fill['symbol']]][fill['symbol']],
+                self.exec_parameters[self.markets[fill['symbol']]][fill['symbol']]['target']*fill['price']))
 
-    ## redundant minutely risk check
+            ## redundant minutely risk check
     @loop_and_callback
     async def monitor_risk(self):
         await self.fetch_risk()
@@ -371,16 +380,16 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         'enableRateLimit': True,
         'apiKey': min_iterations,
         'secret': max_iterations}) if argv[1]=='ftx' else None
-    exchange.verbose = False
+    exchange.verbose = True
     exchange.headers =  {'FTX-SUBACCOUNT': argv[2]}
     exchange.authenticate()
     await exchange.load_markets()
 
     if argv[0]=='sysperp':
         future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
-        diff = await diff_portoflio(exchange, future_weights)
-        selected_coins = ['REN']#target_portfolios.sort_values(by='USDdiff', key=np.abs, ascending=False).iloc[2]['underlying']
-        target_portfolio=diff[diff['coin'].isin(selected_coins)]
+        target_portfolio = await diff_portoflio(exchange, future_weights)
+        #selected_coins = ['REN']#target_portfolios.sort_values(by='USDdiff', key=np.abs, ascending=False).iloc[2]['underlying']
+        #target_portfolio=diff[diff['coin'].isin(selected_coins)]
         await exchange.build_state(target_portfolio,
                                    entry_tolerance=entry_tolerance,
                                    edit_trigger_tolerance=edit_trigger_tolerance,
@@ -443,7 +452,7 @@ def ftx_ws_spread_main(*argv):
     if len(argv) == 0:
         argv.extend(['execute'])
     if len(argv) < 2:
-        argv.extend(['sysperp'])
+        argv.extend(['flatten'])
     if len(argv) < 4:
         argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
