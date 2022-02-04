@@ -86,7 +86,8 @@ async def perp_vs_cash(
         holding_period,
         slippage_override,
         concentration_limit,
-        exclusion_list=EXCLUSION_LIST+['AVAX','OMG'],
+        mktshare_limit,
+        exclusion_list,
         run_dir='',
         backtest_start = None,# None means live-only
         backtest_end = None):
@@ -188,6 +189,7 @@ async def perp_vs_cash(
                                          holding_period=holding_period,
                                          signal_horizon=signal_horizon,
                                          concentration_limit=concentration_limit,
+                                         mktshare_limit=mktshare_limit,
                                          equity=equity,
                                          optional_params=['verbose']
                                          )
@@ -276,6 +278,8 @@ async def strategy_wrapper(**kwargs):
     result = await asyncio.gather(*[perp_vs_cash(
         exchange=exchange,
         concentration_limit=concentration_limit,
+        mktshare_limit=mktshare_limit,
+        exclusion_list=kwargs['exclusion_list'],
         signal_horizon=signal_horizon,
         holding_period=holding_period,
         slippage_override=slippage_override,
@@ -283,6 +287,7 @@ async def strategy_wrapper(**kwargs):
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'])
         for concentration_limit in kwargs['concentration_limit']
+        for mktshare_limit in kwargs['mktshare_limit']
         for signal_horizon in kwargs['signal_horizon']
         for holding_period in kwargs['holding_period']
         for slippage_override in kwargs['slippage_override']])
@@ -301,6 +306,8 @@ def strategies_main(*argv):
         return asyncio.run(strategy_wrapper(
             exchange='ftx',
             concentration_limit=[CONCENTRATION_LIMIT],
+            mktshare_limit=[MKTSHARE_LIMIT],
+            exclusion_list=EXCLUSION_LIST,
             signal_horizon=[argv[1]],
             holding_period=[argv[2]],
             slippage_override=[SLIPPAGE_OVERRIDE],
@@ -308,12 +315,15 @@ def strategies_main(*argv):
             backtest_start=None,backtest_end=None))
     elif argv[0] == 'backtest':
         concentration_limit=[1]
+        mktshare_limit=MKTSHARE_LIMIT
         signal_horizon=[timedelta(hours=h) for h in [12,48,60]]
         holding_period=[timedelta(hours=h) for h in [24]]
         slippage_override=[0.0005]
         return asyncio.run(strategy_wrapper(
             exchange='ftx',
             concentration_limit=concentration_limit,
+            mktshare_limit=mktshare_limit,
+            exclusion_list=EXCLUSION_LIST,
             signal_horizon=signal_horizon,
             holding_period=holding_period,
             slippage_override=slippage_override,
