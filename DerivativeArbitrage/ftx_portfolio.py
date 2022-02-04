@@ -281,16 +281,14 @@ async def live_risk(exchange,futures):
     return result[['coin','futureDelta', 'spotDelta', 'netDelta','futureMark','futureIndex']].set_index('coin')
 
 # diff is in coin
-async def diff_portoflio(exchange):
-    # open file
-    future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
+async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
     future_weights = future_weights[future_weights['name'].isin(['USD','total'])==False]
     future_weights = future_weights[(np.abs(future_weights['optimalWeight'])>1)]
-    future_weights['optimalWeight'] *= -1
+    future_weights['optimalUSD'] = -future_weights['optimalWeight']
 
     cash_weights = future_weights.copy()
     cash_weights['name']=cash_weights['name'].apply(lambda x: exchange.market(x)['base']+'/USD')
-    cash_weights['optimalWeight'] *= -1
+    cash_weights['optimalUSD'] *= -1
     target = future_weights.append(cash_weights)
 
     async def fetch_balances_positions(exchange: ccxt.Exchange) -> pd.DataFrame:
@@ -312,20 +310,19 @@ async def diff_portoflio(exchange):
     current=await fetch_balances_positions(exchange)
 
     # join, diff, coin
-    diffs = target.set_index('name')[['optimalWeight']].join(current.set_index('name')[['total']],how='outer')
-    diffs=diffs.fillna(0.0).reset_index()
-    tickers=pd.DataFrame(await exchange.fetch_tickers()).T
-    tickers['symbol']=tickers['symbol'].apply(lambda s: exchange.market(s)['id'])
-    #we ignore the basis for scaling the perps. Too volatile.
-    diffs['spot_price']=diffs['name'].apply(lambda x:
-                                       tickers.loc[exchange.market(x)['base']+'/USD','close'] if exchange.market(x)['swap']
-                                       else tickers.loc[tickers['symbol']==x,'close'].values[0])
-    diffs['underlying'] = diffs['name'].apply(lambda x: exchange.market(x)['base'])
-    diffs['target'] = diffs['optimalWeight'] / diffs['spot_price']
-    diffs['diff']=diffs['target']-diffs['total']
-    diffs['USDdiff'] = diffs['diff']*diffs['spot_price']
+    result = target.set_index('name')[['optimalUSD']].join(current.set_index('name')[['total']],how='outer')
+    result=result.fillna(0.0).reset_index()
 
-    return diffs
+    result['coin'] = result['name'].apply(lambda x: exchange.market(x)['base'])
+    #we ignore the basis for scaling the perps. Too volatile.
+    result['spot_price']=result['coin'].apply(lambda x: float(exchange.market(x+'/USD')['info']['price']))
+    result['optimalCoin'] = result['optimalUSD'] / result['spot_price']
+    result['currentCoin'] = result['total']
+    result['currentUSD'] = result['total'] * result['spot_price']
+    result['diffCoin']= result['optimalCoin']-result['currentCoin']
+    result['diffUSD'] = result['diffCoin']*result['spot_price']
+
+    return result[['coin','name','currentUSD','optimalUSD','currentCoin','optimalCoin','diffUSD','diffCoin']]
 
 async def diff_portoflio_wrapper(*argv):
     exchange= await open_exchange(*argv)
@@ -720,7 +717,7 @@ def ftx_portoflio_main(*argv):
     print(f'running {argv}')
     if argv[0] == 'execprogress':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
-        print(diff.loc[diff['spot_price']*diff['diff'].apply(np.abs)>10,['underlying','name','optimalWeight','USDdiff']])
+        print(diff.loc[diff['diffUSD'].apply(np.abs)>10,['underlying','name','optimalWeight','USDdiff']])
         return diff
     elif argv[0] == 'risk':
         risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
