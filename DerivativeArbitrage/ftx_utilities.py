@@ -48,7 +48,7 @@ HOLDING_PERIOD = pd.Timedelta(static_params.loc['HOLDING_PERIOD','value'])
 SLIPPAGE_OVERRIDE = float(static_params.loc['SLIPPAGE_OVERRIDE','value'])
 CONCENTRATION_LIMIT = float(static_params.loc['CONCENTRATION_LIMIT','value'])
 MKTSHARE_LIMIT = float(static_params.loc['MKTSHARE_LIMIT','value'])
-EXCLUSION_LIST = [c for c in static_params.loc['EXCLUSION_LIST','value'].split('+')]
+EXCLUSION_LIST = [c for c in static_params.loc['REBASE_TOKENS','value'].split('+')]+[c for c in static_params.loc['EXCLUSION_LIST','value'].split('+')]
 DELTA_BLOWUP_ALERT = float(static_params.loc['DELTA_BLOWUP_ALERT','value'])
 UNIVERSE = str(static_params.loc['UNIVERSE','value'])
 TYPE_ALLOWED = [c for c in static_params.loc['TYPE_ALLOWED','value'].split('+')]
@@ -226,4 +226,15 @@ def deepen(dictionary, parent_key=False, separator='.'):
 
     return result
 
+class NpEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        return super(NpEncoder, self).default(obj)
 #deepen(json.load(open('request.json')))
