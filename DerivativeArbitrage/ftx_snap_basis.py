@@ -102,8 +102,8 @@ def enricher_wrapper(exchange_name,type,depth):
         holding_period=timedelta(hours=2)
         exchange= await open_exchange(exchange_name,'')
         futures = pd.DataFrame(await fetch_futures(exchange)).set_index('name')
-        universe = futures[~futures['underlying'].isin(EXCLUSION_LIST)]
-        enriched = await enricher(exchange, futures, timedelta(weeks=1), equity=1.0,
+        filtered = futures[~futures['underlying'].isin(EXCLUSION_LIST)]
+        enriched = await enricher(exchange, filtered, timedelta(weeks=1), equity=1.0,
                               slippage_override=-999, slippage_orderbook_depth=depth,
                               slippage_scaler=1.0,
                               params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
