@@ -10,6 +10,31 @@ from ftx_portfolio import ExcessMargin
 from ftx_history import *
 from ftx_ftx import *
 
+def market_capacity(futures, hy_history, universe_filter_window=[]):
+    if len(universe_filter_window) == 0:
+        universe_filter_window = hy_history.index
+    borrow_decile=0.5
+    futures['borrow_volume_decile'] =0
+    futures.loc[futures['spotMargin']==True,'borrow_volume_decile'] = futures[futures['spotMargin']==True].apply(lambda f:
+                                                                                                                 (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']).quantile(q=borrow_decile)
+                                                                                                                 ,axis=1)
+    futures['spot_volume_avg'] = futures.apply(lambda f:
+                                               (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean()
+                                               ,axis=1)
+    futures['future_volume_avg'] = futures.apply(lambda f:
+                                                 (hy_history.loc[universe_filter_window,f.name + '/mark/volume']).mean()
+                                                 ,axis=1)
+    # only consider borrow if short
+    futures['concentration_limit_long']=futures.apply(lambda f:
+                                                      min([f['openInterestUsd'],f['spot_volume_avg']/24,f['future_volume_avg']/24])
+                                                      ,axis=1)
+    futures['concentration_limit_short'] = futures.apply(lambda f:
+                                                         min([f['borrow_volume_decile'] if f['spotMargin'] else 99999999999999,
+                                                              f['openInterestUsd'],f['spot_volume_avg'] / 24, f['future_volume_avg'] / 24])
+                                                         , axis=1)
+
+    return futures
+
 # adds info, transcation costs, and basic screening
 async def enricher(exchange,futures,holding_period,equity,
                    slippage_override= -999, slippage_orderbook_depth= 0,
@@ -74,12 +99,25 @@ async def enricher(exchange,futures,holding_period,equity,
 
 def enricher_wrapper(exchange_name,type,depth):
     async def enricher_subwrapper(exchange_name,type,depth):
+        holding_period=timedelta(hours=2)
         exchange= await open_exchange(exchange_name,'')
         futures = pd.DataFrame(await fetch_futures(exchange)).set_index('name')
-        data = await enricher(exchange, futures, timedelta(weeks=1), equity=1.0,
+        universe = futures[~futures['underlying'].isin(EXCLUSION_LIST)]
+        enriched = await enricher(exchange, futures, timedelta(weeks=1), equity=1.0,
                               slippage_override=-999, slippage_orderbook_depth=depth,
                               slippage_scaler=1.0,
                               params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
+        hy_history = await build_history(enriched,exchange)
+        enriched = market_capacity(enriched, hy_history)
+        (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
+            exchange, enriched, hy_history,
+            HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate
+            filename='history')  # historical window for expectations)
+        updated, marginFunc = update(enriched, datetime.now().replace(minute=0,second=0,microsecond=0), hy_history, depth,
+                                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short,
+                                     E_intUSDborrow, E_intBorrow)
+
+        data = market_capacity(updated,hy_history)
         await exchange.close()
         return data
     return asyncio.run(enricher_subwrapper(exchange_name,type,depth))
@@ -354,18 +392,19 @@ def cash_carry_optimizer(exchange, input_futures,excess_margin,
     stopout_constraint = {'type': 'ineq',
                           'fun': lambda x: excess_margin.call(x)['totalMM']}
 
-    lower_bound = futures.apply(lambda future: 0 if future['direction'] > 0 else
-    -min(concentration_limit*equity,(future['concentration_limit'] if future['spotMargin'] else 0)) # 0 bounds if short  + no spotMargin...invalid for institutionals
-                                ,axis=1)
-    upper_bound = futures.apply(lambda future: 0 if future['direction'] < 0 else
-    min(concentration_limit*equity,future['concentration_limit'])
-                                , axis=1)
-    new_bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values*mktshare_limit,dtype=object),
-                                       ub=np.asarray(upper_bound.values*mktshare_limit,dtype=object))
-
-    bounds = scipy.optimize.Bounds(
+    old_bounds = scipy.optimize.Bounds(
         lb=np.asarray([0 if w > 0 else -concentration_limit * equity for w in futures['direction']], dtype=object),
         ub=np.asarray([0 if w < 0 else concentration_limit * equity for w in futures['direction']], dtype=object))
+
+    lower_bound = futures.apply(lambda future: 0 if future['direction'] > 0 else
+    max(-concentration_limit*equity,-mktshare_limit*future['concentration_limit_short']) # 0 bounds if short  + no spotMargin...invalid for institutionals
+                                ,axis=1)
+    upper_bound = futures.apply(lambda future: 0 if future['direction'] < 0 else
+    min(concentration_limit*equity,mktshare_limit*future['concentration_limit_long'])
+                                , axis=1)
+    bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values,dtype=object),
+                                       ub=np.asarray(upper_bound.values,dtype=object))
+
 
     # --------- breaks down pnl during optimization
     progress_display=[]
