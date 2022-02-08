@@ -106,9 +106,10 @@ def echo(update, context):
             update.message.reply_text('ok so basis for ' + type + ' for size ' + str(depth))
 
             data=enricher_wrapper(exchange_name,type,depth)
-            data.sort_values('carry_mid',ascending=False).to_excel("Runtime/temporary_parquets/" + exchange_name + "basis.xlsx")
 
-            with open("Runtime/temporary_parquets/" + exchange_name + "basis.xlsx", "rb") as file:
+            filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+            data.sort_values('carry_mid',ascending=False).to_excel(filename)
+            with open(filename, "rb") as file:
                 update.message.bot.sendDocument(update.message['chat']['id'],document=file)
         else:
             update.message.reply_text('unknown command, type /help')

@@ -97,7 +97,7 @@ async def enricher(exchange,futures,holding_period,equity,
 
     return futures.drop(columns=['carryLong','carryShort'])
 
-def enricher_wrapper(exchange_name,type,depth):
+def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
     async def enricher_subwrapper(exchange_name,type,depth):
         holding_period=timedelta(hours=2)
         exchange= await open_exchange(exchange_name,'')
@@ -107,13 +107,13 @@ def enricher_wrapper(exchange_name,type,depth):
                               slippage_override=-999, slippage_orderbook_depth=depth,
                               slippage_scaler=1.0,
                               params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
-        hy_history = await build_history(enriched,exchange)
-        enriched = market_capacity(enriched, hy_history)
+        hy_history = await build_history(enriched,exchange,dirname='Runtime/temporary_parquets')
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
             HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate
             filename='history')  # historical window for expectations)
-        updated, marginFunc = update(enriched, datetime.now().replace(minute=0,second=0,microsecond=0), hy_history, depth,
+        point_in_time = max(hy_history.index)
+        updated, marginFunc = update(enriched, point_in_time, hy_history, depth,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short,
                                      E_intUSDborrow, E_intBorrow)
 

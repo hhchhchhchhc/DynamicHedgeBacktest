@@ -4,27 +4,6 @@ from ftx_ftx import *
 #import seaborn as sns
 #from sklearn import *
 
-#ignores borrow decile since depends on direction
-def populate_concentration_limit(futures, hy_history, universe_filter_window=[]):
-    if len(universe_filter_window) == 0:
-        universe_filter_window = hy_history.index
-    borrow_decile=0.5
-    futures['borrow_volume_decile'] =0
-    futures.loc[futures['spotMargin']==True,'borrow_volume_decile'] = futures[futures['spotMargin']==True].apply(lambda f:
-                                                                                                                 (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']).quantile(q=borrow_decile)
-                                                                                                                 ,axis=1)
-    futures['spot_volume_avg'] = futures.apply(lambda f:
-                                               (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean()
-                                               ,axis=1)
-    futures['future_volume_avg'] = futures.apply(lambda f:
-                                                 (hy_history.loc[universe_filter_window,f.name + '/mark/volume']).mean()
-                                                 ,axis=1)
-    futures['concentration_limit']=futures.apply(lambda f:
-                                                 min([f['borrow_volume_decile'] if f['spotMargin'] else f['openInterestUsd'],f['openInterestUsd'],f['spot_volume_avg']/24,f['future_volume_avg']/24])
-                                                 ,axis=1)
-
-    return futures
-
 async def refresh_universe(exchange,universe_size):
     filename = 'Runtime/configs/universe.xlsx'
     if os.path.isfile(filename):
@@ -57,7 +36,7 @@ async def refresh_universe(exchange,universe_size):
     hy_history = await build_history(futures, exchange,
                                      timeframe='1h', end=universe_end, start=universe_start,
                                      dirname='Runtime/configs/universe_history_cache')
-    futures = populate_concentration_limit(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
+    futures = market_capacity(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         for c in screening_params:# important that wide is first :(
@@ -148,7 +127,7 @@ async def perp_vs_cash(
     hy_history = await build_history(enriched, exchange,
                                      timeframe='1h', end=backtest_end, start=backtest_start-signal_horizon-holding_period,
                                      dirname=run_dir)
-    enriched = populate_concentration_limit(enriched, hy_history)
+    enriched = market_capacity(enriched, hy_history)
 
     # ------- build derived data history
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
@@ -315,7 +294,7 @@ def strategies_main(*argv):
             backtest_start=None,backtest_end=None))
     elif argv[0] == 'backtest':
         concentration_limit=[1]
-        mktshare_limit=MKTSHARE_LIMIT
+        mktshare_limit=[MKTSHARE_LIMIT]
         signal_horizon=[timedelta(hours=h) for h in [12,48,60]]
         holding_period=[timedelta(hours=h) for h in [24]]
         slippage_override=[0.0005]

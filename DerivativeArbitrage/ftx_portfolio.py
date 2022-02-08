@@ -313,16 +313,17 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
     result = target.set_index('name')[['optimalUSD']].join(current.set_index('name')[['total']],how='outer')
     result=result.fillna(0.0).reset_index()
 
+    result['name'] = result['name'].apply(lambda x: x.replace('_LOCKED', ''))
     result['coin'] = result['name'].apply(lambda x: exchange.market(x)['base'])
-    #we ignore the basis for scaling the perps. Too volatile.
-    result['spot_price']=result['coin'].apply(lambda x: float(exchange.market(x+'/USD')['info']['price']))
+    #we ignore the basis for scaling the perps. Too volatile. If spot absent use perp.
+    result['spot_price']=result['coin'].apply(lambda x: float(exchange.market(x+('/USD' if (x+'/USD') in exchange.markets else '-PERP'))['info']['price']))
     result['optimalCoin'] = result['optimalUSD'] / result['spot_price']
     result['currentCoin'] = result['total']
     result['currentUSD'] = result['total'] * result['spot_price']
     result['diffCoin']= result['optimalCoin']-result['currentCoin']
     result['diffUSD'] = result['diffCoin']*result['spot_price']
 
-    return result[['coin','name','currentUSD','optimalUSD','currentCoin','optimalCoin','diffUSD','diffCoin']]
+    return result[['coin','name','spot_price','currentUSD','optimalUSD','currentCoin','optimalCoin','diffUSD','diffCoin']]
 
 async def diff_portoflio_wrapper(*argv):
     exchange= await open_exchange(*argv)
@@ -710,15 +711,19 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
     return summary
 
 def ftx_portoflio_main(*argv):
+    #pd.set_option('display.float_format',lambda x: '{:,.3f}'.format(x))
+    #f'{float(f"{i:.1g}"):g}'
+
     argv=list(argv)
     if len(argv) == 0:
         argv.extend(['fromOptimal'])
     if len(argv) < 3:
-        argv.extend(['ftx', 'debug'])
+        argv.extend(['ftx', ''])
     print(f'running {argv}')
     if argv[0] == 'fromOptimal':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
-        print(diff.loc[diff['diffUSD'].apply(np.abs)>10,['coin','name','optimalUSD','diffUSD']])
+        diff=diff.append(pd.Series({'coin': 'total', 'name': 'total'}).append(diff.sum(numeric_only=True)),ignore_index=True)
+        print(diff.loc[diff['diffUSD'].apply(np.abs)>10,['coin','name','currentUSD','optimalUSD','diffUSD']].round(decimals=0))
         return diff
     elif argv[0] == 'risk':
         risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
