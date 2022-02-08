@@ -1,8 +1,6 @@
 from ftx_snap_basis import *
 from ftx_portfolio import *
 from ftx_ftx import *
-#import seaborn as sns
-#from sklearn import *
 
 async def refresh_universe(exchange,universe_size):
     filename = 'Runtime/configs/universe.xlsx'
@@ -30,7 +28,6 @@ async def refresh_universe(exchange,universe_size):
         (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
         & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
         & (futures['tokenizedEquity'] != True)]
-    #& (futures['spotMargin'] == True)]
 
     # volume screening
     hy_history = await build_history(futures, exchange,
@@ -87,8 +84,7 @@ async def perp_vs_cash(
     universe=await refresh_universe(exchange,UNIVERSE)
     universe=universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = TYPE_ALLOWED
-    max_nb_coins = 99
-    carry_floor = 0.4
+
     filtered = futures[(futures['type'].isin(type_allowed))
                        & (futures['symbol'].isin(universe.index))]
 
@@ -138,7 +134,7 @@ async def perp_vs_cash(
                                  intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
     # final filter, needs some history and good avg volumes
     filtered = updated[~np.isnan(updated['E_intCarry'])]
-    filtered = filtered.sort_values(by='E_intCarry', ascending=False).head(max_nb_coins)  # ,key=abs
+    filtered = filtered.sort_values(by='E_intCarry', ascending=False)
 
     # run a trajectory
     optimized = filtered
@@ -197,8 +193,6 @@ async def perp_vs_cash(
                 'slippage_override':slippage_override,
                 'concentration_limit': concentration_limit,
                 'equity':equity,
-                'max_nb_coins': max_nb_coins,
-                'carry_floor': carry_floor,
                 'slippage_scaler': slippage_scaler,
                 'slippage_orderbook_depth': slippage_orderbook_depth})
             optimized.to_excel(writer,sheet_name='optimized')
@@ -235,8 +229,6 @@ async def perp_vs_cash(
                 'slippage_override':slippage_override,
                 'concentration_limit': concentration_limit,
                 'equity':equity,
-                'max_nb_coins': max_nb_coins,
-                'carry_floor': carry_floor,
                 'slippage_scaler': slippage_scaler,
                 'slippage_orderbook_depth': slippage_orderbook_depth,
                 'backtest_start':backtest_start,

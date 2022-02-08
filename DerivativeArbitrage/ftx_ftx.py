@@ -136,6 +136,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
     fetched = await exchange.fetch_markets()
     expired = await exchange.publicGetExpiredFutures(params) if includeExpired==True else []
     coin_details = await fetch_coin_details(exchange)
+    otc_file = pd.read_excel('Runtime/configs/OTC_borrow.xlsx').set_index('coin')
 
     #### for IM calc
     account_leverage = (await exchange.privateGetAccount())['result']
@@ -190,7 +191,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'collateralWeight':coin_details.loc[underlying,'collateralWeight'] if not includeIndex else 'coin_details not found',
             'underlyingType': getUnderlyingType(coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
             'spot_ticker': exchange.safe_string(market, 'underlying')+'/USD',
-            'spotMargin': coin_details.loc[underlying,'spotMargin'] if not includeIndex else 'coin_details not found',
+            'spotMargin': 'OTC' if underlying in otc_file.index else (coin_details.loc[underlying,'spotMargin'] if not includeIndex else 'coin_details not found'),
             'tokenizedEquity':coin_details.loc[underlying,'tokenizedEquity'] if not includeIndex else 'coin_details not found',
             'usdFungible':coin_details.loc[underlying,'usdFungible'] if not includeIndex else 'coin_details not found',
             'fiat':coin_details.loc[underlying,'fiat'] if not includeIndex else 'coin_details not found',

@@ -23,18 +23,23 @@ async def build_history(futures,exchange,
             [spot_history(f + '/USD', exchange, end, start, timeframe, dirname)
              for f in futures['underlying'].unique()]+
             [borrow_history(f, exchange, end, start, dirname)
-             for f in (list(futures.loc[futures['spotMargin'], 'underlying'].unique())+['USD'])]
+             for f in (list(futures.loc[futures['spotMargin']==True, 'underlying'].unique())+['USD'])]
     )),join='outer',axis=1)
 
+    otc_file = pd.read_excel('Runtime/configs/OTC_borrow.xlsx').set_index('coin')
     data=pd.concat([data]+
                    [pd.DataFrame(index=data.index, columns=[f + '/rate/borrow'], data=999)
-                    for f in futures.loc[~futures['spotMargin'], 'underlying'].unique()]+
+                    for f in futures.loc[futures['spotMargin']==False, 'underlying'].unique()]+
                    [pd.DataFrame(index=data.index, columns=[f + '/rate/size'], data=0)
-                    for f in futures.loc[~futures['spotMargin'], 'underlying'].unique()],
+                    for f in futures.loc[futures['spotMargin']==False, 'underlying'].unique()]+
+                   [pd.DataFrame(index=data.index, columns=[f + '/rate/borrow'], data=otc_file.loc[f,'borrow'])
+                    for f in futures.loc[futures['spotMargin'] == 'OTC', 'underlying'].unique()] +
+                   [pd.DataFrame(index=data.index, columns=[f + '/rate/size'], data=otc_file.loc[f,'size'])
+                    for f in futures.loc[futures['spotMargin'] == 'OTC', 'underlying'].unique()],
                    join='outer',axis=1)
 
     # convert borrow size in usd
-    for f in futures['underlying'].unique():
+    for f in futures.loc[futures['spotMargin']==True,'underlying'].unique():
         data[f + '/rate/size']*=data[f + '/price/o']
 
     return data[~data.index.duplicated()].sort_index()
