@@ -1,7 +1,11 @@
 import ccxtpro
 import functools
+
+import numpy as np
+import pandas as pd
+
 from ftx_utilities import *
-from ftx_portfolio import live_risk,diff_portoflio,ExcessMargin
+from ftx_portfolio import live_risk,diff_portoflio,liveIM
 from ftx_history import fetch_trades_history
 from ftx_ftx import mkt_at_size,fetch_latencyStats,fetch_futures
 import logging
@@ -32,6 +36,7 @@ class myFtx(ccxtpro.ftx):
         self._localLog = [] #just a list of flattened dict, overwriting the same json over and over
         self.limit = myFtx.LimitBreached()
         self.pv = None
+        self.margin_headroom = None
         self.risk_state = {}
         self.order_state= {} # redundant with native self.orders
         self.fill_state = {}  # redundant with native self.myTrade
@@ -146,21 +151,28 @@ class myFtx(ccxtpro.ftx):
                                    for symbol, data in coin_data.items()}
                            for coin, coin_data in data_dict.items()}
 
+        coin_list = [coin for coin,coin_data in data_dict.items() for symbol in coin_data.keys()]
+        futures = pd.DataFrame(await fetch_futures(self))
+        account_leverage = float(futures.iloc[0]['account_leverage'])
+        collateralWeight = futures.set_index('underlying')['collateralWeight'].to_dict()
+        imfFactor = futures.set_index('new_symbol')['imfFactor'].to_dict()
+        self.margin_calculator = liveIM(account_leverage,collateralWeight,imfFactor)
+
+        # populates risk, pv and IM
         await self.fetch_risk()
 
+        # orders and fills
         self.order_state = {sys.intern(coin):
                                {sys.intern(symbol):[]
                                    for symbol, data in coin_data.items()}
                            for coin, coin_data in data_dict.items()}
+
         self.fill_state = {sys.intern(coin):
                                {sys.intern(symbol):[]
                                    for symbol, data in coin_data.items()}
                            for coin, coin_data in data_dict.items()}
 
-        #futures = pd.DataFrame(await fetch_futures(self)).set_index('name')
-        #id_list = [self.market(symbol)['id'] for coin_data in data_dict.values() for symbol in coin_data.keys() if symbol in self.markets]
-        #self.margin_calculator = ExcessMargin(futures[id_list], equity=self.pv)
-
+        # logs
         with open('Runtime/logs/'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'_request.json', 'w') as file:
             json.dump(flatten(self.exec_parameters),file,cls=NpEncoder)
         with pd.ExcelWriter('Runtime/logs/latest.xlsx', engine='xlsxwriter') as writer:
@@ -168,6 +180,7 @@ class myFtx(ccxtpro.ftx):
             vwap_dataframe.to_excel(writer, sheet_name='vwap')
             size_dataframe = pd.concat([data['vwap'].filter(like='volume').fillna(method='ffill') for data in trades_history_list], axis=1, join='outer')
             size_dataframe.to_excel(writer, sheet_name='volume')
+
     # updates risk in USD. Should be handle_my_trade but needs a coroutine :(
     # all symbols not present when state is built are ignored !
     # if some tickers are not initialized, just use markets
@@ -186,7 +199,7 @@ class myFtx(ccxtpro.ftx):
                       np.median([float(self.markets[symbol]['info']['bid']), float(self.markets[symbol]['info']['ask']), float(self.markets[symbol]['info']['last'])])
                   for coin_data in self.exec_parameters.values() if type(coin_data)==dict
                   for symbol in coin_data.keys()
-                  if symbol in self.markets and symbol not in self.tickers }
+                  if symbol in self.markets and symbol not in self.tickers}
 
         # delta is noisy for perps, so override to delta 1.
         for position in positions:
@@ -207,7 +220,23 @@ class myFtx(ccxtpro.ftx):
         for coin,coin_data in self.risk_state.items():
             coin_data['netDelta']= sum([data['delta'] for symbol,data in coin_data.items() if symbol in self.markets and 'delta' in data.keys()])
 
+        # update pv
         self.pv = sum(coin_data[coin+'/USD']['delta'] for coin, coin_data in self.risk_state.items() if coin+'/USD' in coin_data.keys()) + balances['USD']['total']
+
+        #compute IM
+        spot_weight={}
+        future_weight={}
+        for position in positions:
+            if float(position['info']['netSize'])!=0:
+                future_weight |= {position['symbol']: {'weight': float(position['info']['netSize']), 'mark':self.mark(position['symbol'])}}
+        for coin,balance in balances.items():
+            if coin!='USD' and coin in self.currencies and balance['total']!=0:
+                spot_weight |= {(coin):{'weight':balance['total'],'mark':self.mark(coin+'/USD')}}
+        IM = self.margin_calculator.margins(balances['USD']['total'],spot_weight,future_weight)['IM']
+
+        # fetch IM, in fact...
+        account_info=(await self.privateGetAccount())['result']
+        self.margin_headroom = float(account_info['totalPositionSize'])*(float(account_info['openMarginFraction'])-float(account_info['initialMarginRequirement']))
 
         self.to_json([{'eventType':'risk',
                        'coin': coin,
@@ -215,7 +244,9 @@ class myFtx(ccxtpro.ftx):
                        'timestamp':risk_timestamp-self.exec_parameters['timestamp'],
                        'delta':data['delta'],
                        'netDelta': coin_data['netDelta'],
-                       'pv(wrong timestamp)':self.pv}
+                       'pv(wrong timestamp)':self.pv,
+                       'margin_headroom':self.margin_headroom,
+                       'IM_discrepancy':IM - float(account_info['totalPositionSize'])*(float(account_info['marginFraction']))}
                       for coin,coin_data in self.risk_state.items() for symbol,data in coin_data.items() if symbol in self.markets])
 
     def process_fill(self,fill, coin, symbol):
@@ -288,21 +319,24 @@ class myFtx(ccxtpro.ftx):
         edit_trigger = max(1,int(edit_trigger_depth / priceIncrement))*priceIncrement
         edit_price = opposite_side - (1 if size>0 else -1)*max(1,int(edit_price_depth/priceIncrement))*priceIncrement
 
-        order = None
-        if len(orders)==0:
-            order = await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', np.abs(size), price=edit_price, params={'postOnly': True})
-        else:
-            order_distance = (1 if orders[0]['side']=='buy' else -1)*(opposite_side-orders[0]['price'])
-            # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
-            if stop_depth \
-                    and order_distance>stop_trigger \
-                    and orders[0]['remaining']>sizeIncrement:
-                order = await self.edit_order(orders[0]['id'], symbol, 'market', 'buy' if size>0 else 'sell',None)
-            # chase
-            if order_distance>edit_trigger \
-                    and np.abs(edit_price-orders[0]['price'])>=priceIncrement \
-                    and orders[0]['remaining']>sizeIncrement:
-                order = await self.edit_order(orders[0]['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
+        try:
+            order = None
+            if len(orders)==0:
+                order = await self.create_limit_order(symbol, 'buy' if size>0 else 'sell', np.abs(size), price=edit_price, params={'postOnly': True})
+            else:
+                order_distance = (1 if orders[0]['side']=='buy' else -1)*(opposite_side-orders[0]['price'])
+                # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
+                if stop_depth \
+                        and order_distance>stop_trigger \
+                        and orders[0]['remaining']>sizeIncrement:
+                    order = await self.edit_order(orders[0]['id'], symbol, 'market', 'buy' if size>0 else 'sell',None)
+                # chase
+                if order_distance>edit_trigger \
+                        and np.abs(edit_price-orders[0]['price'])>=priceIncrement \
+                        and orders[0]['remaining']>sizeIncrement:
+                    order = await self.edit_order(orders[0]['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
+        except Exception as e:
+            logging.exception('{} {} {} at {} raised {}'.format('buy' if size>0 else 'sell', np.abs(size), symbol, price, e))
 
         return order
 
@@ -378,7 +412,7 @@ class myFtx(ccxtpro.ftx):
             else:
                 raise myFtx.DoneDeal(symbol)
         else:
-            size = np.sign(size)*int(min([np.abs(size),params['slice_size']])/sizeIncrement)*sizeIncrement
+            size = np.sign(size)*int(min([np.abs(size),params['slice_size'],np.abs(self.margin_headroom)/mark])/sizeIncrement)*sizeIncrement
         assert(np.abs(size)>=sizeIncrement)
 
         order = None
@@ -470,6 +504,8 @@ class myFtx(ccxtpro.ftx):
         absolute_risk = sum(abs(data['netDelta']) for data in self.risk_state.values())
         if absolute_risk > self.limit.limit:
             logging.warning(f'absolute_risk {absolute_risk} > {self.limit.limit}')
+        if self.margin_headroom < self.pv/100:
+            logging.warning(f'IM {self.margin_headroom}  < 1%')
 
         await asyncio.sleep(self.limit.check_frequency)
 
@@ -488,9 +524,11 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     try:
         if argv[0]=='sysperp':
             future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
+            futures=await fetch_futures(exchange)
             target_portfolio = await diff_portoflio(exchange, future_weights)
             #selected_coins = ['REN']#target_portfolios.sort_values(by='USDdiff', key=np.abs, ascending=False).iloc[2]['underlying']
             #target_portfolio=diff[diff['coin'].isin(selected_coins)]
+            target_portfolio['optimalCoin']*=0.8
             await exchange.build_state(target_portfolio,
                                        entry_tolerance=entry_tolerance,
                                        edit_trigger_tolerance=edit_trigger_tolerance,
@@ -554,7 +592,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
 def ftx_ws_spread_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['flatten'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
