@@ -110,7 +110,8 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
     try:
         response = await exchange.publicGetSpotMarginHistory(exchange.extend(request, params))
     except Exception as e:
-        return 0#pd.DataFrame()
+        logging.exception(e,exc_info=True)
+        return pd.DataFrame()
 
     if len(exchange.safe_value(response, 'result', []))==0: return pd.DataFrame()
     result = pd.DataFrame(exchange.safe_value(response, 'result', [])).astype({'coin':str,'time':str,'size':float,'rate':float})
@@ -136,7 +137,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
     fetched = await exchange.fetch_markets()
     expired = await exchange.publicGetExpiredFutures(params) if includeExpired==True else []
     coin_details = await fetch_coin_details(exchange)
-    otc_file = pd.read_excel('Runtime/configs/OTC_borrow.xlsx').set_index('coin')
+    otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
 
     #### for IM calc
     account_leverage = (await exchange.privateGetAccount())['result']

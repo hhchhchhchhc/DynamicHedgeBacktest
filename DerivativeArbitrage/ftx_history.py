@@ -26,7 +26,7 @@ async def build_history(futures,exchange,
              for f in (list(futures.loc[futures['spotMargin']==True, 'underlying'].unique())+['USD'])]
     )),join='outer',axis=1)
 
-    otc_file = pd.read_excel('Runtime/configs/OTC_borrow.xlsx').set_index('coin')
+    otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
     data=pd.concat([data]+
                    [pd.DataFrame(index=data.index, columns=[f + '/rate/borrow'], data=999)
                     for f in futures.loc[futures['spotMargin']==False, 'underlying'].unique()]+
@@ -152,15 +152,17 @@ async def fetch_trades_history(symbol,exchange,
         return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
 
     data = pd.DataFrame(data=trades)
-    data['size'] = data['size'].astype(float)
-    data['volume'] = data['size'] * data['price'].astype(float)
+    data[['size','price']] = data[['size','price']].astype(float)
+    data['volume'] = data['size'] * data['price']
+    data['square'] = data['size'] * data['price']*data['price']
     data['count'] = 1
 
-    data['time']=data['time'].apply(dateutil.parser.isoparse)
+    data['time']=data['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=None))
     data.set_index('time',inplace=True)
 
-    vwap=data[['size','volume','count']].resample(frequency).sum()
+    vwap=data[['size','volume','square','count']].resample(frequency).sum()
     vwap['vwap']=vwap['volume']/vwap['size']
+    vwap['vwsp'] = np.sqrt(vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap'])
 
     vwap.columns = [symbol.split('/USD')[0] + '/trades/' + column for column in vwap.columns]
     #data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]

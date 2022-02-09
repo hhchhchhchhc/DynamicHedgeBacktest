@@ -37,7 +37,7 @@ if not 'Runtime' in os.listdir('.'):
     os.chdir('../')
     if not 'Runtime' in os.listdir('.'):
         raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
-static_params=pd.read_excel('Runtime/configs/static_params.xlsx',index_col='key')
+static_params=pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='params',index_col='key')
 NB_BLOWUPS = int(static_params.loc['NB_BLOWUPS','value'])#3)
 SHORT_BLOWUP = float(static_params.loc['SHORT_BLOWUP','value'])# = 0.3
 LONG_BLOWUP = float(static_params.loc['LONG_BLOWUP','value'])# = 0.15
@@ -236,5 +236,19 @@ class NpEncoder(json.JSONEncoder):
             return obj.tolist()
         if isinstance(obj, np.bool_):
             return bool(obj)
+        if isinstance(obj, pd.core.generic.NDFrame):
+            return obj.to_json()
         return super(NpEncoder, self).default(obj)
-#deepen(json.load(open('request.json')))
+
+def log_reader(dirname='Runtime/logs',point_in_time=datetime.utcnow().strftime("%Y-%m-%d-%Hh")):
+    with open(dirname+'/'+point_in_time+'_events.json', 'r') as file:
+        d = json.load(file)
+        events=pd.DataFrame(d)
+    with open(dirname+'/'+point_in_time+'_request.json', 'r') as file:
+        d = json.load(file)
+        request = pd.Series(d)
+    with pd.ExcelWriter('Runtime/logs/latest_exec.xlsx', engine='xlsxwriter') as writer:
+        request.to_excel(writer,sheet_name='request')
+        events.to_excel(writer, sheet_name='events')
+
+#log_reader()

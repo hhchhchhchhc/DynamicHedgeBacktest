@@ -40,7 +40,7 @@ async def enricher(exchange,futures,holding_period,equity,
                    slippage_override= -999, slippage_orderbook_depth= 0,
                    slippage_scaler= 1.0, params={'override_slippage': True,'type_allowed':['perpetual'],'fee_mode':'retail'}):
     markets=await exchange.fetch_markets()
-    otc_file = pd.read_excel('Runtime/configs/OTC_borrow.xlsx').set_index('coin')
+    otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
 
     # basic screening
     futures = futures[

@@ -28,7 +28,41 @@ class ExcessMargin:
     def update(self,mark):
         self._mark = mark
 
-    def baseMargins(self,x,mark):
+    def spotMargins(self,x,mark):
+        n = len(x)
+        # TODO: staked counts towards MM not IM
+        # https://help.ftx.com/hc/en-us/articles/360031149632
+        collateral = np.array([
+            x[i] if x[i] < 0
+            else x[i] * min(self._collateralWeight[i],
+                            1.1 / (1 + self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i])))
+            for i in range(n)])
+        # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
+        im_short = np.array([
+            0 if x[i] > 0
+            else -x[i] * max(1.1 / self._collateralWeightInitial[i] - 1,
+                             self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
+            for i in range(n)])
+        mm_short = np.array([
+            0 if x[i] > 0
+            else -x[i] * max(1.03 / self._collateralWeightInitial[i] - 1,
+                             0.6 * self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
+            for i in range(n)])
+
+        return (collateral,im_short,mm_short)
+
+    def futureMargins(self, x, mark):
+        n = len(x)
+        im_fut = np.array([
+            abs(x[i]) * max(1.0 / self._account_leverage, self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
+            for i in range(n)])
+        mm_fut = np.array([
+            max([0.03 * x[i], 0.6 * im_fut[i]])  # TODO: doesn't reconcile with account_details...
+            for i in range(n)])
+
+        return (im_fut, mm_fut)
+
+    def basisMargins(self,x,mark):
         n = len(x)
         # TODO: staked counts towards MM not IM
         # https://help.ftx.com/hc/en-us/articles/360031149632
@@ -73,11 +107,11 @@ class ExcessMargin:
                 blowups[i] = x[i]*self._long_blowup if x[i]>0 else -x[i]*self._short_blowup
 
         # assume all coins go either LONG_BLOWUP or SHORT_BLOWUP..what is the margin impact incl future pnl ?
-        (collateral_up,im_short_up,mm_short_up,im_fut_up,mm_fut_up) = self.baseMargins(x*(1+LONG_BLOWUP),self._mark*(1+LONG_BLOWUP))
+        (collateral_up,im_short_up,mm_short_up,im_fut_up,mm_fut_up) = self.basisMargins(x*(1+LONG_BLOWUP),self._mark*(1+LONG_BLOWUP))
         MM_up = collateral_up - mm_fut_up - mm_short_up - x * LONG_BLOWUP # the futures pnl
-        (collateral_down,im_short_down,mm_short_down,im_fut_down,mm_fut_down) = self.baseMargins(x*(1-SHORT_BLOWUP),self._mark*(1-SHORT_BLOWUP))
+        (collateral_down,im_short_down,mm_short_down,im_fut_down,mm_fut_down) = self.basisMargins(x*(1-SHORT_BLOWUP),self._mark*(1-SHORT_BLOWUP))
         MM_down = collateral_down - mm_fut_down - mm_short_down + x * SHORT_BLOWUP # the futures pnl
-        (collateral,im_short,mm_short,im_fut,mm_fut) = self.baseMargins(x,self._mark)
+        (collateral,im_short,mm_short,im_fut,mm_fut) = self.basisMargins(x,self._mark)
         MM = collateral - mm_fut - mm_short - blowups
 
         IM = collateral - im_fut - im_short
@@ -311,19 +345,20 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
 
     # join, diff, coin
     result = target.set_index('name')[['optimalUSD']].join(current.set_index('name')[['total']],how='outer')
-    result=result.fillna(0.0).reset_index()
+    result=result.fillna(0.0).reset_index().rename(columns={'total':'currentCoin'})
 
     result['name'] = result['name'].apply(lambda x: x.replace('_LOCKED', ''))
     result['coin'] = result['name'].apply(lambda x: exchange.market(x)['base'])
     #we ignore the basis for scaling the perps. Too volatile. If spot absent use perp.
     result['spot_price']=result['coin'].apply(lambda x: float(exchange.market(x+('/USD' if (x+'/USD') in exchange.markets else '-PERP'))['info']['price']))
     result['optimalCoin'] = result['optimalUSD'] / result['spot_price']
-    result['currentCoin'] = result['total']
-    result['currentUSD'] = result['total'] * result['spot_price']
-    result['diffCoin']= result['optimalCoin']-result['currentCoin']
+    result['currentUSD'] = result['currentCoin'] * result['spot_price']
+    result['minProvideSize'] = result['name'].apply(lambda f: float(exchange.market(f)['info']['minProvideSize']))
+    result['diffCoin']= result.apply(lambda f: int((f['optimalCoin']-f['currentCoin'])/f['minProvideSize'])*f['minProvideSize'],axis=1)
     result['diffUSD'] = result['diffCoin']*result['spot_price']
 
-    return result[['coin','name','spot_price','currentUSD','optimalUSD','currentCoin','optimalCoin','diffUSD','diffCoin']]
+    result = result[np.abs(result['diffCoin'])>0].drop(columns=['minProvideSize'])
+    return result
 
 async def diff_portoflio_wrapper(*argv):
     exchange= await open_exchange(*argv)
