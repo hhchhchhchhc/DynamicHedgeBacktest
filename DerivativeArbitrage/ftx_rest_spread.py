@@ -363,7 +363,7 @@ async def ftx_rest_spread_main_wrapper(*argv):
         print(log.bpCost())
 
     except Exception as e:
-        print(e)
+        logging.exception(e,exc_info=True)
     finally:
         # pickleit(log, "Runtime/ExecutionLog.pickle")
         await exchange.cancel_all_orders()
