@@ -121,7 +121,7 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
 
     return result
 
-def collateralWeightInitial(future):# TODO: API call to collateralWeight(Initial)
+def collateralWeightInitial(future):# not API :(
     if future['underlying'] in ['BUSD','FTT','HUSD','TUSD','USD','USDC','USDP','WUSDC']:
         return future['collateralWeight']
     elif future['underlying'] in ['AUD','BRL','BRZ','CAD','CHF','EUR','GBP','HKD','SGD','TRY','ZAR']:
@@ -158,7 +158,8 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
         try:## eg BTT-PERP doesn't exist
             symbol=next(item for item in fetched if item['id'] == exchange.safe_string(market, 'name'))['symbol']
         except Exception as e:
-            symbol=exchange.safe_string(market, 'name')#TODO: why ?
+            continue
+            #symbol=exchange.safe_string(market, 'name')#TODO: why ?
 
         result.append({
             'ask':  exchange.safe_number(market, 'ask'),
@@ -187,6 +188,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'upperBound': exchange.safe_value(market, 'upperBound'),
             'type': exchange.safe_string(market, 'type'),
          ### additionnals
+            'new_symbol': exchange.market(exchange.safe_string(market, 'name'))['symbol'],
             'openInterestUsd': exchange.safe_number(market,'openInterestUsd'),
             'account_leverage': float(account_leverage['leverage']),
             'collateralWeight':coin_details.loc[underlying,'collateralWeight'] if not includeIndex else 'coin_details not found',
