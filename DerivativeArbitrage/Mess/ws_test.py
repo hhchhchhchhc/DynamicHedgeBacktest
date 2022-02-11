@@ -1,6 +1,9 @@
 import sys
 import ccxtpro
 import asyncio
+
+import pandas as pd
+
 from ftx_utilities import secret,apiKey
 import functools
 
@@ -13,10 +16,20 @@ def loop_try(func):
         while True:
             try:
                 value = await func(*args, **kwargs)
+                self = args[0]
+                mid = 0.5 * (self.orderbooks[self._symbol]['bids'][0][0] + self.orderbooks[self._symbol]['asks'][0][0])
+                self.logger.info({'event': func.__name__,
+                              'mid': mid,
+                              'orderbook': self.orderbooks[self._symbol]['timestamp'],
+                                  'orders': self.orders[self._symbol][-1][
+                                      'timestamp'] if self._symbol in self.orders else '',
+                                  'trade': self.trades[self._symbol][-1][
+                                      'timestamp'] if self._symbol in self.trades else '',
+                              'self': self.milliseconds()})
             except Exception as e:
                 if str(e) == 'done': raise e
             except Exception as e:
-                logging.exception(e)
+                self.logger.exception(e)
 
     return wrapper_loop
 
@@ -24,6 +37,9 @@ class myFtx(ccxtpro.ftx):
     def __init__(self,symbol: str, config={}):
         super().__init__(config=config)
         self._symbol = symbol
+        handler_info = logging.FileHandler('test.log')
+        handler_info.setLevel(logging.INFO)
+        self.logger.addHandler(handler_info)
 
     @loop_try
     async def loop_order_book(self):
@@ -52,10 +68,6 @@ class myFtx(ccxtpro.ftx):
                        self.orderbooks[self._symbol]['bids' if last_trade_side == 'buy' else 'asks'][0][0])
         mid = 0.5*(self.orderbooks[self._symbol]['bids'][0][0]+self.orderbooks[self._symbol]['asks'][0][0])
 
-        logging.info({  'mid_on_trade': mid,
-                        'orderbook_on_trade': self.orderbooks[self._symbol]['timestamp'],
-                        'trade_on_trade': self.trades[self._symbol][-1]['timestamp'],
-                        'self_on_trade': self.milliseconds()})
         if self.orders and self._symbol in self.orders:
             assert(len(self.orders[self._symbol])==1)
             await self.edit_order(self.orders[self._symbol][-1], self._symbol,'limit', 'sell' if last_trade_side == 'sell' else 'buy',
@@ -67,11 +79,12 @@ class myFtx(ccxtpro.ftx):
 
         fetch = await self.fetch_ticker(self._symbol)
         mid = 0.5 * (fetch['bid'] + fetch['ask'])
-        logging.info({  'mid_on_fetch': mid,
-                        'orderbook_on_fetch': self.orderbooks[self._symbol]['timestamp'],
-                        'orders_on_fetch': self.orders[self._symbol][-1]['timestamp'],
-                        'trade_on_fetch': self.trades[self._symbol][-1]['timestamp'],
-                        'self_on_fetch': self.milliseconds()})
+        logging.info({'event':'fetch',
+                      'mid': mid,
+                      'orderbook': self.orderbooks[self._symbol]['timestamp'],
+                      'orders': self.orders[self._symbol][-1]['timestamp'],
+                      'trade': self.trades[self._symbol][-1]['timestamp'],
+                      'self': self.milliseconds()})
 
 async def main(*argv,**kwargs):
     exchange = myFtx('UNI/USD',config={
@@ -100,5 +113,9 @@ async def main(*argv,**kwargs):
         await exchange.close()
 
 if __name__ == "__main__":
+    with open('test.log', 'r') as file:
+        request = pd.DataFrame(file.read())
+    with pd.ExcelWriter('test.xlsx', engine='xlsxwriter') as writer:
+        request.to_excel(writer, sheet_name='request')
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main(*sys.argv,loop=loop))
