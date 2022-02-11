@@ -11,50 +11,6 @@ from ftx_history import spot_history
 # weights is position size, not %
 # note: weight.shape = futures.shape, but returns a shape = futures.shape+1 !
 
-class liveIM:
-    def __init__(self, account_leverage, collateralWeight, imfFactor): # imfFactor by symbol not coin
-        self._account_leverage = account_leverage
-        self._collateralWeight = collateralWeight
-        self._imfFactor = imfFactor
-        self._collateralWeightInitial = {coin:collateralWeightInitial({'underlying':coin,'collateralWeight':data}) for coin,data in collateralWeight.items()}
-
-    def futureMargins(self, weights): # weights = {symbol: 'weight, 'mark
-        im_fut = sum([
-            abs(data['weight']) * max(1.0 / self._account_leverage, self._imfFactor[symbol] * np.sqrt(abs(data['weight']) / data['mark']))
-            for symbol,data in weights.items()])
-        mm_fut = sum([
-            max([0.03 * data['weight'], 0.6 * im_fut])
-            for symbol,data in weights.items()])
-
-        return (im_fut, mm_fut)
-
-    def spotMargins(self, weights):
-        collateral =sum([
-           data['weight'] if data['weight'] < 0
-            else data['weight'] * min(self._collateralWeight[coin],
-                            1.1 / (1 + self._imfFactor[coin+'/USD:USD'] * np.sqrt(abs(data['weight']) / data['mark'])))
-             for coin,data in weights.items()])
-        # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
-        im_short =sum([
-            0 if data['weight'] > 0
-            else -data['weight'] * max(1.1 / self._collateralWeightInitial[coin] - 1,
-                             self._imfFactor[coin+'/USD:USD'] * np.sqrt(abs(data['weight']) / data['mark']))
-             for coin,data in weights.items()])
-        mm_short =sum([
-            0 if data['weight'] > 0
-            else -data['weight'] * max(1.03 / self._collateralWeightInitial[coin] - 1,
-                             0.6 * self._imfFactor[coin+'/USD:USD'] * np.sqrt(abs(data['weight']) / data['mark']))
-            for coin, data in weights.items()])
-
-        return (collateral, im_short, mm_short)
-
-    def margins(self,usd_balance,spot_weights,future_weights):
-        (collateral, im_short, mm_short)=self.spotMargins(spot_weights)
-        (im_fut, mm_fut) = self.futureMargins(future_weights)
-        IM = collateral + usd_balance + 0.1 * min([0, usd_balance]) - im_fut - im_short
-        MM = collateral + usd_balance + 0.03 * min([0, usd_balance]) - mm_fut - mm_short
-        return {'IM':IM,'MM':MM}
-
 class ExcessMargin:
     def __init__(self,futures,equity,
                     long_blowup=LONG_BLOWUP,short_blowup=SHORT_BLOWUP,nb_blowups=NB_BLOWUPS,params={'positive_carry_on_balances': False}):
@@ -594,7 +550,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
                 'spot':(await exchange.fetch_ohlcv(spot_ticker, timeframe='15s', params=params))[0][1],
                 'mark':(await exchange.fetch_ohlcv(mark_ticker, timeframe='15s', params=params))[0][1]
                  }),ignore_index=True)
-            print('had to snap '+f)
+            logging.info('had to snap '+f)
 
         result.set_index('attribution',inplace=True)
         return result[~result.index.duplicated()]

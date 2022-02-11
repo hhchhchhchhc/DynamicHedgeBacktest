@@ -251,4 +251,5 @@ def log_reader(dirname='Runtime/logs',point_in_time=datetime.utcnow().strftime("
         request.to_excel(writer,sheet_name='request')
         events.to_excel(writer, sheet_name='events')
 
-#log_reader()
+if __name__ == "__main__":
+    log_reader()
