@@ -128,8 +128,8 @@ def collateralWeightInitial(future):# not API :(
         return future['collateralWeight']-0.01
     elif future['underlying'] in ['BTC','USDT','WBTC','WUSDT']:
         return future['collateralWeight']-0.025
-    else:
-        return future['collateralWeight']-0.05
+    else: # let's say im of shorts is capped at 1...
+        return max(0.65,future['collateralWeight']-0.05)
 
 ### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
 async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params={}):

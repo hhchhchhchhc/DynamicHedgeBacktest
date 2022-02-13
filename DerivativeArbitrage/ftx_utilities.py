@@ -133,8 +133,8 @@ def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':Fals
         except:  ###usually because file is open
             data.to_excel("Runtime/temporary_parquets/" + exchange_name + datatype + "copy.xlsx")
 
-min_iterations='ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU'
-max_iterations='RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm'
+apiKey='ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU'
+secret='RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm'
 
 async def open_exchange(exchange_name,subaccount,config={}):
     if exchange_name=='ftx':
@@ -174,9 +174,16 @@ async def open_exchange(exchange_name,subaccount,config={}):
             'apiKey': '4vc_41O4',
             'secret': 'viEFbpRQpQLgUAujPrwWleL6Xutq9I8YVUVMkEfQG1E',
         }|config)
+    elif exchange_name == 'kucoin':
+        exchange = ccxt.kucoin(config={
+                                           'enableRateLimit': True,
+                                           'apiKey': '62091838bff2a30001b0d3f6',
+                                           'secret': 'c789d699-a298-4b64-a5ff-b7be011c4233',
+                                       } | config)
     #subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     else: print('what exchange?')
     exchange.checkRequiredCredentials()  # raises AuthenticationError
+    await exchange.load_markets()
     return exchange
 
 import collections

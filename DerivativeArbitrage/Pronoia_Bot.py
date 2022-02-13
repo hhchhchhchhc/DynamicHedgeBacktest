@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 def start(update, context):
     """Send a message when the command /start is issued."""
     update.message.reply_text('coucou')
+    temp_dir = '/Runtime/temporary_parquets'
+    for file in os.listdir(temp_dir): os.remove(temp_dir + '/' + file)
 
 def help(update, context):
     """Send a message when the command /help is issued."""
@@ -108,7 +110,7 @@ def echo(update, context):
             data=enricher_wrapper(exchange_name,type,depth)
 
             filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-            data.sort_values('carry_mid',ascending=False).to_excel(filename)
+            data.sort_values('intCarry',key=np.abs,ascending=False).to_excel(filename)
             with open(filename, "rb") as file:
                 update.message.bot.sendDocument(update.message['chat']['id'],document=file)
         else:
