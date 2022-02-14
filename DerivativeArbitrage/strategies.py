@@ -84,13 +84,14 @@ async def perp_vs_cash(
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
     now_time = datetime.now()
 
-    # filtering
+    # qualitative filtering
     universe=await refresh_universe(exchange,UNIVERSE)
     universe=universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = TYPE_ALLOWED
 
     filtered = futures[(futures['type'].isin(type_allowed))
                        & (futures['symbol'].isin(universe.index))]
+    futures = None #safety..
 
     # fee estimation params
     slippage_scaler = 1
@@ -100,7 +101,7 @@ async def perp_vs_cash(
     if not equity is None:
         pass
     elif EQUITY.isnumeric():
-        previous_weights_df = pd.DataFrame(index=futures.index,columns=['optimalWeight'],data=0.0)
+        previous_weights_df = pd.DataFrame(index=filtered.index,columns=['optimalWeight'],data=0.0)
         equity = float(EQUITY)
     elif '.xlsx' in EQUITY:
         previous_weights_df = pd.read_excel(EQUITY, sheet_name='optimized', index_col=0)['optimalWeight']
@@ -109,7 +110,7 @@ async def perp_vs_cash(
     else:
         start_portfolio = await fetch_portfolio(exchange, now_time)
         previous_weights_df = -start_portfolio.loc[
-            start_portfolio['attribution'].isin(futures.index), ['attribution', 'usdAmt']
+            start_portfolio['attribution'].isin(filtered.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
         equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
@@ -121,7 +122,7 @@ async def perp_vs_cash(
     else:
         point_in_time = backtest_start + signal_horizon + holding_period
 
-    ## ----------- enrich/filter, get history, populate concentration limit
+    ## ----------- enrich/carry filter, get history, populate concentration limit
     enriched = await enricher(exchange, filtered, holding_period, equity=equity,
                               slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
@@ -136,34 +137,31 @@ async def perp_vs_cash(
         exchange, enriched, hy_history,
         holding_period,  # to convert slippage into rate
         signal_horizon,filename='history')  # historical window for expectations)
-    updated, marginFunc = update(enriched, point_in_time, hy_history, equity,
+    updated, _ = update(enriched, point_in_time, hy_history, equity,
                                  intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
+    enriched = None  # safety..
+
     # final filter, needs some history and good avg volumes
     filtered = updated[~np.isnan(updated['E_intCarry'])]
     filtered = filtered.sort_values(by='E_intCarry', ascending=False)
+    updated = None #safety...
 
     # run a trajectory
-    optimized = filtered
     previous_time = point_in_time
     trajectory = pd.DataFrame()
 
     if backtest_start == backtest_end:
         previous_weights = previous_weights_df
     else:
-        # set initial weights at non-silly values
-        updated, marginFunc = update(optimized, point_in_time, hy_history, equity,
-                                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short,
-                                     E_intUSDborrow, E_intBorrow)
+        # set initial weights at 0
         previous_weights = pd.DataFrame()
-        previous_weights['optimalWeight'] = equity * updated['E_intCarry'] \
-                                            / (updated['E_intCarry'].sum() if np.abs(
-            updated['E_intCarry'].sum()) > 0.1 else 0.1)
+        previous_weights['optimalWeight'] = 0
 
     while point_in_time <= backtest_end:
         updated, excess_margin = update(filtered, point_in_time, hy_history, equity,
                                         intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
 
-        optimized = cash_carry_optimizer(exchange, updated, marginFunc,
+        optimized = cash_carry_optimizer(exchange, updated, excess_margin,
                                          previous_weights_df=previous_weights[
                                              previous_weights.index.isin(filtered.index)],
                                          holding_period=holding_period,
