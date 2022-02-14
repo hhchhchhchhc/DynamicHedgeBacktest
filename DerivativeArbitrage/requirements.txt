@@ -1,10 +1,9 @@
-numpy>=1.21.2
-pandas>=1.3.3
-pyarrow>=5.0.0
-python-dateutil>=2.8.2
-ccxt>=1.68.63
+numpy
+pandas
+pyarrow
+python-dateutil
+ccxt>=1.72.68
 #ccxtpro @ git+https://github.com/kroitor/ccxt.pro.git#subdirectory=python
-#seaborn>=0.11.2
 cufflinks
 #shutil
 #pickle
@@ -12,6 +11,6 @@ XlsxWriter
 openpyxl
 scipy
 matplotlib
-websockets>=9.0
+websockets
 python-telegram-bot
 dataframe-image
