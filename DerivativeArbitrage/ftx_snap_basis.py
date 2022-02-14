@@ -1,11 +1,7 @@
 import dateutil.parser
-import numpy as np
-import pandas as pd
 import scipy.optimize
-from scipy.stats import norm
-from pandas.tseries.frequencies import to_offset
+finite_diff_rel_step = 1e-4
 
-from ftx_utilities import *
 from ftx_portfolio import ExcessMargin
 from ftx_history import *
 from ftx_ftx import *
@@ -29,7 +25,7 @@ def market_capacity(futures, hy_history, universe_filter_window=[]):
                                                       min([f['openInterestUsd'],f['spot_volume_avg']/24,f['future_volume_avg']/24])
                                                       ,axis=1)
     futures['concentration_limit_short'] = futures.apply(lambda f:
-                                                         min([99999999999999 if f['spotMargin']==False else f['borrow_volume_decile'],
+                                                         min([0 if f['spotMargin']==False else f['borrow_volume_decile'],
                                                               f['openInterestUsd'],f['spot_volume_avg'] / 24, f['future_volume_avg'] / 24])
                                                          , axis=1)
 
@@ -90,8 +86,8 @@ async def enricher(exchange,futures,holding_period,equity,
     futures['carry_mid'] = 0
     futures.loc[(futures['carryShort']+futures['carryLong']<0)&(futures['carryShort']<0),'direction_mid']=-1
     futures.loc[(futures['carryShort']+futures['carryLong']>0)&(futures['carryLong']>0),'direction_mid']=1
-    futures.loc[(futures['carryShort'] + futures['carryLong'] < 0) & (futures['carryShort'] < 0), 'carry_mid'] = -futures['carryShort']
-    futures.loc[(futures['carryShort'] + futures['carryLong'] > 0) & (futures['carryLong'] > 0), 'carry_mid'] = futures['carryLong']
+    futures.loc[futures['direction_mid']==-1, 'carry_mid'] = -futures['carryShort']
+    futures.loc[futures['direction_mid']==1, 'carry_mid'] = futures['carryLong']
 
     ##### max weights ---> TODO CHECK formulas, short < long no ??
     future_im = futures.apply(lambda f:
@@ -158,8 +154,8 @@ def update(futures,point_in_time,history,equity,
     futures['carry_mid'] = 0
     futures.loc[(futures['carryShort']+futures['carryLong']<0)&(futures['carryShort']<0),'direction_mid']=-1
     futures.loc[(futures['carryShort']+futures['carryLong']>0)&(futures['carryLong']>0),'direction_mid']=1
-    futures.loc[(futures['carryShort'] + futures['carryLong'] < 0) & (futures['carryShort'] < 0), 'carry_mid'] = -futures['carryShort']
-    futures.loc[(futures['carryShort'] + futures['carryLong'] > 0) & (futures['carryLong'] > 0), 'carry_mid'] = futures['carryLong']
+    futures.loc[futures['direction_mid']==-1, 'carry_mid'] = -futures['carryShort']
+    futures.loc[futures['direction_mid']==1, 'carry_mid'] = futures['carryLong']
 
     ####### expectations. This is what optimizer uses.
 
@@ -402,19 +398,16 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
     stopout_constraint = {'type': 'ineq',
                           'fun': lambda x: excess_margin.call(x)['totalMM']}
 
-    old_bounds = scipy.optimize.Bounds(
-        lb=np.asarray([0 if w > 0 else -concentration_limit * equity for w in futures['direction']], dtype=object),
-        ub=np.asarray([0 if w < 0 else concentration_limit * equity for w in futures['direction']], dtype=object))
-
-    lower_bound = futures.apply(lambda future: -1. if future['direction'] >= 0 else
+    # bounds: mktshare and concentration
+    # scipy understands [0,0] bounds
+    lower_bound = futures.apply(lambda future: 0 if future['direction'] >= 0 else
     max(-concentration_limit*equity,-mktshare_limit*future['concentration_limit_short']) # 0 bounds if short  + no spotMargin...invalid for institutionals
                                 ,axis=1)
-    upper_bound = futures.apply(lambda future: 1. if future['direction'] <= 0 else
+    upper_bound = futures.apply(lambda future: 0 if future['direction'] <= 0 else
     min(concentration_limit*equity,mktshare_limit*future['concentration_limit_long'])
                                 , axis=1)
     bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values,dtype=object),
                                        ub=np.asarray(upper_bound.values,dtype=object))
-
 
     # --------- breaks down pnl during optimization
     progress_display=[]
@@ -448,7 +441,16 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
                                       constraints = [margin_constraint,stopout_constraint], # ,loss_tolerance_constraint
                                       bounds = bounds,
                                       callback=lambda x:callbackF(x,progress_display,(True if 'verbose' in optional_params else False)),
-                                      options = {'ftol': 1e-3, 'disp': False})
+                                      options = {'ftol': 1e-2, 'disp': False, 'finite_diff_rel_step' : finite_diff_rel_step, 'maxiter': 20*len(x1)})
+        if not res['success']:
+            logging.error(res['message'])
+            if (True if 'verbose' in optional_params else False):
+                with pd.ExcelWriter('paths.xlsx', engine='xlsxwriter') as writer:
+                    pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
+            if not res['message'] == 'Iteration limit reached':
+                # cheeky ignore that exception:
+                # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
+                raise Exception(res['message'])
 
     callbackF(res['x'], progress_display,(True if 'verbose' in optional_params else False))
 
