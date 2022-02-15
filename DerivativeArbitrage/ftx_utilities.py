@@ -19,7 +19,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import xlsxwriter
 #from s3 import *
-import matplotlib
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
@@ -247,11 +246,11 @@ class NpEncoder(json.JSONEncoder):
             return obj.to_json()
         return super(NpEncoder, self).default(obj)
 
-def log_reader(dirname='Runtime/logs',point_in_time=datetime.utcnow().strftime("%Y-%m-%d-%Hh")):
-    with open(dirname+'/'+point_in_time+'_events.json', 'r') as file:
+def log_reader(dirname='Runtime/logs'):
+    with open(dirname+'/latest_events.json', 'r') as file:
         d = json.load(file)
         events=pd.DataFrame(d)
-    with open(dirname+'/'+point_in_time+'_request.json', 'r') as file:
+    with open(dirname+'/latest_request.json', 'r') as file:
         d = json.load(file)
         request = pd.Series(d)
     with pd.ExcelWriter('Runtime/logs/latest_exec.xlsx', engine='xlsxwriter') as writer:

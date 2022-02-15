@@ -321,7 +321,7 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
     result['diffCoin']= result.apply(lambda f: int((f['optimalCoin']-f['currentCoin'])/f['minProvideSize'])*f['minProvideSize'],axis=1)
     result['diffUSD'] = result['diffCoin']*result['spot_price']
 
-    result = result[np.abs(result['diffCoin'])>0].drop(columns=['minProvideSize'])
+    result = result[np.abs(result['diffCoin'])>0]
     return result
 
 async def diff_portoflio_wrapper(*argv):
@@ -722,7 +722,7 @@ def ftx_portoflio_main(*argv):
     if argv[0] == 'fromOptimal':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
         diff=diff.append(pd.Series({'coin': 'total', 'name': 'total'}).append(diff.sum(numeric_only=True)),ignore_index=True)
-        print(diff.loc[diff['diffUSD'].apply(np.abs)>10,['coin','name','currentUSD','optimalUSD','diffUSD']].round(decimals=0))
+        print(diff.loc[diff['diffUSD'].apply(np.abs)>1,['coin','name','currentUSD','optimalUSD','diffUSD']].round(decimals=0))
         return diff
     elif argv[0] == 'risk':
         risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
