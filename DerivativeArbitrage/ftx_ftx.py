@@ -123,6 +123,7 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
 
 def collateralWeightInitial(future):
     '''not in API. Empirically = collateralWeight'''
+    return future['collateralWeight']
     if future['underlying'] in ['BUSD','FTT','HUSD','TUSD','USD','USDC','USDP','WUSDC']:
         return future['collateralWeight']
     elif future['underlying'] in ['AUD','BRL','BRZ','CAD','CHF','EUR','GBP','HKD','SGD','TRY','ZAR']:

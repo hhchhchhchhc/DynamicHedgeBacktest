@@ -253,9 +253,9 @@ def log_reader(dirname='Runtime/logs'):
     with open(dirname+'/latest_request.json', 'r') as file:
         d = json.load(file)
         request = pd.Series(d)
-    with pd.ExcelWriter('Runtime/logs/latest_exec.xlsx', engine='xlsxwriter') as writer:
-        request.to_excel(writer,sheet_name='request')
-        events.to_excel(writer, sheet_name='events')
+    with pd.ExcelWriter('Runtime/logs/latest_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
+        events.sort_values(by='timestamp',ascending=True).to_excel(writer, sheet_name='events')
+        request.to_excel(writer, sheet_name='request')
 
 if __name__ == "__main__":
     log_reader()
