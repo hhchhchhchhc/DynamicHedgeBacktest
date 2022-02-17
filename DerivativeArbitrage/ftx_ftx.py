@@ -123,7 +123,7 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
 
 def collateralWeightInitial(future):
     '''not in API. Empirically = collateralWeight'''
-    return future['collateralWeight']
+    return max(0.01,future['collateralWeight'])
     if future['underlying'] in ['BUSD','FTT','HUSD','TUSD','USD','USDC','USDP','WUSDC']:
         return future['collateralWeight']
     elif future['underlying'] in ['AUD','BRL','BRZ','CAD','CHF','EUR','GBP','HKD','SGD','TRY','ZAR']:
@@ -157,8 +157,8 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
         ## eg ADA has no coin details
         if not underlying in coin_details.index:
             if not includeIndex: continue
-        try:## eg BTT-PERP doesn't exist
-            symbol=next(item for item in fetched if item['id'] == exchange.safe_string(market, 'name'))['symbol']
+        try:## eg DMG-PERP doesn't exist (IncludeIndex = True)
+            symbol = exchange.market(exchange.safe_string(market, 'name'))['symbol']
         except Exception as e:
             continue
             #symbol=exchange.safe_string(market, 'name')#TODO: why ?

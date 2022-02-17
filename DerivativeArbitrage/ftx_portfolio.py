@@ -336,7 +336,8 @@ async def fetch_portfolio(exchange,time):
     # fetch mark,spot and balances as closely as possible
     markets = await exchange.fetch_markets()
     balances = (await exchange.fetch_balance(params={}))['info']['result']
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True)).set_index('name')
+    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True))
+    futures=futures.set_index('name')
 
     markets = pd.DataFrame([r['info'] for r in markets], dtype=float).set_index('name')
     balances=pd.DataFrame(balances, dtype=float)
@@ -352,7 +353,9 @@ async def fetch_portfolio(exchange,time):
         positions['event_type'] = 'delta'
         positions['attribution'] = positions['future']
         positions['mark'] = positions['attribution'].apply(lambda f: markets.loc[f,'price'])
-        positions['spot'] = positions['attribution'].apply(lambda f: markets.loc[markets.loc[f, 'underlying']+'/USD','price'])
+        positions['spot'] = positions['attribution'].apply(lambda f:
+                                                           float(exchange.market((futures.loc[f,'underlying']+'/USD') if (futures.loc[f,'underlying']+'/USD') in exchange.markets
+                                                                                 else f)['info']['price']))
         positions['usdAmt'] = positions['coinAmt'] * positions['mark']
 
         positions.loc[~positions['attribution'].isin(futures.index),'rate'] = 0.0
@@ -372,8 +375,8 @@ async def fetch_portfolio(exchange,time):
     balances.loc[balances['coin']=='USD','coinAmt'] += unrealizedPnL
     balances['time']=time.replace(tzinfo=None)
     balances['event_type'] = 'delta'
-    balances['attribution'] = balances['coin']
     balances['coin'] = balances['coin'].apply(lambda f:f.replace('_LOCKED', ''))
+    balances['attribution'] = balances['coin']
     balances['spot'] = balances['coin'].apply(lambda f: 1.0 if f == 'USD' else float(markets.loc[f + '/USD', 'price']))
     balances['mark'] = balances['spot']
     balances['usdAmt'] = balances['coinAmt'] * balances['mark']
@@ -473,6 +476,8 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     trades = pd.DataFrame((await exchange.privateGetFills(params))['result'], dtype=float)
     future_trades=pd.DataFrame()
     if not trades.empty:
+        trades['baseCurrency'] = trades['baseCurrency'].apply(lambda s: s.replace('_LOCKED', '') if s else s)
+        trades['feeCurrency'] = trades['feeCurrency'].apply(lambda s: s.replace('_LOCKED', '') if s else s)
         #trades=trades[trades['type']=='order'] # TODO: dealt with unlock and otc later
         # spot trade first, attribute to baseccy
         base_trades=trades[~trades['future'].isin(futures.index)]
@@ -538,15 +543,18 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
         for f in set(symbol_list)-set(result['attribution']):
             if type(f)!=str: continue
             if f in futures.index:
-                spot_ticker = futures.loc[f, 'underlying'] + '/USD'
-                mark_ticker = futures.loc[futures['symbol']==f,'symbol'].values[0]
+                spot_ticker = futures.loc[f.replace('_LOCKED',''), 'underlying'] + '/USD'
+                mark_ticker = futures.loc[futures['symbol'] == f, 'symbol'].values[0]
+                # some have no spot
+                spot_ticker = spot_ticker if spot_ticker in exchange.markets else mark_ticker
             else:
-                spot_ticker = f + ('' if ('/USD' in f) else '/USD')
+                spot_ticker = f.replace('_LOCKED', '')
+                if '/USD' not in f: spot_ticker += '/USD'
                 mark_ticker = spot_ticker
 
             params={'start_time':point_in_time.timestamp(), 'end_time':point_in_time.timestamp()+15}
             result=result.append(pd.Series(
-                {'attribution':f,
+                {'attribution': f.replace('_LOCKED', ''),
                 'spot':(await exchange.fetch_ohlcv(spot_ticker, timeframe='15s', params=params))[0][1],
                 'mark':(await exchange.fetch_ohlcv(mark_ticker, timeframe='15s', params=params))[0][1]
                  }),ignore_index=True)
@@ -663,7 +671,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-async def run_plex_wrapper(exchange_name='ftx',subaccount='SysPerp'):
+async def run_plex_wrapper(exchange_name='ftx',subaccount='debug'):
     exchange = await open_exchange(exchange_name,subaccount)
     plex= await run_plex(exchange)
     await exchange.close()
@@ -671,7 +679,7 @@ async def run_plex_wrapper(exchange_name='ftx',subaccount='SysPerp'):
 
 async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
 
-    filename = dirname+'portfolio_history_'+exchange.describe()['id']+'_'+exchange.headers['FTX-SUBACCOUNT']+'.xlsx'
+    filename = dirname+'portfolio_history_'+exchange.describe()['id']+('_'+exchange.headers['FTX-SUBACCOUNT'] if 'FTX-SUBACCOUNT' in exchange.headers else '')+'.xlsx'
     if not os.path.isfile(filename):
         risk_history = pd.DataFrame()
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
