@@ -2,7 +2,7 @@ import dateutil.parser
 import scipy.optimize
 finite_diff_rel_step = 1e-4
 
-from ftx_portfolio import ExcessMargin
+from ftx_portfolio import BasisMarginCalculator
 from ftx_history import *
 from ftx_ftx import *
 
@@ -12,8 +12,8 @@ def market_capacity(futures, hy_history, universe_filter_window=[]):
     borrow_decile=0.5
     futures['borrow_volume_decile'] =0
     futures.loc[futures['spotMargin']!=False,'borrow_volume_decile'] = futures[futures['spotMargin']!=False].apply(lambda f:
-                                                                                                                  (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']).quantile(q=borrow_decile)
-                                                                                                                  ,axis=1)
+                                                                                                                   (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']).quantile(q=borrow_decile)
+                                                                                                                   ,axis=1)
     futures['spot_volume_avg'] = futures.apply(lambda f:
                                                (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean()
                                                ,axis=1)
@@ -64,9 +64,9 @@ async def enricher(exchange,futures,holding_period,equity,
         futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
             lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
 
-    #### need borrow to be present
-    #futures = futures[futures['borrow_open_interest']>0]
+    #### fill in borrow for spotMargin==False ot OTC override
     futures.loc[futures['spotMargin']==False,'borrow']=999
+    futures.loc[futures['spotMargin'] == False, 'lend'] = -999
     futures.loc[futures['spotMargin']=='OTC','borrow']=futures.loc[futures['spotMargin']=='OTC','underlying'].apply(lambda f:otc_file.loc[f,'borrow'])
     futures.loc[futures['spotMargin'] == 'OTC', 'lend'] = futures.loc[
         futures['spotMargin'] == 'OTC', 'underlying'].apply(lambda f: otc_file.loc[f, 'lend'])
@@ -106,9 +106,9 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
         futures = pd.DataFrame(await fetch_futures(exchange)).set_index('name')
         filtered = futures[~futures['underlying'].isin(EXCLUSION_LIST)]
         enriched = await enricher(exchange, filtered, timedelta(weeks=1), equity=1.0,
-                              slippage_override=-999, slippage_orderbook_depth=depth,
-                              slippage_scaler=1.0,
-                              params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
+                                  slippage_override=-999, slippage_orderbook_depth=depth,
+                                  slippage_scaler=1.0,
+                                  params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
         hy_history = await build_history(enriched,exchange,dirname='Runtime/temporary_parquets')
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
@@ -125,7 +125,7 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
     return asyncio.run(enricher_subwrapper(exchange_name,type,depth))
 
 def update(futures,point_in_time,history,equity,
-           intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow):
+           intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow,minimum_carry=0.0):
     ####### spot quantities. Not used by optimizer. Careful about foresight bias when using those !
     # add borrows
     futures['borrow']=futures['underlying'].apply(lambda f:history.loc[point_in_time,f + '/rate/borrow'])
@@ -170,14 +170,14 @@ def update(futures,point_in_time,history,equity,
     futures['E_intUSDborrow']= E_intUSDborrow.loc[point_in_time]
 
     ##### assume direction only depends on sign(E[long]-E[short]), no integral.
-    # Freeze direction into Carry_t and assign max weights.
+    # Freeze direction into Carry_t and assign max weights. filter out assets with too little carry.
     futures['direction'] = 0
     futures.loc[(futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] < 0)
-                &(futures['E_short']<0)
+                &(futures['E_short']<-minimum_carry)
                 &(futures['spotMargin']!=False),
                 'direction'] = -1
     futures.loc[(futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] > 0)
-                & (futures['E_long'] > 0),
+                & (futures['E_long'] > minimum_carry),
                 'direction'] = 1
 
     # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
@@ -190,9 +190,7 @@ def update(futures,point_in_time,history,equity,
     # TODO: covar pre-update
     # C_int = integralCarry_t.ewm(times=hy_history.index, halflife=signal_horizon, axis=0).cov().loc[point_in_time]
 
-    ##### initialize optimizer functions
-    excess_margin = ExcessMargin(futures,equity=equity)
-    return futures,excess_margin
+    return futures
 
 # return rolling expectations of integrals
 def forecast(exchange, futures, hy_history,
@@ -348,7 +346,7 @@ def transaction_cost_calculator(dx,buy_slippage,sell_slippage):
 
 ###### use convex optimiziation
 # https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
-def cash_carry_optimizer(exchange, futures,excess_margin,
+def cash_carry_optimizer(exchange, futures,
                          previous_weights_df,
                          holding_period,  # to convert slippag into rate
                          signal_horizon,  # historical window for expectations
@@ -356,6 +354,10 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
                          mktshare_limit,
                          equity,# for markovitz
                          optional_params=[]):             # use external rather than order book
+    # freeze universe, from now on must ensure order is the same
+    futures = futures.join(previous_weights_df, how='left', lsuffix='_')
+    previous_weights = futures['optimalWeight'].fillna(0.0)
+
     intCarry=futures['intCarry'].values
     intBorrow = futures['intBorrow'].values
     intUSDborrow=futures['intUSDborrow'].values[0]
@@ -364,9 +366,6 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
     E_intUSDborrow=futures['E_intUSDborrow'].values[0]
     buy_slippage=futures['buy_slippage'].values
     sell_slippage = futures['sell_slippage'].values
-    # xt: must ensure order is the same
-    previous_weights=futures.join(previous_weights_df,how='left',lsuffix='_')['optimalWeight'].fillna(0.0)
-    xt=previous_weights.values
 
     ##### optimization functions
 
@@ -389,14 +388,21 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
     )
 
     #subject to weight bounds, margin and loss probability ceiling
-    n = len(futures.index)
     # TODO: covar pre-update
     #loss_tolerance_constraint = {'type': 'ineq',
     #            'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
+    futures_dict = futures[['new_symbol', 'account_leverage','imfFactor','mark']].set_index('new_symbol').to_dict()
+    spot_dict = futures[['underlying','collateralWeight','index']].set_index('underlying').to_dict()
+    excess_margin = BasisMarginCalculator(futures['account_leverage'].values[0],
+                                                 spot_dict['collateralWeight'],
+                                                 futures_dict['imfFactor'],
+                                                 equity,
+                                                 spot_dict['index'],#TODO: strictly speaking whould be price of spot
+                                                 futures_dict['mark'])
     margin_constraint = {'type': 'ineq',
-                         'fun': lambda x: excess_margin.call(x)['totalIM'] - equity*OPEN_ORDERS_HEADROOM}
+                         'fun': lambda x: excess_margin.shockedEstimate(x)['totalIM'] - equity*OPEN_ORDERS_HEADROOM}
     stopout_constraint = {'type': 'ineq',
-                          'fun': lambda x: excess_margin.call(x)['totalMM']}
+                          'fun': lambda x: excess_margin.shockedEstimate(x)['totalMM']}
 
     # bounds: mktshare and concentration
     # scipy understands [0,0] bounds
@@ -407,9 +413,9 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
     min(concentration_limit*equity,mktshare_limit*future['concentration_limit_long'])
                                 , axis=1)
     bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values,dtype=object),
-                                       ub=np.asarray(upper_bound.values,dtype=object))
+                                   ub=np.asarray(upper_bound.values,dtype=object))
 
-    # --------- breaks down pnl during optimization
+    # --------- verbose callback function: breaks down pnl during optimization
     progress_display=[]
     def callbackF(x, progress_display, verbose=False):
         if verbose:
@@ -426,6 +432,7 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
             }).append(pd.Series(index=futures.index, data=x))]
         return []
 
+    xt = previous_weights.values
     if 'frozen_weights' in futures.columns:
         res=futures[['frozen_weights']].rename({'frozen_weights':'x'}).to_numpy()
     else:
@@ -463,8 +470,8 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
         summary['RealizedCarry'] = xt*(intCarry+intUSDborrow)
-        summary['excessIM'] = excess_margin.call(res['x'])['IM']
-        summary['excessMM'] = excess_margin.call(res['x'])['MM']
+        summary['excessIM'] = excess_margin.shockedEstimate(res['x'])['IM']
+        summary['excessMM'] = BasisMarginCalculator.shockedEstimate(res['x'])['MM']
 
         weight_move=summary['optimalWeight']-previous_weights
         summary['transactionCost']=weight_move*futures['buy_slippage']
@@ -477,8 +484,8 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
         summary.loc['USD', 'RealizedCarry'] = np.min([0,equity-previous_weights.sum()])* intUSDborrow
-        summary.loc['USD', 'excessIM'] = excess_margin.call(res['x'])['totalIM']-sum(excess_margin.call(res['x'])['IM'])
-        summary.loc['USD', 'excessMM'] = excess_margin.call(res['x'])['totalMM']-sum(excess_margin.call(res['x'])['MM'])
+        summary.loc['USD', 'excessIM'] = BasisMarginCalculator.shockedEstimate(res['x'])['totalIM']-sum(BasisMarginCalculator.shockedEstimate(res['x'])['IM'])
+        summary.loc['USD', 'excessMM'] = BasisMarginCalculator.shockedEstimate(res['x'])['totalMM']-sum(BasisMarginCalculator.shockedEstimate(res['x'])['MM'])
         summary.loc['USD', 'transactionCost'] = 0
 
         summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark'].mean()

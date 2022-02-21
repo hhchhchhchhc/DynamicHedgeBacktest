@@ -66,6 +66,7 @@ async def perp_vs_cash(
         equity,
         concentration_limit,
         mktshare_limit,
+        minimum_carry,
         exclusion_list,
         run_dir='',
         backtest_start = None,# None means live-only
@@ -137,8 +138,9 @@ async def perp_vs_cash(
         exchange, enriched, hy_history,
         holding_period,  # to convert slippage into rate
         signal_horizon,filename='history')  # historical window for expectations)
-    updated, _ = update(enriched, point_in_time, hy_history, equity,
-                                 intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
+    updated = update(enriched, point_in_time, hy_history, equity,
+                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
+                     minimum_carry=0)
     enriched = None  # safety..
 
     # final filter, needs some history and good avg volumes
@@ -158,10 +160,11 @@ async def perp_vs_cash(
         previous_weights['optimalWeight'] = 0
 
     while point_in_time <= backtest_end:
-        updated, excess_margin = update(filtered, point_in_time, hy_history, equity,
-                                        intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
+        updated = update(filtered, point_in_time, hy_history, equity,
+                         intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
+                         minimum_carry=minimum_carry)
 
-        optimized = cash_carry_optimizer(exchange, updated, excess_margin,
+        optimized = cash_carry_optimizer(exchange, updated,
                                          previous_weights_df=previous_weights[
                                              previous_weights.index.isin(filtered.index)],
                                          holding_period=holding_period,
@@ -257,6 +260,7 @@ async def strategy_wrapper(**kwargs):
         equity=equity,
         concentration_limit=concentration_limit,
         mktshare_limit=mktshare_limit,
+        minimum_carry=minimum_carry,
         exclusion_list=kwargs['exclusion_list'],
         signal_horizon=signal_horizon,
         holding_period=holding_period,
@@ -267,6 +271,7 @@ async def strategy_wrapper(**kwargs):
         for equity in kwargs['equity']
         for concentration_limit in kwargs['concentration_limit']
         for mktshare_limit in kwargs['mktshare_limit']
+        for minimum_carry in kwargs['minimum_carry']
         for signal_horizon in kwargs['signal_horizon']
         for holding_period in kwargs['holding_period']
         for slippage_override in kwargs['slippage_override']])
@@ -287,6 +292,7 @@ def strategies_main(*argv):
             equity=[None],
             concentration_limit=[CONCENTRATION_LIMIT],
             mktshare_limit=[MKTSHARE_LIMIT],
+            minimum_carry=[MINIMUM_CARRY],
             exclusion_list=EXCLUSION_LIST,
             signal_horizon=[argv[1]],
             holding_period=[argv[2]],
@@ -297,21 +303,23 @@ def strategies_main(*argv):
         for equity in [[100000], [1000000]]:
             for concentration_limit in [[1]]:
                 for mktshare_limit in [[MKTSHARE_LIMIT]]:
-                    for signal_horizon in [[timedelta(hours=h) for h in [12, 60]]]:
-                        for holding_period in [[timedelta(hours=h) for h in [24]]]:
-                            for slippage_override in [[0.0005]]:
-                                asyncio.run(strategy_wrapper(
-                                    exchange='ftx',
-                                    equity=equity,
-                                    concentration_limit=concentration_limit,
-                                    mktshare_limit=mktshare_limit,
-                                    exclusion_list=EXCLUSION_LIST,
-                                    signal_horizon=signal_horizon,
-                                    holding_period=holding_period,
-                                    slippage_override=slippage_override,
-                                    run_dir='',
-                                    backtest_start=datetime(2021,11,1),
-                                    backtest_end=datetime(2022,2,1)))
+                    for minimum_carry in [[MINIMUM_CARRY]]:
+                        for signal_horizon in [[timedelta(hours=h) for h in [12, 60]]]:
+                            for holding_period in [[timedelta(hours=h) for h in [24]]]:
+                                for slippage_override in [[0.0005]]:
+                                    asyncio.run(strategy_wrapper(
+                                        exchange='ftx',
+                                        equity=equity,
+                                        concentration_limit=concentration_limit,
+                                        mktshare_limit=mktshare_limit,
+                                        minimum_carry=minimum_carry,
+                                        exclusion_list=EXCLUSION_LIST,
+                                        signal_horizon=signal_horizon,
+                                        holding_period=holding_period,
+                                        slippage_override=slippage_override,
+                                        run_dir='',
+                                        backtest_start=datetime(2021,11,1),
+                                        backtest_end=datetime(2022,2,1)))
     else:
         print(f'commands: sysperp [signal_horizon] [holding_period], backtest')
 
