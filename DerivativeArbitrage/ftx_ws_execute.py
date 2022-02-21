@@ -8,7 +8,7 @@ import functools
 from copy import deepcopy
 
 from ftx_utilities import *
-from ftx_portfolio import collateralWeightInitial,diff_portoflio
+from ftx_portfolio import diff_portoflio,MarginCalculator
 from ftx_history import fetch_trades_history
 from ftx_ftx import fetch_latencyStats,fetch_futures
 
@@ -20,122 +20,6 @@ time_budget = 30*60 # 30m used in transaction speed screener
 delta_limit = 0.2 # delta limit / pv
 slice_factor = 0.5 # % of request
 edit_price_tolerance=np.sqrt(10/60)#price on 10s std
-
-### low level class to compute margins
-class liveIM:
-    def __init__(self, account_leverage, collateralWeight, imfFactor):  # imfFactor by symbol not coin
-        self._account_leverage = account_leverage
-        self._collateralWeight = collateralWeight
-        self._imfFactor = imfFactor
-        self._collateralWeightInitial = {coin: collateralWeightInitial({'underlying': coin, 'collateralWeight': data})
-                                         for coin, data in collateralWeight.items()}
-        self.estimated_IM = None #dict
-        self.estimated_MM = None # dict
-        self.actual_futures_IM = None #dict, keys by id not symbol
-        self.actual_IM = None #float
-        self.actual_MM = None #float
-
-    @staticmethod
-    def add_pending_orders(exchange,spot_weight,future_weight):
-        '''add orders as if done'''
-        for order in exchange.orders:
-            if order['status'] == 'open':
-                symbol = order['symbol']
-                if exchange.markets[symbol]['spot']:
-                    coin = exchange.markets[symbol]['base']
-                    if coin not in spot_weight: spot_weight[coin] = {'weight': 0, 'mid': exchange.mid(symbol)}
-                    spot_weight[coin]['weight'] += order['amount'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
-                else:
-                    if symbol not in future_weight: future_weight[symbol] = {'weight': 0, 'mid': exchange.mid(symbol)}
-                    future_weight[symbol]['weight'] += order['amount'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
-        return (spot_weight,future_weight)
-
-    def futureMargins(self, weights):  # weights = {symbol: 'weight, 'mid
-        im_fut = {symbol:
-            abs(data['weight']) * max(1.0 / self._account_leverage,
-                                      self._imfFactor[symbol] * np.sqrt(abs(data['weight']) / data['mid']))
-            for symbol, data in weights.items()}
-        mm_fut = {symbol:
-            max([0.03 * data['weight'], 0.6 * im_fut[symbol]])
-            for symbol, data in weights.items()}
-
-        return (im_fut, mm_fut)
-
-    def spotMargins(self, weights):
-        collateral = {coin+'/USD':
-            data['weight'] if data['weight'] < 0
-            else data['weight'] * min(self._collateralWeight[coin],
-                                      1.1 / (1 + self._imfFactor[coin + '/USD:USD'] * np.sqrt(
-                                          abs(data['weight']) / data['mid'])))
-            for coin, data in weights.items()}
-        # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
-        im_short = {coin+'/USD':
-            0 if data['weight'] > 0
-            else -data['weight'] * max(1.1 / self._collateralWeightInitial[coin] - 1,
-                                       self._imfFactor[coin + '/USD:USD'] * np.sqrt(abs(data['weight']) / data['mid']))
-            for coin, data in weights.items()}
-        mm_short = {coin+'/USD':
-            0 if data['weight'] > 0
-            else -data['weight'] * max(1.03 / self._collateralWeightInitial[coin] - 1,
-                                       0.6 * self._imfFactor[coin + '/USD:USD'] * np.sqrt(
-                                           abs(data['weight']) / data['mid']))
-            for coin, data in weights.items()}
-
-        return (collateral, im_short, mm_short)
-
-    def estimate(self, usd_balance, spot_weights, future_weights):
-        (collateral, im_short, mm_short) = self.spotMargins(spot_weights)
-        (im_fut, mm_fut) = self.futureMargins(future_weights)
-        self.estimated_IM = {symbol:
-                                 collateral[symbol] - im_short[symbol]
-                             for symbol in im_short.keys()}\
-                            |{symbol:
-                                 - im_fut[symbol]
-                             for symbol in im_fut.keys()}\
-                            |{'USD':usd_balance + 0.1 * min([0, usd_balance]) }
-        self.estimated_MM = {symbol:
-                                 collateral[symbol] + usd_balance + 0.03 * min([0, usd_balance]) - mm_short[symbol]
-                             for symbol in mm_short.keys()}\
-                            |{symbol:
-                                 - mm_fut[symbol]
-                             for symbol in mm_fut.keys()} \
-                            | {'USD': usd_balance + 0.03 * min([0, usd_balance])}
-
-    def actual(self,account_information):
-        self.actual_futures_IM = {position['future']:float(position['collateralUsed'])
-                                  for position in account_information['positions'] if float(position['netSize'])!=0}
-        self.actual_IM = float(account_information['totalPositionSize']) * (
-                    float(account_information['openMarginFraction']) - float(account_information['initialMarginRequirement']))
-        self.actual_MM = float(account_information['totalPositionSize']) * (
-                    float(account_information['openMarginFraction']) - float(account_information['maintenanceMarginRequirement']))
-
-    # not used, as would need all risks not only self.risk_state
-    def margins_from_exchange(self,exchange):
-        future_weight = {symbol: {'weight': data['delta'], 'mid': exchange.mid(symbol)}
-                         for coin,coin_data in exchange.risk_state.items() if coin in exchange.currencies
-                         for symbol,data in coin_data.items() if symbol in exchange.markets and exchange.markets[symbol]['contract']}
-        spot_weight = {coin: {'weight': data['delta'], 'mid': exchange.mid(symbol)}
-                         for coin,coin_data in exchange.risk_state.items() if coin in exchange.currencies
-                         for symbol,data in coin_data.items() if symbol in exchange.markets and exchange.markets[symbol]['spot']}
-
-        (collateral, im_short, mm_short) = self.spotMargins(spot_weight)
-        (im_fut, mm_fut) = self.futureMargins(future_weight)
-        IM = collateral + exchange.usd_balance + 0.1 * min([0, exchange.usd_balance]) - im_fut - im_short
-        MM = collateral + exchange.usd_balance + 0.03 * min([0, exchange.usd_balance]) - mm_fut - mm_short
-
-        return {'IM': IM, 'MM': MM}
-
-    # margin impact of an order
-    def margin_cost(self, symbol, mid, size, usd_balance):
-        if symbol in self._imfFactor:  # --> derivative
-            (im_fut, mm_fut) = self.futureMargins({symbol: {'weight': size * mid, 'mid': mid}})
-            return -im_fut[symbol]
-        elif symbol in self._collateralWeight:  # --> coin
-            (collateral, im_short, mm_short) = self.spotMargins({symbol: {'weight': size * mid, 'mid': mid}})
-            usd_balance_chg = -size * mid
-            return collateral[symbol+'/USD'] + usd_balance_chg + 0.1 * (
-                        min([0, usd_balance + usd_balance_chg]) - min([0, usd_balance])) - im_short[symbol+'/USD']
-        logging.exception(f'IM impact: {symbol} neither derivative or cash')
 
 class myFtx(ccxtpro.ftx):
     class DoneDeal(Exception):
@@ -375,7 +259,7 @@ class myFtx(ccxtpro.ftx):
         account_leverage = float(futures.iloc[0]['account_leverage'])
         collateralWeight = futures.set_index('underlying')['collateralWeight'].to_dict()
         imfFactor = futures.set_index('new_symbol')['imfFactor'].to_dict()
-        self.margin_calculator = liveIM(account_leverage,collateralWeight,imfFactor)
+        self.margin_calculator = MarginCalculator(account_leverage, collateralWeight, imfFactor)
 
         # populates risk, pv and IM
         await self.fetch_risk()
@@ -440,7 +324,7 @@ class myFtx(ccxtpro.ftx):
                 spot_weight |= {(coin):{'weight':balance['total']*mid,'mid':mid}}
 
         # calculate IM
-        (spot_weight,future_weight) = liveIM.add_pending_orders(self,spot_weight, future_weight)
+        (spot_weight,future_weight) = MarginCalculator.add_pending_orders(self, spot_weight, future_weight)
         self.margin_calculator.estimate(self.usd_balance, spot_weight, future_weight)
         self.calculated_IM = sum(value for value in self.margin_calculator.estimated_IM.values())
         # fetch IM
