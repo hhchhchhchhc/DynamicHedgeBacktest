@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 
@@ -14,11 +15,11 @@ from ftx_ftx import fetch_latencyStats,fetch_futures
 
 max_nb_coins = 7  # TODO: sharding needed
 entry_tolerance = 0.5 # green light if basket better than median
-variousedit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
+edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(10) # stop on 10min stdev
-time_budget = 30*60 # 30m used in transaction speed screener
+time_budget = 30*60 # 30m. used in transaction speed screener
 delta_limit = 0.2 # delta limit / pv
-slice_factor = 0.5 # % of request
+slice_factor = 0.1 # % of request
 edit_price_tolerance=np.sqrt(10/60)#price on 10s std
 
 class myFtx(ccxtpro.ftx):
@@ -317,11 +318,11 @@ class myFtx(ccxtpro.ftx):
         for position in positions:
             if float(position['info']['netSize'])!=0:
                 mid = self.mid(position['symbol'])
-                future_weight |= {position['symbol']: {'weight': float(position['info']['netSize'])*mid, 'mid':mid}}
+                future_weight |= {position['symbol']: {'weight': float(position['info']['netSize'])*mid, 'mark':mid}}
         for coin,balance in balances.items():
             if coin!='USD' and coin in self.currencies and balance['total']!=0:
                 mid = self.mid(coin+'/USD')
-                spot_weight |= {(coin):{'weight':balance['total']*mid,'mid':mid}}
+                spot_weight |= {(coin):{'weight':balance['total']*mid,'mark':mid}}
 
         # calculate IM
         (spot_weight,future_weight) = MarginCalculator.add_pending_orders(self, spot_weight, future_weight)
@@ -430,9 +431,9 @@ class myFtx(ccxtpro.ftx):
                 self.logger.warning(str(e) + str(orders[0]), exc_info=True)
             elif ("Size too small for provide" or "Size too small") in str(e):
                 # usually because filled btw remaining checked and order modify
-                self.logger.warning('{}: {} too small {}...or {} < {}'.format(orders[0],np.abs(size),sizeIncrement,clientOrderId.split('_')[2],orders[0]['timestamp']), exc_info=True)
+                self.logger.warning('{}: {} too small {}...or {} < {}'.format(order,np.abs(size),sizeIncrement,clientOrderId.split('_')[2],'order[timestamp]'), exc_info=True)
             else:
-                self.logger.warning(str(e) + str(orders[0]), exc_info=True)
+                self.logger.warning(str(e) + str(order), exc_info=True)
         except ccxt.ExchangeError as e:  # is base error
             if "Must modify either price or size" in str(e):
                 self.logger.warning(str(e) + str(orders[0]), exc_info=True)
@@ -512,8 +513,9 @@ class myFtx(ccxtpro.ftx):
 
         # size to do: aim at target, slice, round to sizeIncrement
         size = params['target'] - delta
-        size = np.sign(size)*float(self.amount_to_precision(symbol, min([np.abs(size), params['slice_size'], self.margin_headroom / mid])))
-        if np.abs(size) == 0:
+        # size < slice_size and margin_headroom
+        size = np.sign(size)*float(self.amount_to_precision(symbol, min([np.abs(size), params['slice_size']])))
+        if (np.abs(size) == 0):
             self.done+=[symbol]
             if all(symbol_ in self.done
                    for coin,coin_data in self.exec_parameters.items() if coin in self.currencies
@@ -525,8 +527,14 @@ class myFtx(ccxtpro.ftx):
                 raise myFtx.DoneDeal(symbol)
 
         order = None
+
+        # if not enough margin, hold it
+        if self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance) > self.margin_headroom:
+            await asyncio.sleep(60) # TODO: I don't know how to stop/restart a thread..
+            self.logger.info('margin {} too small for order size {}'.format(size*mid, self.margin_headroom))
+            return None
         # if increases risk, go passive
-        if np.abs(netDelta+size)>np.abs(netDelta):
+        elif np.abs(netDelta+size)-np.abs(netDelta)>0:
             if self.exec_parameters[coin]['entry_level'] is None: # for a purely risk reducing exercise
                 self.done += [symbol]
                 self.logger.info(myFtx.DoneDeal(symbol))
@@ -590,7 +598,7 @@ class myFtx(ccxtpro.ftx):
 
     @loop_and_callback
     async def monitor_risk(self):
-        '''redundant minutely risk check'''
+        '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
         await self.fetch_risk()
 
         self.limit.limit = self.pv * self.limit.delta_limit
