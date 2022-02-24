@@ -140,7 +140,7 @@ async def perp_vs_cash(
         signal_horizon,filename='history')  # historical window for expectations)
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
-                     minimum_carry=0)
+                     minimum_carry=0) # do not remove futures using minimum_carry
     enriched = None  # safety..
 
     # final filter, needs some history and good avg volumes
@@ -162,7 +162,8 @@ async def perp_vs_cash(
     while point_in_time <= backtest_end:
         updated = update(filtered, point_in_time, hy_history, equity,
                          intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
-                         minimum_carry=minimum_carry)
+                         minimum_carry=minimum_carry,
+                         previous_weights_index=previous_weights.index)
 
         optimized = cash_carry_optimizer(exchange, updated,
                                          previous_weights_df=previous_weights[
@@ -172,11 +173,14 @@ async def perp_vs_cash(
                                          concentration_limit=concentration_limit,
                                          mktshare_limit=mktshare_limit,
                                          equity=equity,
-                                         optional_params=['verbose']
-                                         )
+                                         optional_params=['verbose'] + (['cost_blind']
+                                         if (point_in_time == backtest_start)&(backtest_start != backtest_end)
+                                         else [])) # ignore costs on first time of a backtest
         # need to assign RealizedCarry to previous_time
-        if not trajectory.empty: trajectory.loc[trajectory['time'] == previous_time, 'RealizedCarry'] = optimized[
-            'RealizedCarry'].values
+        if not trajectory.empty:
+            trajectory.loc[trajectory['time'] == previous_time,'RealizedCarry'] = \
+                trajectory.loc[trajectory['time'] == previous_time,'name'].apply(
+                    lambda f: optimized.loc[f,'RealizedCarry'] if f in optimized.index else 0)
         optimized['time'] = point_in_time
 
         # increment
