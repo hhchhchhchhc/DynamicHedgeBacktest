@@ -125,7 +125,9 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
     return asyncio.run(enricher_subwrapper(exchange_name,type,depth))
 
 def update(futures,point_in_time,history,equity,
-           intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow,minimum_carry=0.0):
+           intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow,
+           minimum_carry=0.0,
+           previous_weights_index=[]):
     ####### spot quantities. Not used by optimizer. Careful about foresight bias when using those !
     # add borrows
     futures['borrow']=futures['underlying'].apply(lambda f:history.loc[point_in_time,f + '/rate/borrow'])
@@ -179,6 +181,9 @@ def update(futures,point_in_time,history,equity,
     futures.loc[(futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] > 0)
                 & (futures['E_long'] > minimum_carry),
                 'direction'] = 1
+
+    # remove low yielding underlyings, except if were in previous portfolio.
+    futures = futures[(futures['direction']!=0)|(futures.index.isin(previous_weights_index))]
 
     # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
     futures['intCarry'] = 0
@@ -400,16 +405,16 @@ def cash_carry_optimizer(exchange, futures,
                                                  spot_dict['index'],#TODO: strictly speaking whould be price of spot
                                                  futures_dict['mark'])
     margin_constraint = {'type': 'ineq',
-                         'fun': lambda x: excess_margin.shockedEstimate(x)['totalIM'] - equity*OPEN_ORDERS_HEADROOM}
+                         'fun': lambda x: excess_margin.shockedEstimate(x)['totalIM']}
     stopout_constraint = {'type': 'ineq',
                           'fun': lambda x: excess_margin.shockedEstimate(x)['totalMM']}
 
     # bounds: mktshare and concentration
     # scipy understands [0,0] bounds
-    lower_bound = futures.apply(lambda future: 0 if future['direction'] >= 0 else
+    lower_bound = futures.apply(lambda future: 0 if future['direction'] > 0 else
     max(-concentration_limit*equity,-mktshare_limit*future['concentration_limit_short']) # 0 bounds if short  + no spotMargin...invalid for institutionals
                                 ,axis=1)
-    upper_bound = futures.apply(lambda future: 0 if future['direction'] <= 0 else
+    upper_bound = futures.apply(lambda future: 0 if future['direction'] < 0 else
     min(concentration_limit*equity,mktshare_limit*future['concentration_limit_long'])
                                 , axis=1)
     bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values,dtype=object),
@@ -441,7 +446,7 @@ def cash_carry_optimizer(exchange, futures,
         # - previous weights
         #x0=equity*np.array(E_intCarry)/sum(E_intCarry)
         #x1 = x0/np.max([1-margin_constraint['fun'](x0)/equity,1-stopout_constraint['fun'](x0)/equity])
-        x1=xt
+        x1 = xt*0
         callbackF(x1, progress_display,(True if 'verbose' in optional_params else False))
 
         res = scipy.optimize.minimize(objective, x1, method='SLSQP', jac=objective_jac,
@@ -470,8 +475,8 @@ def cash_carry_optimizer(exchange, futures,
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
         summary['RealizedCarry'] = xt*(intCarry+intUSDborrow)
-        summary['excessIM'] = excess_margin.shockedEstimate(res['x'])['IM']
-        summary['excessMM'] = BasisMarginCalculator.shockedEstimate(res['x'])['MM']
+        summary['excessIM'] = summary.apply(lambda f:excess_margin.shockedEstimate(res['x'])['IM'].loc[[f.name.split('-PERP')[0]+'/USD',f.name.split('-PERP')[0]+'/USD:USD']].sum(),axis=1)
+        summary['excessMM'] = summary.apply(lambda f:excess_margin.shockedEstimate(res['x'])['MM'].loc[[f.name.split('-PERP')[0]+'/USD',f.name.split('-PERP')[0]+'/USD:USD']].sum(),axis=1)
 
         weight_move=summary['optimalWeight']-previous_weights
         summary['transactionCost']=weight_move*futures['buy_slippage']
@@ -484,8 +489,8 @@ def cash_carry_optimizer(exchange, futures,
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
         summary.loc['USD', 'RealizedCarry'] = np.min([0,equity-previous_weights.sum()])* intUSDborrow
-        summary.loc['USD', 'excessIM'] = BasisMarginCalculator.shockedEstimate(res['x'])['totalIM']-sum(BasisMarginCalculator.shockedEstimate(res['x'])['IM'])
-        summary.loc['USD', 'excessMM'] = BasisMarginCalculator.shockedEstimate(res['x'])['totalMM']-sum(BasisMarginCalculator.shockedEstimate(res['x'])['MM'])
+        summary.loc['USD', 'excessIM'] = excess_margin.shockedEstimate(res['x'])['totalIM']-summary['excessIM'].sum()
+        summary.loc['USD', 'excessMM'] = excess_margin.shockedEstimate(res['x'])['totalMM']-summary['excessMM'].sum()
         summary.loc['USD', 'transactionCost'] = 0
 
         summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark'].mean()

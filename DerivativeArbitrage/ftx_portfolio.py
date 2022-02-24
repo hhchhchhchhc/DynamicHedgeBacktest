@@ -200,7 +200,7 @@ class BasisMarginCalculator(MarginCalculator):
         # aggregate
         IM = pd.DataFrame([collateral]).T - pd.DataFrame([im_short]).T
         IM = IM.append(-pd.DataFrame([im_fut]).T)
-        totalIM = self._equity - sum(x) - 0.1 * max([0, sum(x) - self._equity]) + sum(IM[0])
+        totalIM = self._equity - sum(x) - 0.1 * max([0, sum(x) - self._equity]) + sum(IM[0])  - self._equity*OPEN_ORDERS_HEADROOM
         totalMM = self._equity - sum(x) - 0.03 * max([0, sum(x) - self._equity]) + min(
             [sum_MM, sum_MM_up, sum_MM_down])
 
