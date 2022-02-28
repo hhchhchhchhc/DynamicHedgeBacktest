@@ -108,20 +108,8 @@ class myFtx(ccxtpro.ftx):
 
         ## order/fill/ack details. except for global risk.
         if len(order_event.keys())>1:
-            if event_type=='order':
-                event_record |= {key: order_event[key] for key in
+            event_record |= {key: order_event[key] for key in
                              ['side', 'price', 'amount', 'type', 'id', 'filled', 'clientOrderId'] + (['acknowledge_delay'] if 'acknowledge_delay' in order_event.keys() else [])}
-            elif event_type=='fill':
-                def translate(key):
-                    if key == 'takerOrMaker': return 'type'
-                    elif key == 'order': return 'id'
-                    elif key == 'id': return 'clientOrderId'
-                    else: return key
-                event_record |= {translate(key): order_event[key] for key in
-                                 ['side', 'price', 'amount', 'takerOrMaker', 'order','id'] + (['acknowledge_delay'] if 'acknowledge_delay' in order_event.keys() else [])}
-            elif event_type=='cancel':
-                event_record |= {key: order_event[key] for key in
-                                 ['side', 'price', 'amount', 'type', 'id', 'filled', 'clientOrderId'] + (['acknowledge_delay'] if 'acknowledge_delay' in order_event.keys() else [])}
 
         ## risk details
         risk_data = self.risk_state[coin]
@@ -146,7 +134,7 @@ class myFtx(ccxtpro.ftx):
         filename = 'Runtime/logs/latest_events.json'
         with open(filename,mode='w') as file:
             json.dump(self.event_records, file,cls=NpEncoder)
-        shutil.copy2(filename, 'Runtime/logs/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%Hh")+'_events.json')
+        shutil.copy2(filename, 'Runtime/logs/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_events.json')
 
     def filter_orders(self,key_value_dict):
         if self.orders:
@@ -281,7 +269,7 @@ class myFtx(ccxtpro.ftx):
                          "%Y-%m-%d-%Hh") + '_request.json')
 
     async def fetch_risk(self, params=[]):
-        ''' updates risk in USD. Should be handle_my_trade but needs a coroutine :(
+        ''' updates risk in USD.
             all symbols not present when state is built are ignored !
             if some tickers are not initialized, just use markets'''
         risks= await asyncio.gather(*[self.fetch_positions(),self.fetch_balance()])
@@ -361,7 +349,10 @@ class myFtx(ccxtpro.ftx):
 
     async def peg_or_stopout(self,symbol,size,orderbook_depth,edit_trigger_depth,edit_price_depth,stop_depth=None):
         '''creates of edit orders, pegging to orderbook
-        size in coin, already filtered'''
+        size in coin, already filtered
+        skips if any in_flight, cancels duplicates, add any cancellations to event_records
+        extensive exception handling
+        '''
         coin = self.markets[symbol]['base']
         #orders = self.orders if self.orders else await self.fetch_open_orders(symbol=symbol)
         #orders = await self.fetch_open_orders(symbol=symbol)
@@ -391,9 +382,11 @@ class myFtx(ccxtpro.ftx):
             orders = self.filter_orders({'symbol':symbol, 'status':'open'})
             if len(orders) > 1:
                 for order in orders[:-1]:
-                    self.log_order_event('cancel', order)
                     await self.cancel_order(order['id'])
-                    return order
+                    found = next(x for x in self.event_records if 'id' in x and x['id'] == order['id'])
+                    if found:
+                        found |= {'cancel_timestamp': (self.milliseconds() - self.exec_parameters['timestamp'])}
+                    self.logger.warning('cancelled duplicate {} order {}'.format(symbol,order['id']))
 
             if len(orders)==0:
                 clientOrderId = f'new_{symbol}_{str(self.milliseconds())}'
@@ -405,18 +398,23 @@ class myFtx(ccxtpro.ftx):
                 if stop_depth \
                         and order_distance>stop_trigger \
                         and orders[0]['remaining']>sizeIncrement:
-                    clientOrderId = f'stop_{symbol}_{str(self.milliseconds())}'
+                    found = next(x for x in self.event_records if 'id' in x and x['id'] == orders[0]['id'])
                     result = await asyncio.gather(*[self.create_market_order(symbol, 'buy' if size>0 else 'sell',orders[0]['remaining']),
                                                     self.cancel_order(orders[0]['id'])])
+                    if found:
+                        found |= {'cancel_timestamp': self.milliseconds() - self.exec_parameters['timestamp']}
+
                     order = result[0]
-                    order['clientOrderId'] = clientOrderId
+                    order['clientOrderId'] = f'stop_{symbol}_{str(self.milliseconds())}'
                 # chase
                 if (order_distance>edit_trigger) \
                         and (np.abs(edit_price-orders[0]['price'])>=priceIncrement) \
                         and (orders[0]['remaining']>sizeIncrement):
-                    clientOrderId = f'chase_{symbol}_{str(self.milliseconds())}'  ## careful: edit in fact lookups by clientOrderId !
+                    found = next(x for x in self.event_records if 'id' in x and x['id'] == orders[0]['id'])
                     order = await self.edit_order(orders[0]['id'], symbol, 'limit', 'buy' if size>0 else 'sell', None ,price=edit_price,params={'postOnly': True})
-                    order['clientOrderId'] = clientOrderId
+                    if found:
+                        found |= {'cancel_timestamp': self.milliseconds() - self.exec_parameters['timestamp']}
+                    order['clientOrderId'] = f'chase_{symbol}_{str(self.milliseconds())}'  ## careful: edit in fact lookups by clientOrderId !
 
         ### see error_hierarchy in DerivativeArbitrage/venv/Lib/site-packages/ccxt/base/errors.py
         except ccxt.InsufficientFunds as e: # is ExchangeError
@@ -428,15 +426,15 @@ class myFtx(ccxtpro.ftx):
             elif ("Order already closed" in str(e)) or ("Order not found" in str(e)):
                 fetched_fills = await self.fetch_my_trades(symbol,since=self.exec_parameters['timestamp'],limit=1000)
                 fetched_orders = await self.fetch_orders(symbol,since=self.exec_parameters['timestamp'],limit=1000)
-                self.logger.warning(str(e) + str(orders[0]), exc_info=True)
+                self.logger.warning(str(e) + str(orders[0]))
             elif ("Size too small for provide" or "Size too small") in str(e):
                 # usually because filled btw remaining checked and order modify
-                self.logger.warning('{}: {} too small {}...or {} < {}'.format(order,np.abs(size),sizeIncrement,clientOrderId.split('_')[2],'order[timestamp]'), exc_info=True)
+                self.logger.warning('{}: {} too small {}...or {} < {}'.format(order,np.abs(size),sizeIncrement,clientOrderId.split('_')[2],'order[timestamp]'))
             else:
-                self.logger.warning(str(e) + str(order), exc_info=True)
+                self.logger.warning(str(e) + str(order))
         except ccxt.ExchangeError as e:  # is base error
             if "Must modify either price or size" in str(e):
-                self.logger.warning(str(e) + str(orders[0]), exc_info=True)
+                self.logger.warning(str(e) + str(orders[0]))
             else:
                 self.logger.warning(str(e), exc_info=True)
         except ccxt.DDoSProtection as e: # is NetworkError
@@ -461,7 +459,7 @@ class myFtx(ccxtpro.ftx):
                     if str(e)!='': return
                     else: raise e
                 except ccxt.NetworkError as e:
-                    self.logger.warning(str(e),exc_info=True)
+                    self.logger.debug(str(e))
                     continue
                 except Exception as e:
                     self.logger.exception(e, exc_info=True)
@@ -476,7 +474,8 @@ class myFtx(ccxtpro.ftx):
     @loop_and_callback
     async def order_master(self,symbol):
         '''on each top of book update, update market_state and send orders
-        tunes aggressiveness according to risk'''
+        tunes aggressiveness according to risk.
+        populates event_records, maintains in_flight'''
         coin = self.markets[symbol]['base']
 
         # watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...
@@ -515,7 +514,7 @@ class myFtx(ccxtpro.ftx):
         size = params['target'] - delta
         # size < slice_size and margin_headroom
         size = np.sign(size)*float(self.amount_to_precision(symbol, min([np.abs(size), params['slice_size']])))
-        if (np.abs(size) == 0):
+        if (np.abs(size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
             self.done+=[symbol]
             if all(symbol_ in self.done
                    for coin,coin_data in self.exec_parameters.items() if coin in self.currencies
@@ -525,16 +524,16 @@ class myFtx(ccxtpro.ftx):
             else:
                 self.logger.info(f'{symbol} done')
                 raise myFtx.DoneDeal(symbol)
-
-        order = None
-
         # if not enough margin, hold it
         if self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance) > self.margin_headroom:
             await asyncio.sleep(60) # TODO: I don't know how to stop/restart a thread..
             self.logger.info('margin {} too small for order size {}'.format(size*mid, self.margin_headroom))
             return None
+
+        order = None
+
         # if increases risk, go passive
-        elif np.abs(netDelta+size)-np.abs(netDelta)>0:
+        if np.abs(netDelta+size)-np.abs(netDelta)>0:
             if self.exec_parameters[coin]['entry_level'] is None: # for a purely risk reducing exercise
                 self.done += [symbol]
                 self.logger.info(myFtx.DoneDeal(symbol))
@@ -546,6 +545,7 @@ class myFtx(ccxtpro.ftx):
             edit_price_depth = (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
             edit_trigger_depth=params['edit_trigger_depth']
             order = await self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=None)
+        # if decrease risk, go aggressive
         else:
             edit_trigger_depth=params['edit_trigger_depth']
             edit_price_depth=params['edit_price_depth']
@@ -553,22 +553,26 @@ class myFtx(ccxtpro.ftx):
             order = await self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
         if order is not None:
-            # acknowledge_delay needs to work both ways
+            self.log_order_event('order',order)
+
             in_flight = not ((symbol in self.orders.hashmap) and (order['id'] in self.orders.hashmap[symbol]))
             if in_flight:
                 self.orders_in_flight[order['id']] = order
 
-            self.log_order_event('order',order)
+
 
     @loop_and_callback
     async def monitor_fills(self):
-        '''logs fills'''
         fills = await self.watch_my_trades(limit=1)
 
-        # await self.fetch_risk() is safer but slower. we have monitor_risk to reconcile
-        fill = fills[-1]
-        coin = self.markets[fill['symbol']]['base']
+    def handle_my_trade(self, client, message):
+        '''maintains risk_state, event_records, logger.info
+        await self.fetch_risk() is safer but slower. we have monitor_risk to reconcile'''
+        super().handle_my_trade(client, message)
+        data = self.safe_value(message, 'data')
+        fill = self.parse_trade(data)
         symbol = fill['symbol']
+        coin = self.markets[symbol]['base']
 
         # update risk_state
         data = self.risk_state[coin][symbol]
@@ -576,11 +580,18 @@ class myFtx(ccxtpro.ftx):
         data['delta'] += fill_size
         data['delta_timestamp'] = fill['timestamp']
         latest_delta = data['delta_id']
-        data['delta_id'] = max(latest_delta or 0,int(fill['id']))
+        data['delta_id'] = max(latest_delta or 0,int(fill['orderId']))
         self.risk_state[coin]['netDelta'] += fill_size
 
-        self.log_order_event('fill', fill)
+        # log event
+        found = next(x for x in self.event_records if 'id' in x and x['id'] == fill['orderId'])
+        fill_count = len([key for key in fill.keys() if 'fill_timestamp' in key])
+        if found:
+            found |= {'fill_timestamp_'+fill_count: fill['timestamp'] - self.exec_parameters['timestamp'],
+                  'price'+fill_count:fill['price'],
+                  'amount'+fill_count:fill['amount']}
 
+        # logger.info
         self.logger.info('{} fill at {}: {} {} {} at {}'.format(symbol,
                             fill['timestamp'] - self.exec_parameters['timestamp'],
                             fill['side'],fill['amount'],symbol,fill['price']))
@@ -611,15 +622,14 @@ class myFtx(ccxtpro.ftx):
         await asyncio.sleep(self.limit.check_frequency)
 
     def handle_order(self, client, message):
-        '''logs newly ackownledged orders. If present in self.orders then amend'''
+        '''maintains in_flight, event_records'''
         super().handle_order(client, message)
         data = self.safe_value(message, 'data')
         order = self.parse_order(data)
 
-        found = self.filter_orders({'symbol':order['symbol'],'id':order['id']})[0]
-        acknowledge_delay = self.milliseconds() - self.exec_parameters['timestamp']
-        if 'acknowledge_delay' not in found.keys():
-            found |= {'acknowledge_delay':acknowledge_delay}#TODO: does that work ? filter_orders by ref not by adres
+        found = next(x for x in self.event_records if 'id' in x and x['id'] == order['id'])
+        if found:
+            found |= {'acknowledge_delay':self.milliseconds() - found['createdAt']}
 
         in_flight = order['id'] in self.orders_in_flight
         if in_flight:
@@ -737,9 +747,9 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
 def ftx_ws_spread_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['sysperp'])
+        argv.extend(['unwind'])
     if len(argv) < 3:
-        argv.extend(['ftx', 'debug'])
+        argv.extend(['ftx', 'SysPerp'])
     logging.info(f'running {argv}')
     loop = asyncio.new_event_loop()
     if argv[0] in ['sysperp', 'flatten','unwind','spread']:
