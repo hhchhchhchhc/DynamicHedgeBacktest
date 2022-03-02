@@ -209,3 +209,21 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
 async def fetch_latencyStats(exchange,days,subaccount_nickname):
     stats = await exchange.privateGetStatsLatencyStats({'days':days,'subaccount_nickname':subaccount_nickname})
     return stats['result']
+
+def sweep_price(exchange, symbol, size):
+    '''slippage of a mkt order: https://www.sciencedirect.com/science/article/pii/S0378426620303022'''
+    depth = 0
+    previous_side = exchange.orderbooks[symbol]['bids' if size >= 0 else 'asks'][0][0]
+    for pair in exchange.orderbooks[symbol]['bids' if size>=0 else 'asks']:
+        depth += pair[0] * pair[1]
+        if depth > size:
+            break
+        previous_side = pair[0]
+    depth=0
+    previous_opposite = exchange.orderbooks[symbol]['bids' if size < 0 else 'asks'][0][0]
+    for pair in exchange.orderbooks[symbol]['bids' if size<0 else 'asks']:
+        depth += pair[0] * pair[1]
+        if depth > size:
+            break
+        previous_opposite = pair[0]
+    return {'side':previous_side,'opposite':previous_opposite}

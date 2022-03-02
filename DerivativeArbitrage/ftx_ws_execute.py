@@ -19,26 +19,10 @@ edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(10) # stop on 10min stdev
 time_budget = 30*60 # 30m. used in transaction speed screener
 delta_limit = 0.2 # delta limit / pv
-slice_factor = 0.1 # % of request
+slice_factor = 0.25 # % of request
 edit_price_tolerance=np.sqrt(10/60)#price on 10s std
 
 class myFtx(ccxtpro.ftx):
-    class DoneDeal(Exception):
-        running_symbols = set()
-        def __init__(self,symbol=None):
-            if symbol is None:
-                super().__init__('all done')
-            else:
-                myFtx.DoneDeal.running_symbols.remove(symbol)
-                logging.info('{} still running'.format(myFtx.DoneDeal.running_symbols))
-                super().__init__('{} done'.format(symbol))
-
-    class LimitBreached(Exception):
-        def __init__(self,limit=None,check_frequency=600):
-            super().__init__()
-            self.limit = limit
-            self.check_frequency = check_frequency
-
     def __init__(self, config={}):
         super().__init__(config=config)
         self.event_records = []
@@ -58,58 +42,39 @@ class myFtx(ccxtpro.ftx):
         self.orders = ArrayCacheBySymbolById(limit)
         self.orders_in_flight = dict()
 
-    def build_logging(self):
-        '''3 handlers: >=debug, ==info and >=warning'''
-        class MyFilter(object):
-            '''this is to restrict info logger to info only'''
-            def __init__(self, level):
-                self.__level = level
+    # --------------------------------------------------------------------------------------------
+    # ---------------------------------- various helpers -----------------------------------------
+    # --------------------------------------------------------------------------------------------
 
-            def filter(self, logRecord):
-                return logRecord.levelno <= self.__level
+    class DoneDeal(Exception):
+        running_symbols = set()
+        def __init__(self,symbol=None):
+            if symbol is None:
+                super().__init__('all done')
+            else:
+                myFtx.DoneDeal.running_symbols.remove(symbol)
+                logging.info('{} still running'.format(myFtx.DoneDeal.running_symbols))
+                super().__init__('{} done'.format(symbol))
 
-        # logs
-        handler_warning = logging.FileHandler('Runtime/logs/warning.log', mode='w')
-        handler_warning.setLevel(logging.WARNING)
-        handler_warning.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
-        self.logger.addHandler(handler_warning)
+    class LimitBreached(Exception):
+        def __init__(self,limit=None,check_frequency=600):
+            super().__init__()
+            self.limit = limit
+            self.check_frequency = check_frequency
 
-        handler_info = logging.FileHandler('Runtime/logs/info.log', mode='w')
-        handler_info.setLevel(logging.INFO)
-        handler_info.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
-        handler_info.addFilter(MyFilter(logging.INFO))
-        self.logger.addHandler(handler_info)
-
-        handler_debug = logging.FileHandler('Runtime/logs/debug.log', mode='w')
-        handler_debug.setLevel(logging.DEBUG)
-        handler_debug.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
-        self.logger.addHandler(handler_debug)
-
-        handler_alert = logging.handlers.SMTPHandler(mailhost='smtp.google.com',
-                                                     fromaddr='david@pronoia.link',
-                                                     toaddrs=['david@pronoia.link'],
-                                                     subject='auto alert',
-                                                     credentials=('david@pronoia.link', ''),
-                                                     secure=None)
-        handler_alert.setLevel(logging.CRITICAL)
-        handler_alert.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
-        # self.logger.addHandler(handler_alert)
-
-        self.logger.setLevel(logging.DEBUG)
-
-    def log_order_event(self,event_type,order_event):
+    def lifecycle_order(self,order_event):
         ## generic info
         symbol = order_event['symbol']
         coin = self.markets[symbol]['base']
-        event_record = {'event_type':event_type,
+        event_record = {'event_type':'order' if len(order_event.keys()) > 1 else 'remote_risk',
                        'event_timestamp':self.milliseconds()-self.exec_parameters['timestamp'],
                        'coin': coin,
                        'symbol': symbol}
 
         ## order/fill/ack details. except for global risk.
-        if len(order_event.keys())>1:
+        if len(order_event.keys()) > 1:
             event_record |= {key: order_event[key] for key in
-                             ['side', 'price', 'amount', 'type', 'id', 'filled', 'clientOrderId'] + (['acknowledge_delay'] if 'acknowledge_delay' in order_event.keys() else [])}
+                         ['side', 'price', 'amount', 'type', 'id', 'filled', 'clientOrderId']}
 
         ## risk details
         risk_data = self.risk_state[coin]
@@ -131,10 +96,45 @@ class myFtx(ccxtpro.ftx):
                         | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
 
         self.event_records += [event_record]
-        filename = 'Runtime/logs/latest_events.json'
+
+    def lifecycle_fill(self,fill):
+        found = next(x for x in self.event_records if 'id' in x and x['id'] == fill['order'])
+        assert (found)
+        fill_count = str(len([key for key in fill.keys() if 'fill_timestamp' in key]))
+        found |= {'fill_timestamp_' + fill_count: fill['timestamp'] - self.exec_parameters['timestamp'],
+                  'price' + fill_count: fill['price'],
+                  'amount' + fill_count: fill['amount']}
+
+    def lifecycle_cancel(self,id):
+        found = next(x for x in self.event_records if 'id' in x and x['id'] == id)
+        assert(found)
+        found |= {'cancel_timestamp': self.milliseconds() - self.exec_parameters['timestamp']}
+
+    def lifecycle_to_json(self,filename = 'Runtime/logs/latest_events.json'):
         with open(filename,mode='w') as file:
             json.dump(self.event_records, file,cls=NpEncoder)
         shutil.copy2(filename, 'Runtime/logs/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_events.json')
+
+    def loop_and_callback(func):
+        @functools.wraps(func)
+        async def wrapper_loop(*args, **kwargs):
+            self=args[0]
+            while True:
+                try:
+                    value = await func(*args, **kwargs)
+                except myFtx.DoneDeal as e:
+                    if str(e)!='': return
+                    else: raise e
+                except ccxt.NetworkError as e:
+                    self.logger.debug(str(e))
+                    if isinstance(e, ccxt.DDoSProtection):
+                        await asyncio.sleep(1)
+                    continue
+                except Exception as e:
+                    self.logger.exception(e, exc_info=True)
+                    raise e
+
+        return wrapper_loop
 
     def filter_orders(self,key_value_dict):
         if self.orders:
@@ -142,44 +142,13 @@ class myFtx(ccxtpro.ftx):
         else:
             return []
 
-    def not_used_on_connected(self, client, message=None):
-        '''after a disconnection, reconcile state'''
+    def mid(self,symbol):
+        data = self.tickers[symbol] if symbol in self.tickers else self.markets[symbol]['info']
+        return 0.5*(float(data['bid'])+float(data['ask']))
 
-        def sync_call(coro, *args, **kwargs):
-            '''hack to run coroutines inside syncronous functions'''
-            task = self.asyncio_loop.create_task(coro(*args, **kwargs))
-            future = asyncio.wait([task])
-            self.asyncio_loop.run_until_complete(future)
-            return task.result()
-
-        async def reconcile_state():
-            last_fill = self.myTrades[-1]['timestamp'] if self.myTrades else self.exec_parameters['timestamp']
-            fills = sync_call(self.fetch_my_trades,since=last_fill)
-            for fill in fills:
-                self.handle_my_trade(self.clients[0], {'data': fill})
-
-            last_order = max(order['timestamp'] for order in self.orders) if self.orders else self.exec_parameters[
-                'timestamp']
-            orders = sync_call(self.fetch_orders,since=last_order)
-            for order in orders:
-                self.handle_order(self.clients[0], {'data': order})
-
-            self.logger.debug('updated {} fills, {} orders after reconnection'.format(len(fills), len(orders)))
-        self.asyncio_loop.run_until_complete(reconcile_state)
-
-    async def create_order(self, symbol, type, side, amount, price=None, params={}):
-        '''always await ackowledgement'''
-        order = await super().create_order(symbol, type, side, amount, price, params)
-        self.log_order_event('order', order)
-
-    async def cancel_order(self, id, symbol=None, params={}):
-        '''always await ackowledgement'''
-        await super().cancel_order(id, symbol, params)
-        found = next(x for x in self.event_records if 'id' in x and x['id'] == id)
-        if found:
-            found |= {'cancel_timestamp': (self.milliseconds() - self.exec_parameters['timestamp'])}
-        else:
-            self.logger.exception(f'{id} on {symbol} not found')
+    # ---------------------------------------------------------------------------------------------
+    # ---------------------------------- state management -----------------------------------------
+    # ---------------------------------------------------------------------------------------------
 
     async def build_state(self, weights,
                           entry_tolerance = entry_tolerance,
@@ -360,31 +329,161 @@ class myFtx(ccxtpro.ftx):
         self.margin_calculator.actual(account_info) if float(account_info['totalPositionSize']) else self.pv
         self.margin_headroom = self.margin_calculator.actual_IM
 
-        [self.log_order_event('remote_risk',{'symbol':symbol})
+        [self.lifecycle_order({'symbol':symbol}) # kinda hack but logs it...
          for coin,coin_data in self.risk_state.items()
          for symbol in coin_data.keys() if symbol in self.markets]
 
-    def mid(self,symbol):
-        data = self.tickers[symbol] if symbol in self.tickers else self.markets[symbol]['info']
-        return 0.5*(float(data['bid'])+float(data['ask']))
+    @loop_and_callback
+    async def monitor_fills(self):
+        fills = await self.watch_my_trades()#limit=1)
+        return
 
-    def sweep_price(self, symbol, size):
-        '''slippage of a mkt order: https://www.sciencedirect.com/science/article/pii/S0378426620303022'''
-        depth = 0
-        previous_side = self.orderbooks[symbol]['bids' if size >= 0 else 'asks'][0][0]
-        for pair in self.orderbooks[symbol]['bids' if size>=0 else 'asks']:
-            depth += pair[0] * pair[1]
-            if depth > size:
-                break
-            previous_side = pair[0]
-        depth=0
-        previous_opposite = self.orderbooks[symbol]['bids' if size < 0 else 'asks'][0][0]
-        for pair in self.orderbooks[symbol]['bids' if size<0 else 'asks']:
-            depth += pair[0] * pair[1]
-            if depth > size:
-                break
-            previous_opposite = pair[0]
-        return {'side':previous_side,'opposite':previous_opposite}
+    def handle_my_trade(self, client, message):
+        '''maintains risk_state, event_records, logger.info
+        await self.fetch_risk() is safer but slower. we have monitor_risk to reconcile'''
+        super().handle_my_trade(client, message)
+        data = self.safe_value(message, 'data')
+        fill = self.parse_trade(data)
+        symbol = fill['symbol']
+        coin = self.markets[symbol]['base']
+
+        # update risk_state
+        data = self.risk_state[coin][symbol]
+        fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1)*fill['price']
+        data['delta'] += fill_size
+        data['delta_timestamp'] = fill['timestamp']
+        latest_delta = data['delta_id']
+        data['delta_id'] = max(latest_delta or 0,int(fill['order']))
+        self.risk_state[coin]['netDelta'] += fill_size
+
+        # log event
+        self.event_records.append_fill(fill)
+
+        # logger.info
+        self.logger.info('{} fill at {}: {} {} {} at {}'.format(symbol,
+                            fill['timestamp'] - self.exec_parameters['timestamp'],
+                            fill['side'],fill['amount'],symbol,fill['price']))
+
+        current = self.risk_state[coin][symbol]['delta']
+        initial =self.exec_parameters[coin][symbol]['target'] * fill['price'] -self.exec_parameters[coin][symbol]['diff'] * fill['price']
+        target=self.exec_parameters[coin][symbol]['target'] * fill['price']
+        self.logger.info('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
+            symbol,
+            self.risk_state[coin][symbol]['delta_timestamp']- self.exec_parameters['timestamp'],
+            (current-initial)/(target-initial)*100,
+            current,
+            initial,
+            target))
+
+    @loop_and_callback
+    async def monitor_risk(self):
+        '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
+        await self.fetch_risk()
+
+        self.limit.limit = self.pv * self.limit.delta_limit
+        absolute_risk = sum(abs(data['netDelta']) for data in self.risk_state.values())
+        if absolute_risk > self.limit.limit:
+            self.logger.warning(f'absolute_risk {absolute_risk} > {self.limit.limit}')
+        if self.margin_headroom < self.pv/100:
+            self.logger.warning(f'IM {self.margin_headroom}  < 1%')
+
+        await asyncio.sleep(self.limit.check_frequency)
+
+    # ------------------------------------------------------------------------------------
+    # ---------------------------------- logging -----------------------------------------
+    # ------------------------------------------------------------------------------------
+
+    def build_logging(self):
+        '''3 handlers: >=debug, ==info and >=warning'''
+        class MyFilter(object):
+            '''this is to restrict info logger to info only'''
+            def __init__(self, level):
+                self.__level = level
+
+            def filter(self, logRecord):
+                return logRecord.levelno <= self.__level
+
+        # logs
+        handler_warning = logging.FileHandler('Runtime/logs/warning.log', mode='w')
+        handler_warning.setLevel(logging.WARNING)
+        handler_warning.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
+        self.logger.addHandler(handler_warning)
+
+        handler_info = logging.FileHandler('Runtime/logs/info.log', mode='w')
+        handler_info.setLevel(logging.INFO)
+        handler_info.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
+        handler_info.addFilter(MyFilter(logging.INFO))
+        self.logger.addHandler(handler_info)
+
+        handler_debug = logging.FileHandler('Runtime/logs/debug.log', mode='w')
+        handler_debug.setLevel(logging.DEBUG)
+        handler_debug.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
+        self.logger.addHandler(handler_debug)
+
+        handler_alert = logging.handlers.SMTPHandler(mailhost='smtp.google.com',
+                                                     fromaddr='david@pronoia.link',
+                                                     toaddrs=['david@pronoia.link'],
+                                                     subject='auto alert',
+                                                     credentials=('david@pronoia.link', ''),
+                                                     secure=None)
+        handler_alert.setLevel(logging.CRITICAL)
+        handler_alert.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
+        # self.logger.addHandler(handler_alert)
+
+        self.logger.setLevel(logging.DEBUG)
+
+    # --------------------------------------------------------------------------------------------
+    # ---------------------------------- order placement -----------------------------------------
+    # --------------------------------------------------------------------------------------------
+
+    async def create_order(self, symbol, type, side, amount, price=None, params={}):
+        '''always await ackowledgement'''
+        coin = self.markets[symbol]['base']
+        if coin in self.orders_in_flight:
+            self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
+            await asyncio.sleep(0.01)
+        else:
+            self.orders_in_flight[coin] = [params['clientOrderId']]
+            order = await super().create_order(symbol, type, side, amount, price, params)
+            self.lifecycle_order(order)
+            #orders = await self.watch_orders(symbol=symbol,limit=1)
+            #assert(orders[0]['clientOrderId']==params['clientOrderId'])
+            self.orders_in_flight.__delitem__(coin)
+            if self.orders is None:
+                limit = self.safe_integer(self.options, 'ordersLimit', 1000)
+                self.orders = ArrayCacheBySymbolById(limit)
+            self.orders.append(order)
+
+    async def edit_order(self, id, symbol, type, side, amount, price=None, params={}):
+        '''always await ackowledgement'''
+        coin = self.markets[symbol]['base']
+        if coin in self.orders_in_flight:
+            self.logger.info('orders {} still in flight. holding off.'.format(self.orders_in_flight[coin]))
+        else:
+            self.orders_in_flight[coin] = [params['clientOrderId']]
+            order = await super().edit_order(id, symbol, type, side, amount, price, params)
+            self.lifecycle_order(order)
+            #orders = await self.watch_orders(symbol=symbol,limit=1)
+            #assert(orders[0]['clientOrderId']==params['clientOrderId'])
+            self.orders_in_flight.__delitem__(coin)
+            if self.orders is None:
+                limit = self.safe_integer(self.options, 'ordersLimit', 1000)
+                self.orders = ArrayCacheBySymbolById(limit)
+            self.orders.append(order)
+
+    async def cancel_order(self, id, symbol=None, params={}):
+        '''always await ackowledgement'''
+        coin = self.markets[symbol]['base']
+        if coin in self.orders_in_flight:
+            self.logger.info('orders {} still in flight. holding off.'.format(self.orders_in_flight[coin]))
+        else:
+            self.orders_in_flight[coin] = [params['clientOrderId']]
+            await super().cancel_order(id, symbol, params)
+            self.lifecycle_cancel(id)
+            #orders = await self.watch_orders(symbol=symbol,limit=1)
+            #assert(orders[0]['clientOrderId']==params['clientOrderId'])
+            self.orders_in_flight.__delitem__(coin)
+            self.orders.__delitem__(id)
 
     async def peg_or_stopout(self,symbol,size,orderbook_depth,edit_trigger_depth,edit_price_depth,stop_depth=None):
         '''creates of edit orders, pegging to orderbook
@@ -410,10 +509,6 @@ class myFtx(ccxtpro.ftx):
 
         try:
             order = None
-            in_flight = [order['clientOrderId'] for order in self.orders_in_flight.values() if order['symbol'] == symbol]
-            if in_flight:
-                logging.info('orders {} still in flight. holding off.'.format(in_flight))
-                return order
             orders = self.filter_orders({'symbol':symbol, 'status':'open'})
             if len(orders) > 1:
                 for order in orders[:-1]:
@@ -429,9 +524,11 @@ class myFtx(ccxtpro.ftx):
                 if stop_depth \
                         and order_distance>stop_trigger \
                         and orders[0]['remaining']>sizeIncrement:
-                    clientOrderId = f'stop_{symbol}_{str(self.milliseconds())}'
-                    result = await asyncio.gather(*[self.create_market_order(symbol, 'buy' if size>0 else 'sell',orders[0]['remaining'],params={'clientOrderId':clientOrderId}),
-                                                    self.cancel_order(orders[0]['id'])])
+                    nowtime =  self.milliseconds()
+                    clientMktOrderId = f'stop_{symbol}_{str(nowtime)}'
+                    clientCancelOrderId = f'cancel_{symbol}_{str(nowtime)}'
+                    result = await asyncio.gather(*[self.create_market_order(symbol, 'buy' if size>0 else 'sell',orders[0]['remaining'],params={'clientOrderId':clientMktOrderId}),
+                                                    self.cancel_order(orders[0]['id'],params={'clientOrderId':clientCancelOrderId})])
                     order = result[0]
                 # chase
                 if (order_distance>edit_trigger) \
@@ -466,27 +563,6 @@ class myFtx(ccxtpro.ftx):
             raise e
 
         return order
-
-    def loop_and_callback(func):
-        @functools.wraps(func)
-        async def wrapper_loop(*args, **kwargs):
-            self=args[0]
-            while True:
-                try:
-                    value = await func(*args, **kwargs)
-                except myFtx.DoneDeal as e:
-                    if str(e)!='': return
-                    else: raise e
-                except ccxt.NetworkError as e:
-                    self.logger.debug(str(e))
-                    if isinstance(e, ccxt.DDoSProtection):
-                        await asyncio.sleep(1)
-                    continue
-                except Exception as e:
-                    self.logger.exception(e, exc_info=True)
-                    raise e
-
-        return wrapper_loop
 
     async def watch_ticker(self, symbol, params={}):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
@@ -545,11 +621,11 @@ class myFtx(ccxtpro.ftx):
             else:
                 self.logger.info(f'{symbol} done')
                 raise myFtx.DoneDeal(symbol)
-        # if not enough margin, hold it
-        if self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance) > self.margin_headroom:
-            await asyncio.sleep(60) # TODO: I don't know how to stop/restart a thread..
-            self.logger.info('margin {} too small for order size {}'.format(size*mid, self.margin_headroom))
-            return None
+        # if not enough margin, hold it# TODO: this may be slow, and depends on orders anyway
+        #if self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance) > self.margin_headroom:
+        #    await asyncio.sleep(60) # TODO: I don't know how to stop/restart a thread..
+        #    self.logger.info('margin {} too small for order size {}'.format(size*mid, self.margin_headroom))
+        #    return None
 
         order = None
 
@@ -572,65 +648,6 @@ class myFtx(ccxtpro.ftx):
             edit_price_depth=params['edit_price_depth']
             stop_depth=params['stop_depth']
             order = await self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
-
-    @loop_and_callback
-    async def monitor_fills(self):
-        fills = await self.watch_my_trades()#limit=1)
-
-    def handle_my_trade(self, client, message):
-        '''maintains risk_state, event_records, logger.info
-        await self.fetch_risk() is safer but slower. we have monitor_risk to reconcile'''
-        super().handle_my_trade(client, message)
-        data = self.safe_value(message, 'data')
-        fill = self.parse_trade(data)
-        symbol = fill['symbol']
-        coin = self.markets[symbol]['base']
-
-        # update risk_state
-        data = self.risk_state[coin][symbol]
-        fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1)*fill['price']
-        data['delta'] += fill_size
-        data['delta_timestamp'] = fill['timestamp']
-        latest_delta = data['delta_id']
-        data['delta_id'] = max(latest_delta or 0,int(fill['order']))
-        self.risk_state[coin]['netDelta'] += fill_size
-
-        # log event
-        found = next(x for x in self.event_records if 'id' in x and x['id'] == fill['order'])
-        fill_count = str(len([key for key in fill.keys() if 'fill_timestamp' in key]))
-        found |= {'fill_timestamp_'+fill_count: fill['timestamp'] - self.exec_parameters['timestamp'],
-              'price'+fill_count:fill['price'],
-              'amount'+fill_count:fill['amount']}
-
-        # logger.info
-        self.logger.info('{} fill at {}: {} {} {} at {}'.format(symbol,
-                            fill['timestamp'] - self.exec_parameters['timestamp'],
-                            fill['side'],fill['amount'],symbol,fill['price']))
-
-        current = self.risk_state[coin][symbol]['delta']
-        initial =self.exec_parameters[coin][symbol]['target'] * fill['price'] -self.exec_parameters[coin][symbol]['diff'] * fill['price']
-        target=self.exec_parameters[coin][symbol]['target'] * fill['price']
-        self.logger.info('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
-            symbol,
-            self.risk_state[coin][symbol]['delta_timestamp']- self.exec_parameters['timestamp'],
-            (current-initial)/(target-initial)*100,
-            current,
-            initial,
-            target))
-
-    @loop_and_callback
-    async def monitor_risk(self):
-        '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
-        await self.fetch_risk()
-
-        self.limit.limit = self.pv * self.limit.delta_limit
-        absolute_risk = sum(abs(data['netDelta']) for data in self.risk_state.values())
-        if absolute_risk > self.limit.limit:
-            self.logger.warning(f'absolute_risk {absolute_risk} > {self.limit.limit}')
-        if self.margin_headroom < self.pv/100:
-            self.logger.warning(f'IM {self.margin_headroom}  < 1%')
-
-        await asyncio.sleep(self.limit.check_frequency)
 
 async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     exchange = myFtx({
@@ -739,7 +756,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
 def ftx_ws_spread_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['sysperp'])
+        argv.extend(['flatten'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     logging.info(f'running {argv}')
@@ -751,3 +768,30 @@ def ftx_ws_spread_main(*argv):
 
 if __name__ == "__main__":
     ftx_ws_spread_main(*sys.argv[1:])
+
+
+
+    # def not_used_on_connected(self, client, message=None):
+    #     '''after a disconnection, reconcile state'''
+    #
+    #     def sync_call(coro, *args, **kwargs):
+    #         '''hack to run coroutines inside syncronous functions'''
+    #         task = self.asyncio_loop.create_task(coro(*args, **kwargs))
+    #         future = asyncio.wait([task])
+    #         self.asyncio_loop.run_until_complete(future)
+    #         return task.result()
+    #
+    #     async def reconcile_state():
+    #         last_fill = self.myTrades[-1]['timestamp'] if self.myTrades else self.exec_parameters['timestamp']
+    #         fills = sync_call(self.fetch_my_trades,since=last_fill)
+    #         for fill in fills:
+    #             self.handle_my_trade(self.clients[0], {'data': fill})
+    #
+    #         last_order = max(order['timestamp'] for order in self.orders) if self.orders else self.exec_parameters[
+    #             'timestamp']
+    #         orders = sync_call(self.fetch_orders,since=last_order)
+    #         for order in orders:
+    #             self.handle_order(self.clients[0], {'data': order})
+    #
+    #         self.logger.debug('updated {} fills, {} orders after reconnection'.format(len(fills), len(orders)))
+    #     self.asyncio_loop.run_until_complete(reconcile_state)
