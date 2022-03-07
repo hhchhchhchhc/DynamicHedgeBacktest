@@ -14,7 +14,7 @@ from ftx_portfolio import diff_portoflio,MarginCalculator
 from ftx_history import fetch_trades_history
 from ftx_ftx import fetch_latencyStats,fetch_futures
 
-max_nb_coins = 7  # TODO: sharding needed
+max_nb_coins = 10  # TODO: sharding needed
 entry_tolerance = 0.5 # green light if basket better than median
 edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(10) # stop on 10min stdev
@@ -93,6 +93,7 @@ class myFtx(ccxtpro.ftx):
                         | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
 
         self.event_records += [event_record]
+        self.lifecycle_to_json()
 
     def lifecycle_ackowledgment(self,order_event):
         found = next(x for x in self.event_records if 'clientOrderId' in x and x['clientOrderId'] == order_event['clientOrderId'])
@@ -100,6 +101,7 @@ class myFtx(ccxtpro.ftx):
         found |= {'acknowledge_timestamp':self.milliseconds()-self.exec_parameters['timestamp']}
         found |= {key: order_event[key] for key in
                          ['side', 'price', 'amount', 'type', 'id']}
+        self.lifecycle_to_json()
 
     def lifecycle_fill(self,fill):
         found = next(x for x in self.event_records if 'id' in x and x['id'] == fill['order'])
@@ -108,11 +110,13 @@ class myFtx(ccxtpro.ftx):
         found |= {'fill_timestamp_' + fill_count: fill['timestamp'] - self.exec_parameters['timestamp'],
                   'price' + fill_count: fill['price'],
                   'amount' + fill_count: fill['amount']}
+        self.lifecycle_to_json()
 
     def lifecycle_cancel(self,id):
         found = next(x for x in self.event_records if 'id' in x and x['id'] == id)
         assert(found)
         found |= {'cancel_timestamp': self.milliseconds() - self.exec_parameters['timestamp']}
+        self.lifecycle_to_json()
 
     def lifecycle_to_json(self,filename = 'Runtime/logs/latest_events.json'):
         with open(filename,mode='w') as file:
@@ -130,14 +134,13 @@ class myFtx(ccxtpro.ftx):
                     if str(e)!='': return
                     else: raise e
                 except ccxt.NetworkError as e:
-                    self.logger.debug(str(e))
-                    if isinstance(e, ccxt.DDoSProtection):
-                        await asyncio.sleep(1)
+                    args[0].logger.debug(str(e))
+                    args[0].logger.info(
+                        '----------------------------- reconnecting ---------------------------------------')
                     continue
                 except Exception as e:
                     self.logger.exception(e, exc_info=True)
                     raise e
-
         return wrapper_loop
 
     def filter_orders(self,key_value_dict):
@@ -152,8 +155,7 @@ class myFtx(ccxtpro.ftx):
 
     # ---------------------------------------------------------------------------------------------
     # ---------------------------------- state management -----------------------------------------
-    # ---------------------------------------------------------------------------------------------
-
+    # ---------------------------------------------------------------------------------------------       
     async def build_state(self, weights,
                           entry_tolerance = entry_tolerance,
                           edit_trigger_tolerance = edit_trigger_tolerance, # chase on 30s stdev
@@ -262,7 +264,7 @@ class myFtx(ccxtpro.ftx):
         self.margin_calculator = MarginCalculator(account_leverage, collateralWeight, imfFactor)
 
         # populates risk, pv and IM
-        await self.fetch_risk()
+        await self.reconcile_state()
 
         vwap_dataframe = pd.concat([data['vwap'].filter(like='vwap').fillna(method='ffill') for data in trades_history_list],axis=1,join='outer')
         vwap_dataframe=vwap_dataframe.apply(np.log).diff()
@@ -279,7 +281,7 @@ class myFtx(ccxtpro.ftx):
         shutil.copy2('Runtime/logs/latest_request.json','Runtime/logs/' + datetime.fromtimestamp(self.exec_parameters['timestamp'] / 1000).strftime(
                          "%Y-%m-%d-%Hh") + '_request.json')
 
-    async def fetch_risk(self, params=[]):
+    async def reconcile_state(self, params=[]):
         ''' updates risk in USD.
             all symbols not present when state is built are ignored !
             if some tickers are not initialized, it just uses markets'''
@@ -336,6 +338,24 @@ class myFtx(ccxtpro.ftx):
          for coin,coin_data in self.risk_state.items()
          for symbol in coin_data.keys() if symbol in self.markets]
 
+        missing_fill = []
+        fetched_fills = await self.fetch_my_trades(since=self.exec_parameters['timestamp'], limit=1000)
+        for fill in fetched_fills:
+            symbol = fill['symbol']
+            if self.myTrades and fill['id'] not in self.myTrades.hashmap[symbol]:
+                missing_fill += [fill['order']]
+        missing_orders = []
+        fetched_orders = await self.fetch_orders(since=self.exec_parameters['timestamp'], limit=1000)
+        for order in fetched_orders:
+            symbol = order['symbol']
+            if self.orders and order['id'] not in self.orders.hashmap[symbol]:
+                if self.markets[symbol]['base'] in self.orders_in_flight:
+                    pass
+                else:
+                    missing_orders += [fill['order']]
+                
+        self.lifecycle_to_json()
+
     @loop_and_callback
     async def monitor_fills(self):
         fills = await self.watch_my_trades()#limit=1)
@@ -343,7 +363,7 @@ class myFtx(ccxtpro.ftx):
 
     def handle_my_trade(self, client, message):
         '''maintains risk_state, event_records, logger.info
-        await self.fetch_risk() is safer but slower. we have monitor_risk to reconcile'''
+        await self.reconcile_state() is safer but slower. we have monitor_risk to reconcile'''
         super().handle_my_trade(client, message)
         data = self.safe_value(message, 'data')
         fill = self.parse_trade(data)
@@ -382,7 +402,7 @@ class myFtx(ccxtpro.ftx):
     @loop_and_callback
     async def monitor_risk(self):
         '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
-        await self.fetch_risk()
+        await self.reconcile_state()
 
         self.limit.limit = self.pv * self.limit.delta_limit
         absolute_risk = sum(abs(data['netDelta']) for data in self.risk_state.values())
@@ -445,39 +465,42 @@ class myFtx(ccxtpro.ftx):
         coin = self.markets[symbol]['base']
         if coin in self.orders_in_flight:
             self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
-            await asyncio.sleep(0.001)
+            await self.reconcile_state()
         else:
             self.lifecycle_order({'narrative':params['clientOrderId'].split('_')[0],
                                   'symbol':params['clientOrderId'].split('_')[1],
                                   'timestamp':int(params['clientOrderId'].split('_')[2])})
-            self.orders_in_flight[coin] = params['clientOrderId']
             order = await super().create_order(symbol, type, side, amount, price, params)
+            if order['status']=='open':
+                self.orders_in_flight[coin] = params['clientOrderId']
 
     async def edit_order(self, id, symbol, type, side, amount, price=None, params={}):
         '''always await ackowledgement'''
         coin = self.markets[symbol]['base']
         if coin in self.orders_in_flight:
-            self.logger.info('orders {} still in flight. holding off {}.'.format(self.orders_in_flight[coin],params['clientOrderId']))
-            await asyncio.sleep(0.001)
+            self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
+            await self.reconcile_state()
         else:
             self.lifecycle_order({'narrative': params['clientOrderId'].split('_')[0],
                                   'symbol': params['clientOrderId'].split('_')[1],
                                   'timestamp': int(params['clientOrderId'].split('_')[2])})
-            self.orders_in_flight[coin] = params['clientOrderId']
+            clientOrderId = params.pop('clientOrderId')
             order = await super().edit_order(id, symbol, type, side, amount, price, params)
+            if order['status'] == 'open':
+                order['clientOrderId'] = clientOrderId
+                self.orders_in_flight[coin] = clientOrderId
 
     async def cancel_order(self, id, symbol=None, params={}):
         '''always await ackowledgement'''
         coin = self.markets[symbol]['base']
         if coin in self.orders_in_flight:
-            self.logger.info('orders {} still in flight. holding off {}.'.format(self.orders_in_flight[coin],params['clientOrderId']))
-            await asyncio.sleep(0.001)
+            self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
+            await self.reconcile_state()
         else:
-            self.orders_in_flight[coin] = params['clientOrderId']
-            await super().cancel_order(id, symbol, params)
+            self.orders_in_flight[coin] = params.pop('clientOrderId')
+            await super().cancel_order(id, symbol, params) # pass without 'clientOrderId'
             self.lifecycle_cancel(id)
             self.orders_in_flight.__delitem__(coin)
-            self.orders.__delitem__(id)
 
     async def peg_or_stopout(self,symbol,size,orderbook_depth,edit_trigger_depth,edit_price_depth,stop_depth=None):
         '''creates of edit orders, pegging to orderbook
@@ -553,6 +576,8 @@ class myFtx(ccxtpro.ftx):
                 self.logger.warning(str(e) + str(orders[0]))
             else:
                 self.logger.warning(str(e), exc_info=True)
+        except ccxt.DDoSProtection as e:
+            self.logger.warning(str(e))
         except Exception as e:
             self.logger.exception('{} {} {} at {} raised {}'.format('buy' if size > 0 else 'sell', np.abs(size), symbol, price, e))
             raise e
@@ -662,106 +687,110 @@ class myFtx(ccxtpro.ftx):
         self.lifecycle_ackowledgment(order)
 
 async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
-    exchange = myFtx({
-        'asyncioLoop': kwargs['loop'] if 'loop' in kwargs else None,
-        'newUpdates': True,
-        #'watchOrderBookLimit': 1000,
-        'enableRateLimit': True,
-        'apiKey': apiKey,
-        'secret': secret}) if argv[1]=='ftx' else None
-    exchange.verbose = False
-    exchange.headers =  {'FTX-SUBACCOUNT': argv[2]}
-    exchange.authenticate()
-    await exchange.cancel_all_orders()
+    while True:
+        try:
+            exchange = myFtx({
+                'asyncioLoop': kwargs['loop'] if 'loop' in kwargs else None,
+                'newUpdates': True,
+                # 'watchOrderBookLimit': 1000,
+                'enableRateLimit': True,
+                'apiKey': apiKey,
+                'secret': secret}) if argv[1] == 'ftx' else None
+            exchange.verbose = False
+            exchange.headers = {'FTX-SUBACCOUNT': argv[2]}
+            exchange.authenticate()
+            await exchange.load_markets()
 
-    try:
-        if argv[0]=='sysperp':
-            future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
-            futures=await fetch_futures(exchange)
-            target_portfolio = await diff_portoflio(exchange, future_weights)
-            if target_portfolio.empty: return
-            #selected_coins = ['REN']#target_portfolios.sort_values(by='USDdiff', key=np.abs, ascending=False).iloc[2]['underlying']
-            #target_portfolio=diff[diff['coin'].isin(selected_coins)]
-            target_portfolio['optimalCoin']*=1
-            await exchange.build_state(target_portfolio,
-                                       entry_tolerance=entry_tolerance,
-                                       edit_trigger_tolerance=edit_trigger_tolerance,
-                                       edit_price_tolerance=edit_price_tolerance,
-                                       stop_tolerance=stop_tolerance,
-                                       time_budget=time_budget,
-                                       delta_limit=delta_limit,
-                                       slice_factor=slice_factor)
+            if argv[0]=='sysperp':
+                future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
+                target_portfolio = await diff_portoflio(exchange, future_weights)
+                if target_portfolio.empty: return
+                #selected_coins = ['REN']#target_portfolios.sort_values(by='USDdiff', key=np.abs, ascending=False).iloc[2]['underlying']
+                #target_portfolio=diff[diff['coin'].isin(selected_coins)]
+                await exchange.build_state(target_portfolio,
+                                           entry_tolerance=entry_tolerance,
+                                           edit_trigger_tolerance = edit_trigger_tolerance,
+                                           edit_price_tolerance = edit_price_tolerance,
+                                           stop_tolerance = stop_tolerance,
+                                           time_budget = time_budget,
+                                           delta_limit = delta_limit,
+                                           slice_factor = slice_factor)
 
+            elif argv[0]=='spread':
+                coin=argv[3]
+                cash_name = coin+'/USD'
+                future_name = coin + '-PERP'
+                cash_price = float(exchange.market(cash_name)['info']['price'])
+                future_price = float(exchange.market(future_name)['info']['price'])
+                target_portfolio = pd.DataFrame(columns=['coin','name','optimalCoin','currentCoin','spot_price'],data=[
+                    [coin,cash_name,float(argv[4])/cash_price,0,cash_price],
+                    [coin,future_name,-float(argv[4])/future_price,0,future_price]])
+                if target_portfolio.empty: return
 
-        elif argv[0]=='spread':
-            coin=argv[3]
-            cash_name = coin+'/USD'
-            future_name = coin + '-PERP'
-            cash_price = float(exchange.market(cash_name)['info']['price'])
-            future_price = float(exchange.market(future_name)['info']['price'])
-            target_portfolio = pd.DataFrame(columns=['coin','name','optimalCoin','currentCoin','spot_price'],data=[
-                [coin,cash_name,float(argv[4])/cash_price,0,cash_price],
-                [coin,future_name,-float(argv[4])/future_price,0,future_price]])
-            if target_portfolio.empty: return
+                await exchange.build_state(target_portfolio,
+                                           entry_tolerance=0.99,
+                                           edit_trigger_tolerance = np.sqrt(5),
+                                           edit_price_tolerance = 0,
+                                           stop_tolerance = np.sqrt(30),
+                                           time_budget = 999,
+                                           delta_limit = delta_limit,
+                                           slice_factor = 0.5)
 
-            await exchange.build_state(target_portfolio,
-                                       entry_tolerance=entry_tolerance,
-                                       edit_trigger_tolerance=edit_trigger_tolerance,
-                                       edit_price_tolerance=edit_price_tolerance,
-                                       stop_tolerance=stop_tolerance,
-                                       time_budget=time_budget,
-                                       delta_limit=delta_limit,
-                                       slice_factor=slice_factor)
-        elif argv[0]=='flatten': # only works for basket with 2 symbols
-            future_weights = pd.DataFrame(columns=['name','optimalWeight'])
-            diff = await diff_portoflio(exchange, future_weights)
-            smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(lambda series: series.apply(np.abs).min() if series.shape[0]>1 else 0)
-            target_portfolio=diff
-            target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
-            if target_portfolio.empty: return
+            elif argv[0]=='flatten': # only works for basket with 2 symbols
+                future_weights = pd.DataFrame(columns=['name','optimalWeight'])
+                diff = await diff_portoflio(exchange, future_weights)
+                smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(lambda series: series.apply(np.abs).min() if series.shape[0]>1 else 0)
+                target_portfolio=diff
+                target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
+                if target_portfolio.empty: return
 
-            await exchange.build_state(target_portfolio,
-                                       entry_tolerance=0.99,
-                                       edit_trigger_tolerance=np.sqrt(5),
-                                       edit_price_tolerance=0,
-                                       stop_tolerance=np.sqrt(30),
-                                       time_budget=999,
-                                       delta_limit=delta_limit,
-                                       slice_factor=0.5)
-        elif argv[0]=='unwind':
-            future_weights = pd.DataFrame(columns=['name','optimalWeight'])
-            target_portfolio = await diff_portoflio(exchange, future_weights)
-            target_portfolio['optimalCoin'] = target_portfolio.apply(lambda s: s['minProvideSize'] if exchange.market(s['name'])['type']=='spot' else 0,axis=1)
-            if target_portfolio.empty: return
+                await exchange.build_state(target_portfolio,
+                                           entry_tolerance=entry_tolerance,
+                                           edit_trigger_tolerance = edit_trigger_tolerance,
+                                           edit_price_tolerance = edit_price_tolerance,
+                                           stop_tolerance = stop_tolerance,
+                                           time_budget = time_budget,
+                                           delta_limit = delta_limit,
+                                           slice_factor = slice_factor)
 
-            await exchange.build_state(target_portfolio,
-                                       entry_tolerance=0.99,
-                                       edit_trigger_tolerance=edit_trigger_tolerance,
-                                       edit_price_tolerance=edit_price_tolerance,
-                                       stop_tolerance=stop_tolerance,
-                                       time_budget=999999,
-                                       delta_limit=delta_limit,
-                                       slice_factor=slice_factor)
+            elif argv[0]=='unwind':
+                future_weights = pd.DataFrame(columns=['name','optimalWeight'])
+                target_portfolio = await diff_portoflio(exchange, future_weights)
+                target_portfolio['optimalCoin'] = target_portfolio.apply(lambda s: s['minProvideSize'] if exchange.market(s['name'])['type']=='spot' else 0,axis=1)
+                if target_portfolio.empty: return
+
+                await exchange.build_state(target_portfolio,
+                                           entry_tolerance=.99,
+                                           edit_trigger_tolerance=edit_trigger_tolerance,
+                                           edit_price_tolerance=edit_price_tolerance,
+                                           stop_tolerance=stop_tolerance,
+                                           time_budget=999999,
+                                           delta_limit=delta_limit,
+                                           slice_factor=slice_factor)
+
+            else:
+                exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
+                raise Exception(f'unknown command {argv[0]}',exc_info=True)
+
+            await asyncio.gather(*([exchange.monitor_fills(),exchange.monitor_risk(),exchange.monitor_orders()]+
+                                   [exchange.order_master(symbol)
+                                    for coin_data in exchange.risk_state.values()
+                                    for symbol in coin_data.keys() if symbol in exchange.markets]
+                                   ))
+
+        except myFtx.DoneDeal as e:
+            exchange.logger.info(e)
+            break
+        except Exception as e:
+            exchange.logger.exception(e,exc_info=True)
+            raise e
         else:
-            exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
-            raise Exception(f'unknown command {argv[0]}',exc_info=True)
-
-        await asyncio.gather(*([exchange.monitor_fills(),exchange.monitor_risk(),exchange.monitor_orders()]+
-                               [exchange.order_master(symbol)
-                                for coin_data in exchange.risk_state.values()
-                                for symbol in coin_data.keys() if symbol in exchange.markets]
-                               ))
-    except myFtx.DoneDeal as e:
-        exchange.logger.info(e)
-    except Exception as e:
-        exchange.logger.exception(e,exc_info=True)
-        raise e
-    else:
-        stats = await fetch_latencyStats(exchange, days=1, subaccount_nickname='SysPerp')
-        exchange.logger.info(f'latencystats:{stats}')
-    finally:
-        await exchange.close()
-        exchange.logger.info('exchange closed')
+            stats = await fetch_latencyStats(exchange, days=1, subaccount_nickname='SysPerp')
+            exchange.logger.info(f'latencystats:{stats}')
+        finally:
+            await exchange.cancel_all_orders()
+            await exchange.close()
+            exchange.logger.info('exchange closed')
 
     return
 
@@ -780,30 +809,3 @@ def ftx_ws_spread_main(*argv):
 
 if __name__ == "__main__":
     ftx_ws_spread_main(*sys.argv[1:])
-
-
-
-    # def not_used_on_connected(self, client, message=None):
-    #     '''after a disconnection, reconcile state'''
-    #
-    #     def sync_call(coro, *args, **kwargs):
-    #         '''hack to run coroutines inside syncronous functions'''
-    #         task = self.asyncio_loop.create_task(coro(*args, **kwargs))
-    #         future = asyncio.wait([task])
-    #         self.asyncio_loop.run_until_complete(future)
-    #         return task.result()
-    #
-    #     async def reconcile_state():
-    #         last_fill = self.myTrades[-1]['timestamp'] if self.myTrades else self.exec_parameters['timestamp']
-    #         fills = sync_call(self.fetch_my_trades,since=last_fill)
-    #         for fill in fills:
-    #             self.handle_my_trade(self.clients[0], {'data': fill})
-    #
-    #         last_order = max(order['timestamp'] for order in self.orders) if self.orders else self.exec_parameters[
-    #             'timestamp']
-    #         orders = sync_call(self.fetch_orders,since=last_order)
-    #         for order in orders:
-    #             self.handle_order(self.clients[0], {'data': order})
-    #
-    #         self.logger.debug('updated {} fills, {} orders after reconnection'.format(len(fills), len(orders)))
-    #     self.asyncio_loop.run_until_complete(reconcile_state)
