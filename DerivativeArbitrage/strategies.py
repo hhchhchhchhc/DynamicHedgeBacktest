@@ -100,9 +100,9 @@ async def perp_vs_cash(
 
     # previous book
     if not equity is None:
-        pass
+        previous_weights_df = pd.DataFrame(index=[],columns=['optimalWeight'],data=0.0)
     elif EQUITY.isnumeric():
-        previous_weights_df = pd.DataFrame(index=filtered.index,columns=['optimalWeight'],data=0.0)
+        previous_weights_df = pd.DataFrame(index=[],columns=['optimalWeight'],data=0.0)
         equity = float(EQUITY)
     elif '.xlsx' in EQUITY:
         previous_weights_df = pd.read_excel(EQUITY, sheet_name='optimized', index_col=0)['optimalWeight']
@@ -215,7 +215,7 @@ async def perp_vs_cash(
         display['absWeight']=display['optimalWeight'].apply(abs)
         display.loc['total','absWeight']=display.drop(index='total')['absWeight'].sum()
         display=display.sort_values(by='absWeight',ascending=True)
-        display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
+        #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
         print(display)
 
         return optimized
@@ -281,17 +281,17 @@ async def strategy_wrapper(**kwargs):
         for slippage_override in kwargs['slippage_override']])
     await exchange.close()
 
-    return None
+    return result
 
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['sysperp'])
+        argv.extend(['depth'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
     if argv[0] == 'sysperp':
-        return asyncio.run(strategy_wrapper(
+        asyncio.run(strategy_wrapper(
             exchange='ftx',
             equity=[None],
             concentration_limit=[CONCENTRATION_LIMIT],
@@ -303,6 +303,25 @@ def strategies_main(*argv):
             slippage_override=[SLIPPAGE_OVERRIDE],
             run_dir='Runtime/Live_parquets',
             backtest_start=None,backtest_end=None))
+    elif argv[0] == 'depth':
+        global UNIVERSE
+        UNIVERSE = 'max' # set universe to 'max'
+        equities = [100000, 500000, 1000000, 2000000, 5000000, 10000000]
+        results = asyncio.run(strategy_wrapper(
+            exchange='ftx',
+            equity=equities,
+            concentration_limit=[CONCENTRATION_LIMIT],
+            mktshare_limit=[MKTSHARE_LIMIT],
+            minimum_carry=[MINIMUM_CARRY],
+            exclusion_list=EXCLUSION_LIST,
+            signal_horizon=[argv[1]],
+            holding_period=[argv[2]],
+            slippage_override=[SLIPPAGE_OVERRIDE],
+            run_dir='Runtime/Live_parquets',
+            backtest_start=None, backtest_end=None))
+        with pd.ExcelWriter('res.xlsx', engine='xlsxwriter') as writer:
+            for res,equity in zip(results,equities):
+                res.to_excel(writer,sheet_name=equity)
     elif argv[0] == 'backtest':
         for equity in [[100000], [1000000]]:
             for concentration_limit in [[1]]:
@@ -325,7 +344,7 @@ def strategies_main(*argv):
                                         backtest_start=datetime(2021,11,1),
                                         backtest_end=datetime(2022,2,1)))
     else:
-        print(f'commands: sysperp [signal_horizon] [holding_period], backtest')
+        print(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
 
 if __name__ == "__main__":
     strategies_main(*sys.argv[1:])
