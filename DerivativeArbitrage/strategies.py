@@ -32,7 +32,7 @@ async def refresh_universe(exchange,universe_size):
         & (futures['tokenizedEquity'] != True)]
 
     # volume screening
-    hy_history = await build_history(futures, exchange,
+    hy_history = await get_history(futures, exchange,
                                      timeframe='1h', end=universe_end, start=universe_start,
                                      dirname='Runtime/configs/universe_history_cache')
     futures = market_capacity(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
@@ -128,9 +128,7 @@ async def perp_vs_cash(
                               slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
-    hy_history = await build_history(enriched, exchange,
-                                     timeframe='1h', end=backtest_end, start=backtest_start-signal_horizon-holding_period,
-                                     dirname=run_dir)
+    hy_history = await get_history(enriched, exchange,backtest_end,backtest_start-signal_horizon-holding_period)
     enriched = market_capacity(enriched, hy_history)
 
     # ------- build derived data history
@@ -286,7 +284,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['depth'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -306,7 +304,7 @@ def strategies_main(*argv):
     elif argv[0] == 'depth':
         global UNIVERSE
         UNIVERSE = 'max' # set universe to 'max'
-        equities = [100000, 500000, 1000000, 2000000, 5000000, 10000000]
+        equities = [100000, 1000000, 5000000]
         results = asyncio.run(strategy_wrapper(
             exchange='ftx',
             equity=equities,
@@ -323,13 +321,13 @@ def strategies_main(*argv):
             for res,equity in zip(results,equities):
                 res.to_excel(writer,sheet_name=equity)
     elif argv[0] == 'backtest':
-        for equity in [[100000], [1000000]]:
+        for equity in [[1000000]]:
             for concentration_limit in [[1]]:
                 for mktshare_limit in [[MKTSHARE_LIMIT]]:
                     for minimum_carry in [[MINIMUM_CARRY]]:
                         for signal_horizon in [[timedelta(hours=h) for h in [12, 60]]]:
-                            for holding_period in [[timedelta(hours=h) for h in [24]]]:
-                                for slippage_override in [[0.0005]]:
+                            for holding_period in [[timedelta(hours=h) for h in [48]]]:
+                                for slippage_override in [[0.0002]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange='ftx',
                                         equity=equity,

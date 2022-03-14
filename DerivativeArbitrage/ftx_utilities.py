@@ -3,6 +3,8 @@ import logging
 import os
 import sys
 import asyncio
+import functools
+import aiofiles
 import platform
 if platform.system()=='Windows':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -27,6 +29,15 @@ import plotly.express as px
 from datetime import datetime,timezone,timedelta,date
 import dateutil
 import itertools
+
+def async_wrap(f):
+    @functools.wraps(f)
+    async def run(*args, loop=None, executor=None, **kwargs):
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        p = functools.partial(f, *args, **kwargs)
+        return await loop.run_in_executor(executor, p)
+    return run
 
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
@@ -85,8 +96,13 @@ def to_parquet(df,filename,mode="w"):
     pq_df = pa.Table.from_pandas(df)
     pq.write_table(pq_df, filename)
     return None
+async def async_to_parquet(df,filename,mode="w"):
+    return async_wrap(to_parquet(df,filename,mode))
+
 def from_parquet(filename):
     return pq.read_table(filename).to_pandas()
+async def async_from_parquet(filename):
+    return async_wrap(from_parquet(filename))
 
 def openit(filename,mode="rb"):#### to open pickle
     data=pd.DataFrame()
