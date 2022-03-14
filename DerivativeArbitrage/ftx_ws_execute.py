@@ -1,13 +1,7 @@
-import asyncio
-import logging
-import sys
-
 import ccxt
 import ccxtpro
-import pandas as pd
 from ccxtpro.base.cache import ArrayCacheBySymbolById
 import functools
-from copy import deepcopy
 
 from ftx_utilities import *
 from ftx_portfolio import diff_portoflio,MarginCalculator
@@ -41,7 +35,7 @@ class myFtx(ccxtpro.ftx):
 
         limit = self.safe_integer(self.options, 'ordersLimit', 1000)
         self.orders = ArrayCacheBySymbolById(limit)
-        self.orders_in_flight = dict() # effetively a lock during order creation
+        self.orders_in_flight = dict() # list of dict by coin. Effectively a lock during order creation
         self.latest_reconcile_timestamp = 0
 
     # --------------------------------------------------------------------------------------------
@@ -59,7 +53,7 @@ class myFtx(ccxtpro.ftx):
             self.limit = limit
             self.check_frequency = check_frequency
 
-    def lifecycle_order(self,order_event):
+    async def lifecycle_order(self,order_event):
         ## generic info
         symbol = order_event['symbol']
         coin = self.markets[symbol]['base']
@@ -89,18 +83,19 @@ class myFtx(ccxtpro.ftx):
                         | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
 
         self.event_records += [event_record]
-        self.lifecycle_to_json()
+        await self.lifecycle_to_json()
 
-    def lifecycle_ackowledgment(self,order_event):
+    async def lifecycle_ackowledgment(self,order_event):
         found = next(x for x in self.event_records if 'clientOrderId' in x and x['clientOrderId'] == order_event['clientOrderId'])
         assert(found)
         found |= {'acknowledge_timestamp':self.milliseconds()-self.exec_parameters['timestamp']}
         found |= {key: order_event[key] for key in
                          ['side', 'price', 'amount', 'type', 'id', 'status']}
         if 'reconciled' in order_event: found |= {'reconciled':order_event['reconciled']}
-        self.lifecycle_to_json()
+        self.logger.info('order {} resolved. {} coins in flight'.format(order_event['clientOrderId'],len([in_flight for in_flight in self.orders_in_flight if in_flight])))
+        await self.lifecycle_to_json()
 
-    def lifecycle_fill(self,fill):
+    async def lifecycle_fill(self,fill):
         found = next(x for x in self.event_records if 'id' in x and x['id'] == fill['order'])
         assert (found)
         fill_count = str(len([key for key in fill.keys() if 'fill_timestamp' in key]))
@@ -108,16 +103,16 @@ class myFtx(ccxtpro.ftx):
                   'price' + fill_count: fill['price'],
                   'amount' + fill_count: fill['amount']}
         if 'reconciled' in fill: found |= {'reconciled': fill['reconciled']}
-        self.lifecycle_to_json()
+        await self.lifecycle_to_json()
 
-    def lifecycle_cancel(self,id):
+    async def lifecycle_cancel(self,id):
         found = next(x for x in self.event_records if 'id' in x and x['id'] == id)
         assert(found)
         found |= {'cancel_timestamp': self.milliseconds() - self.exec_parameters['timestamp']}
-        self.lifecycle_to_json()
+        await self.lifecycle_to_json()
 
-    def lifecycle_to_json(self,filename = 'Runtime/logs/latest_events.json'):
-        with open(filename,mode='w') as file:
+    async def lifecycle_to_json(self,filename = 'Runtime/logs/latest_events.json'):
+        async with aiofiles.open(filename,mode='w') as file:
             json.dump(self.event_records, file,cls=NpEncoder)
         shutil.copy2(filename, 'Runtime/logs/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_events.json')
 
@@ -322,9 +317,8 @@ class myFtx(ccxtpro.ftx):
             if coin!='USD' and coin in self.currencies and balance['total']!=0:
                 mid = self.mid(coin+'/USD')
                 spot_weight |= {(coin):{'weight':balance['total']*mid,'mark':mid}}
-
-        # calculate IM
         (spot_weight,future_weight) = MarginCalculator.add_pending_orders(self, spot_weight, future_weight)
+
         self.margin_calculator.estimate(self.usd_balance, spot_weight, future_weight)
         self.calculated_IM = sum(value for value in self.margin_calculator.estimated_IM.values())
         # fetch IM
@@ -332,26 +326,31 @@ class myFtx(ccxtpro.ftx):
         self.margin_calculator.actual(account_info) if float(account_info['totalPositionSize']) else self.pv
         self.margin_headroom = self.margin_calculator.actual_IM
 
-        [self.lifecycle_order({'narrative':'remote_risk','symbol':symbol,'timestamp':self.milliseconds()}) # kinda hack but logs it...
-         for coin,coin_data in self.risk_state.items()
-         for symbol in coin_data.keys() if symbol in self.markets]
+        # log risk
+        [self.lifecycle_order({'narrative':'remote_risk','symbol':symbol_,'timestamp':self.milliseconds()}) # kinda hack but logs it...
+         for coin_,coin_data in self.risk_state.items()
+         for symbol_ in coin_data.keys() if symbol_ in self.markets]
 
-        fetched_fills = await self.fetch_my_trades(since=self.latest_reconcile_timestamp-1000, limit=1000)
+        # fetch fills and orders, to recover missed messages
+        fetched_fills = await self.fetch_my_trades(since=max(self.exec_parameters['timestamp'],self.latest_reconcile_timestamp-10000), limit=1000)
         for fill in fetched_fills:
             symbol = fill['symbol']
-            if self.myTrades and symbol in self.myTrades.hashmap and fill['id'] not in self.myTrades.hashmap[symbol]:
-                self.handle_my_trade(self.clients[0],{'channel':'fills','data':fill|{'reconciled':'True'}})
+            if (not self.myTrades) or (symbol not in self.myTrades.hashmap) or (fill['id'] not in self.myTrades.hashmap[symbol]):
+                self.myTrades.append(fill)
+                self.lifecycle_fill(fill|{'reconciled':'True'})
 
-        fetched_orders = await self.fetch_orders(since=self.latest_reconcile_timestamp-1000, limit=1000)
+        fetched_orders = await self.fetch_orders(since=max(self.exec_parameters['timestamp'],self.latest_reconcile_timestamp-10000), limit=1000)
         for order in fetched_orders:
             symbol = order['symbol']
-            if self.orders and symbol in self.orders.hashmap and order['id'] not in self.orders.hashmap[symbol]:
-                if self.markets[symbol]['base'] in self.orders_in_flight:
-                    pass
-                else:
-                    self.handle_order(self.clients[0],{'channel':'orders','data':order|{'reconciled':'True'}})
+            if (not self.orders) or (symbol not in self.orders.hashmap) or (order['id'] not in self.orders.hashmap[symbol]):
+                coin = self.markets[symbol]['base']
+                if (not self.orders_in_flight[coin]) or (order['clientOrderId'] not in self.orders_in_flight[coin]):
+                    raise Exception('not found')
+                self.orders_in_flight[coin].remove(order['clientOrderId'])
+                self.orders.append(order)
+                self.lifecycle_ackowledgment(order | {'reconciled': 'True'})
 
-        self.lifecycle_to_json()
+        await self.lifecycle_to_json()
         self.latest_reconcile_timestamp = self.milliseconds()
 
     @loop_and_callback
@@ -461,7 +460,7 @@ class myFtx(ccxtpro.ftx):
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         '''always await ackowledgement'''
         coin = self.markets[symbol]['base']
-        if coin in self.orders_in_flight:
+        if coin in self.orders_in_flight and self.orders_in_flight[coin]:
             self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
             await self.reconcile_state()
         else:
@@ -469,15 +468,15 @@ class myFtx(ccxtpro.ftx):
                                   'symbol':params['clientOrderId'].split('_')[1],
                                   'timestamp':int(params['clientOrderId'].split('_')[2])})
             # set in_flight -> send rest -> if success, leave in_flight. Pls note it may have been caught by handle_order by then.
-            self.orders_in_flight[coin] = params['clientOrderId']
+            self.orders_in_flight[coin] = (self.orders_in_flight[coin] if coin in self.orders_in_flight else []) + [params['clientOrderId']]
             order = await super().create_order(symbol, type, side, amount, price, params)
             if order['status']=='closed':
-                self.orders_in_flight.__delitem__(coin)
+                self.orders_in_flight[coin].remove(params['clientOrderId'])
 
     async def edit_order(self, id, symbol, price, params={}):
         '''always await ackowledgement'''
         coin = self.markets[symbol]['base']
-        if coin in self.orders_in_flight:
+        if coin in self.orders_in_flight and self.orders_in_flight[coin]:
             self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
             await self.reconcile_state()
         else:
@@ -486,19 +485,18 @@ class myFtx(ccxtpro.ftx):
                                   'timestamp': int(params['clientOrderId'].split('_')[2])})
             # clientOrderId = params['clientOrderId'] # pop, because edit looksup by client order by default. But we pass the new one
             # set in_flight -> send rest -> if sucess, leave in_flight. Pls note it may have been caught by handle_order by then.
-            self.orders_in_flight[coin] = params['clientOrderId']
+            self.orders_in_flight[coin] = (self.orders_in_flight[coin] if coin in self.orders_in_flight else []) + [params['clientOrderId']]
             order = await super().edit_order(id, symbol, type=None, side=None, amount=None, price=price, params=params)
             if order['status'] == 'closed':
-                self.orders_in_flight.__delitem__(coin)
+                self.orders_in_flight[coin].remove(params['clientOrderId'])
 
     async def cancel_order(self, id, symbol=None, params={}):
         '''always await ackowledgement'''
         coin = self.markets[symbol]['base']
-        if coin in self.orders_in_flight:
+        if coin in self.orders_in_flight and self.orders_in_flight[coin]:
             self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
             await self.reconcile_state()
         else:
-            self.orders_in_flight[coin] = params['clientOrderId']
             await super().cancel_order(id, symbol) # pass without 'clientOrderId'
             self.lifecycle_cancel(id)
 
@@ -668,9 +666,8 @@ class myFtx(ccxtpro.ftx):
         order = self.parse_order(data)
 
         coin = self.markets[order['symbol']]['base']
-        if coin in self.orders_in_flight:
-            assert (self.orders_in_flight[coin] == order['clientOrderId'])
-            self.orders_in_flight.__delitem__(coin)
+        if coin in self.orders_in_flight and self.orders_in_flight[coin]:
+            self.orders_in_flight[coin].remove(order['clientOrderId'])
 
         self.lifecycle_ackowledgment(order)
 
