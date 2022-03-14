@@ -32,9 +32,7 @@ async def refresh_universe(exchange,universe_size):
         & (futures['tokenizedEquity'] != True)]
 
     # volume screening
-    hy_history = await get_history(futures, exchange,
-                                     timeframe='1h', end=universe_end, start=universe_start,
-                                     dirname='Runtime/configs/universe_history_cache')
+    hy_history = await get_history(futures, end=universe_end, start=universe_start)
     futures = market_capacity(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
@@ -68,18 +66,8 @@ async def perp_vs_cash(
         mktshare_limit,
         minimum_carry,
         exclusion_list,
-        run_dir='',
         backtest_start = None,# None means live-only
         backtest_end = None):
-    try:
-        first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
-        if max(first_history.index)==datetime.now().replace(minute=0,second=0,microsecond=0):
-            pass# if fetched less on this hour
-        else:
-            for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)# otherwise do nothing and build_history will use what's there
-    except:
-        if run_dir!='':
-            for file in os.listdir(run_dir): os.remove(run_dir + '/' + file)
 
     markets = await exchange.fetch_markets()
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
@@ -128,7 +116,7 @@ async def perp_vs_cash(
                               slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
-    hy_history = await get_history(enriched, exchange,backtest_end,backtest_start-signal_horizon-holding_period)
+    hy_history = await get_history(enriched, end=backtest_end,start=backtest_start-signal_horizon-holding_period)
     enriched = market_capacity(enriched, hy_history)
 
     # ------- build derived data history
@@ -267,7 +255,6 @@ async def strategy_wrapper(**kwargs):
         signal_horizon=signal_horizon,
         holding_period=holding_period,
         slippage_override=slippage_override,
-        run_dir=kwargs['run_dir'],
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'])
         for equity in kwargs['equity']
@@ -284,7 +271,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['sysperp'])
+        argv.extend(['backtest'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -299,7 +286,6 @@ def strategies_main(*argv):
             signal_horizon=[argv[1]],
             holding_period=[argv[2]],
             slippage_override=[SLIPPAGE_OVERRIDE],
-            run_dir='Runtime/Live_parquets',
             backtest_start=None,backtest_end=None))
     elif argv[0] == 'depth':
         global UNIVERSE
@@ -315,7 +301,6 @@ def strategies_main(*argv):
             signal_horizon=[argv[1]],
             holding_period=[argv[2]],
             slippage_override=[SLIPPAGE_OVERRIDE],
-            run_dir='Runtime/Live_parquets',
             backtest_start=None, backtest_end=None))
         with pd.ExcelWriter('res.xlsx', engine='xlsxwriter') as writer:
             for res,equity in zip(results,equities):
@@ -338,7 +323,6 @@ def strategies_main(*argv):
                                         signal_horizon=signal_horizon,
                                         holding_period=holding_period,
                                         slippage_override=slippage_override,
-                                        run_dir='',
                                         backtest_start=datetime(2021,11,1),
                                         backtest_end=datetime(2022,2,1)))
     else:

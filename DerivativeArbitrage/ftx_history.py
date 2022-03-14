@@ -9,9 +9,9 @@ from ftx_ftx import *
 history_start = datetime(2020, 11, 26)
 
 # all rates annualized, all volumes daily
-async def get_history(futures, exchange, end, start,
+async def get_history(futures, start, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
         dirname = 'Runtime/Mktdata_database'):
-    return pd.concat(await asyncio.gather(*(
+    data = pd.concat(await asyncio.gather(*(
             [async_from_parquet(dirname+'/'+f+'_funding.parquet')
              for f in futures[futures['type'] == 'perpetual'].index] +
             [async_from_parquet(dirname+'/'+f+'_futures.parquet')
@@ -21,25 +21,23 @@ async def get_history(futures, exchange, end, start,
             [async_from_parquet(dirname+'/'+f+'_borrow.parquet')
              for f in (list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD'])]
     )), join='outer', axis=1)
+    return data[start:end]
 
 async def build_history(futures,exchange,
         end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
         dirname = 'Runtime/Mktdata_database'):
 
-    data = pd.DataFrame()
-    for f in futures.index:
-        parquet_filename = dirname+'/'+f+'_futures.parquet'
-        if os.path.isfile(parquet_filename):
-            history = from_parquet(parquet_filename)
-            last_data = max(history.index)
-            if end>last_data+timedelta(hours=1):
-                missing_data = await fetch_history(futures.loc[[f]], exchange,'1h',end,last_data+timedelta(hours=1),dirname)
-                history = pd.concat([history, missing_data], axis=0)
-        else:
-            history = await fetch_history(futures.loc[[f]], exchange, '1h', end, history_start,dirname)
-        data = pd.concat([data,history],axis=1)
+    # if less than 100hrs missing, do it in one go
+    futures['parquet_filename'] = futures.apply(lambda f: dirname+'/'+f.name+'_futures.parquet',axis=1)
+    futures['little_data'] = futures['parquet_filename'].apply(lambda f:
+                                         max(from_parquet(f).index) if os.path.isfile(f) and max(from_parquet(f).index) > end - timedelta(hours=100)
+                                         else None)
+    if not (futures[~futures['little_data'].isnull()].empty or end <= futures['little_data'].min()+timedelta(hours=1)):
+        await fetch_history(futures[~futures['little_data'].isnull()],exchange,'1h',end,futures['little_data'].min()+timedelta(hours=1),dirname)
 
-    return data[~data.index.duplicated()].sort_index()
+    # one by one for the rest
+    for f in futures[futures['little_data'].isnull()].index:
+        await fetch_history(futures.loc[[f]], exchange, '1h', end, history_start,dirname)
 
 async def fetch_history(futures, exchange,
                         timeframe,
@@ -101,8 +99,7 @@ async def borrow_history(coin,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data=data[~data.index.duplicated()].sort_index()
 
-    parquet_filename = dirname + '/' + coin + '_borrow.parquet'
-    if dirname != '': data.to_parquet(parquet_filename)
+    if dirname != '': await async_to_parquet(data,dirname + '/' + coin + '_borrow.parquet',mode='a')
 
     return data
 
@@ -134,8 +131,7 @@ async def funding_history(future,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
-    parquet_filename = dirname + '/' + exchange.market(future['symbol'])['id'] + '_funding.parquet'
-    if dirname != '': data.to_parquet(parquet_filename)
+    if dirname != '': await async_to_parquet(data,dirname + '/' + exchange.market(future['symbol'])['id'] + '_funding.parquet',mode='a')
 
     return data
 
@@ -264,8 +260,7 @@ async def rate_history(future,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
-    parquet_filename = dirname + '/' + exchange.market(future['symbol'])['id'] + '_futures.parquet'
-    if dirname != '': data.to_parquet(parquet_filename)
+    if dirname != '': await async_to_parquet(data,dirname + '/' + exchange.market(future['symbol'])['id'] + '_futures.parquet',mode='a')
 
     return data
 
@@ -299,9 +294,7 @@ async def spot_history(symbol, exchange,
     data.columns = [symbol.replace('/USD','') + '/price/' + column for column in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
-
-    parquet_filename = dirname + '/' + symbol.replace('/USD', '') + '_price.parquet'
-    if dirname!='': data.to_parquet(parquet_filename)
+    if dirname!='': await async_to_parquet(data,dirname + '/' + symbol.replace('/USD', '') + '_price.parquet',mode='a')
 
     return data
 

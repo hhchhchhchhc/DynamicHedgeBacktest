@@ -101,7 +101,7 @@ async def enricher(exchange,futures,holding_period,equity,
 
 def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
     async def enricher_subwrapper(exchange_name,type,depth):
-        holding_period=timedelta(hours=2)
+
         exchange= await open_exchange(exchange_name,'')
         futures = pd.DataFrame(await fetch_futures(exchange)).set_index('name')
         filtered = futures[~futures['underlying'].isin(EXCLUSION_LIST)]
@@ -109,7 +109,8 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
                                   slippage_override=-999, slippage_orderbook_depth=depth,
                                   slippage_scaler=1.0,
                                   params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
-        hy_history = await build_history(enriched,exchange,dirname='Runtime/temporary_parquets')
+        end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)
+        hy_history = await get_history(enriched,start=end-timedelta(hours=2),end=end)
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
             HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate

@@ -845,9 +845,9 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['fromOptimal'])
+        argv.extend(['risk'])
     if len(argv) < 3:
-        argv.extend(['ftx', ''])
+        argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
     if argv[0] == 'fromOptimal':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))

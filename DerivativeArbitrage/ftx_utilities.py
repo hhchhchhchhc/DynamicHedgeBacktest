@@ -93,16 +93,22 @@ def pickleit(object,filename,mode="ab+"):############ timestamp and append to pi
     return
 
 def to_parquet(df,filename,mode="w"):
+    if mode == 'a' and os.path.isfile(filename):
+        previous = from_parquet(filename)
+        df = pd.concat([previous,df],axis=0)
+        df = df[~df.index.duplicated()].sort_index()
     pq_df = pa.Table.from_pandas(df)
     pq.write_table(pq_df, filename)
     return None
 async def async_to_parquet(df,filename,mode="w"):
-    return async_wrap(to_parquet(df,filename,mode))
+    coro = async_wrap(to_parquet)
+    return await coro(df,filename,mode)
 
 def from_parquet(filename):
     return pq.read_table(filename).to_pandas()
 async def async_from_parquet(filename):
-    return async_wrap(from_parquet(filename))
+    coro = async_wrap(from_parquet)
+    return await coro(filename)
 
 def openit(filename,mode="rb"):#### to open pickle
     data=pd.DataFrame()
