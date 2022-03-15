@@ -16,7 +16,7 @@ async def ftx_history(coin_list=[]):
     type_allowed = ['future','perpetual']
 
     # qualitative filtering
-    universe = await refresh_universe(exchange,UNIVERSE)
+    universe = await refresh_universe(exchange,'max')
     universe = universe[~universe['underlying'].isin(EXCLUSION_LIST)]
 
 
@@ -30,10 +30,8 @@ async def ftx_history(coin_list=[]):
         & (futures['type'].isin(type_allowed)==True)]
 
     #### get history ( this is sloooow)
-    hy_history = await build_history(futures, exchange)
+    await build_history(futures, exchange)
     await exchange.close()
-
-    return hy_history
 
 i=0
 while i<1:

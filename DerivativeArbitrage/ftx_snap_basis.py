@@ -54,8 +54,7 @@ async def enricher(exchange,futures,holding_period,equity,
     futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
     ########### naive basis for all futures
     if not futures[futures['type'] == 'perpetual'].empty:
-        list = await asyncio.gather(*[
-            exchange.publicGetFuturesFutureNameStats({'future_name': f})
+        list = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
             for f in futures[futures['type'] == 'perpetual'].index])
         list = [float(l['result']['nextFundingRate'])*24*365.325 for l in list]
         futures.loc[futures['type'] == 'perpetual','basis_mid'] = list
@@ -114,7 +113,7 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
             HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate
-            filename='history')  # historical window for expectations)
+            filename='Runtime/runs/history.xlsx')  # historical window for expectations)
         point_in_time = max(hy_history.index)
         updated, marginFunc = update(enriched, point_in_time, hy_history, depth,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short,
@@ -139,8 +138,8 @@ def update(futures,point_in_time,history,equity,
     # spot basis
     futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
         lambda f: history.loc[point_in_time, f.name + '/rate/funding'],axis=1)
-    futures['mark']=futures.apply(
-        lambda f:history.loc[point_in_time,f.name+'/mark/o'],axis=1)
+    futures['mark'] = futures.apply(
+        lambda f: history.loc[point_in_time, f.name + '/mark/o'],axis=1)
     futures['index'] = futures.apply(
         lambda f: history.loc[point_in_time, f.name + '/indexes/o'],axis=1)
     futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future'].apply(
@@ -263,7 +262,7 @@ def forecast(exchange, futures, hy_history,
     #                        axis=1)
 
     if filename!='':
-        with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter') as writer:
+        with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             futures.to_excel(writer, sheet_name='futureinfo')
             for col in futures.index:
                 all = pd.concat([intLongCarry[col],
@@ -458,7 +457,7 @@ def cash_carry_optimizer(exchange, futures,
         if not res['success']:
             logging.error(res['message'])
             if (True if 'verbose' in optional_params else False):
-                with pd.ExcelWriter('paths.xlsx', engine='xlsxwriter') as writer:
+                with pd.ExcelWriter('Runtime/runs/paths.xlsx', engine='xlsxwriter') as writer:
                     pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
             if not res['message'] == 'Iteration limit reached':
                 # cheeky ignore that exception:
@@ -509,7 +508,7 @@ def cash_carry_optimizer(exchange, futures,
         summary.columns.names=['field']
 
         if (True if 'verbose' in optional_params else False):
-            with pd.ExcelWriter('paths.xlsx', engine='xlsxwriter') as writer:
+            with pd.ExcelWriter('Runtime/runs/paths.xlsx', engine='xlsxwriter') as writer:
                 summary.to_excel(writer, sheet_name='futureinfo')
                 pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
 

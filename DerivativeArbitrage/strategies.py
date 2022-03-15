@@ -74,10 +74,9 @@ async def perp_vs_cash(
     now_time = datetime.now()
 
     # qualitative filtering
-    universe=await refresh_universe(exchange,UNIVERSE)
-    universe=universe[~universe['underlying'].isin(exclusion_list)]
+    universe = await refresh_universe(exchange,UNIVERSE)
+    universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = TYPE_ALLOWED
-
     filtered = futures[(futures['type'].isin(type_allowed))
                        & (futures['symbol'].isin(universe.index))]
     futures = None #safety..
@@ -104,18 +103,19 @@ async def perp_vs_cash(
         equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # run a trajectory
-    if backtest_start == backtest_end:
+    if backtest_start and backtest_end:
+        point_in_time = backtest_start + signal_horizon + holding_period
+    else:
         point_in_time = now_time.replace(minute=0, second=0, microsecond=0)
         backtest_start = point_in_time
         backtest_end = point_in_time
-    else:
-        point_in_time = backtest_start + signal_horizon + holding_period
 
     ## ----------- enrich/carry filter, get history, populate concentration limit
     enriched = await enricher(exchange, filtered, holding_period, equity=equity,
                               slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
+    await build_history(enriched,exchange)
     hy_history = await get_history(enriched, end=backtest_end,start=backtest_start-signal_horizon-holding_period)
     enriched = market_capacity(enriched, hy_history)
 
@@ -123,7 +123,7 @@ async def perp_vs_cash(
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
         exchange, enriched, hy_history,
         holding_period,  # to convert slippage into rate
-        signal_horizon,filename='history')  # historical window for expectations)
+        signal_horizon,filename='Runtime/runs/history.xlsx')  # historical window for expectations)
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
                      minimum_carry=0) # do not remove futures using minimum_carry
@@ -271,7 +271,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['backtest'])
+        argv.extend(['depth'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -302,9 +302,9 @@ def strategies_main(*argv):
             holding_period=[argv[2]],
             slippage_override=[SLIPPAGE_OVERRIDE],
             backtest_start=None, backtest_end=None))
-        with pd.ExcelWriter('res.xlsx', engine='xlsxwriter') as writer:
+        with pd.ExcelWriter('Runtime/runs/depth.xlsx', engine='xlsxwriter') as writer:
             for res,equity in zip(results,equities):
-                res.to_excel(writer,sheet_name=equity)
+                res.to_excel(writer,sheet_name=str(equity))
     elif argv[0] == 'backtest':
         for equity in [[1000000]]:
             for concentration_limit in [[1]]:

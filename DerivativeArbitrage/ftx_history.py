@@ -8,7 +8,7 @@ from ftx_utilities import *
 from ftx_ftx import *
 history_start = datetime(2020, 11, 26)
 
-# all rates annualized, all volumes daily
+# all rates annualized, all volumes daily in usd
 async def get_history(futures, start, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
         dirname = 'Runtime/Mktdata_database'):
     data = pd.concat(await asyncio.gather(*(
@@ -19,60 +19,61 @@ async def get_history(futures, start, end = datetime.now(tz=None).replace(minute
             [async_from_parquet(dirname+'/'+f+'_price.parquet')
              for f in futures['underlying'].unique()] +
             [async_from_parquet(dirname+'/'+f+'_borrow.parquet')
-             for f in (list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD'])]
+             for f in (list(futures['underlying'].unique()) + ['USD'])]
     )), join='outer', axis=1)
-    return data[start:end]
+
+    # convert borrow size in usd
+    for f in futures['underlying'].unique():
+        data[f + '/rate/size']*=data[f + '/price/o']
+
+    return data[~data.index.duplicated()].sort_index()[start:end]
 
 async def build_history(futures,exchange,
         end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
         dirname = 'Runtime/Mktdata_database'):
 
-    # if less than 100hrs missing, do it in one go
-    futures['parquet_filename'] = futures.apply(lambda f: dirname+'/'+f.name+'_futures.parquet',axis=1)
-    futures['little_data'] = futures['parquet_filename'].apply(lambda f:
-                                         max(from_parquet(f).index) if os.path.isfile(f) and max(from_parquet(f).index) > end - timedelta(hours=100)
-                                         else None)
-    if not (futures[~futures['little_data'].isnull()].empty or end <= futures['little_data'].min()+timedelta(hours=1)):
-        await fetch_history(futures[~futures['little_data'].isnull()],exchange,'1h',end,futures['little_data'].min()+timedelta(hours=1),dirname)
+    coroutines = []
+    for _, f in futures[futures['type'] == 'perpetual'].iterrows():
+        parquet_name = dirname + '/' + f.name + '_funding.parquet'
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        start = max(parquet.index)+timedelta(hours=1) if parquet is not None else history_start
+        if start < end:
+            coroutines.append(funding_history(f, exchange, start, end, dirname))
 
-    # one by one for the rest
-    for f in futures[futures['little_data'].isnull()].index:
-        await fetch_history(futures.loc[[f]], exchange, '1h', end, history_start,dirname)
+    for _, f in futures.iterrows():
+        parquet_name = dirname + '/' + f.name + '_futures.parquet'
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        if start < end:
+            coroutines.append(rate_history(f, exchange, end, start, '1h', dirname))
 
-async def fetch_history(futures, exchange,
-                        timeframe,
-                        end,
-                        start,
-                        dirname):
-    print('fetch_history {} for {}h'.format(futures['symbol'].values,(end-start).total_seconds()/3600))
-    data = pd.concat(await asyncio.gather(*(
-            [funding_history(f,exchange,start,end,dirname)
-             for (i,f) in futures[futures['type']=='perpetual'].iterrows()]+
-            [rate_history(f, exchange, end, start, timeframe,dirname)
-             for (i, f) in futures.iterrows()]+
-            [spot_history(f + '/USD', exchange, end, start, timeframe, dirname)
-             for f in futures['underlying'].unique()]+
-            [borrow_history(f, exchange, end, start, dirname)
-             for f in (list(futures.loc[futures['spotMargin']==True, 'underlying'].unique())+['USD'])]
-    )),join='outer',axis=1)
+    for f in futures['underlying'].unique():
+        parquet_name = dirname + '/' + f + '_price.parquet'
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        if start < end:
+            coroutines.append(spot_history(f + '/USD', exchange, end, start , '1h', dirname))
 
+    for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
+        parquet_name = dirname + '/' + f + '_borrow.parquet'
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        if start < end:
+            coroutines.append(borrow_history(f, exchange, end, start, dirname))
+
+    # run all coroutines
+    await asyncio.gather(*coroutines)
+
+    # static values for non spot Margin underlyings
     otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
-    data=pd.concat([data]+
-                   [pd.DataFrame(index=data.index, columns=[f + '/rate/borrow'], data=999)
-                    for f in futures.loc[futures['spotMargin']==False, 'underlying'].unique()]+
-                   [pd.DataFrame(index=data.index, columns=[f + '/rate/size'], data=0)
-                    for f in futures.loc[futures['spotMargin']==False, 'underlying'].unique()]+
-                   [pd.DataFrame(index=data.index, columns=[f + '/rate/borrow'], data=otc_file.loc[f,'borrow'])
-                    for f in futures.loc[futures['spotMargin'] == 'OTC', 'underlying'].unique()] +
-                   [pd.DataFrame(index=data.index, columns=[f + '/rate/size'], data=otc_file.loc[f,'size'])
-                    for f in futures.loc[futures['spotMargin'] == 'OTC', 'underlying'].unique()],
-                   join='outer',axis=1)
-
-    # convert borrow size in usd
-    for f in futures.loc[futures['spotMargin']==True,'underlying'].unique():
-        data[f + '/rate/size']*=data[f + '/price/o']
-
-    return data[~data.index.duplicated()].sort_index()
+    for f in list(futures.loc[futures['spotMargin'] == False, 'underlying'].unique()):
+        spot_parquet = from_parquet(dirname + '/' + f + '_price.parquet')
+        to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/borrow'],
+                                data=otc_file.loc[f,'borrow'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 999
+                                ),dirname + '/' + f + '_borrow.parquet',mode='a')
+        to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/size'],
+                                data=otc_file.loc[f,'size'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 0
+                                ),dirname + '/' + f + '_borrow.parquet',mode='a')
 
 ### only perps, only borrow and funding, only hourly
 async def borrow_history(coin,exchange,

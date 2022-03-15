@@ -30,6 +30,8 @@ from datetime import datetime,timezone,timedelta,date
 import dateutil
 import itertools
 
+safe_gather_limit = 20
+
 def async_wrap(f):
     @functools.wraps(f)
     async def run(*args, loop=None, executor=None, **kwargs):
@@ -38,6 +40,13 @@ def async_wrap(f):
         p = functools.partial(f, *args, **kwargs)
         return await loop.run_in_executor(executor, p)
     return run
+
+async def safe_gather(coroutine_list):
+    n = int(len(coroutine_list) / safe_gather_limit)
+    list = []
+    for i in range(n + 1): list.append(
+        await asyncio.gather(*(coroutine_list[(i * safe_gather_limit):(min(len(coroutine_list), (i * safe_gather_limit + safe_gather_limit)))])))
+    return [l for sub_list in list for l in sub_list]
 
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
