@@ -20,7 +20,7 @@ import pickle
 import pyarrow as pa
 import pyarrow.parquet as pq
 import xlsxwriter
-#from s3 import *
+import boto3
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)

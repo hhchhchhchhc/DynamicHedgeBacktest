@@ -9,6 +9,7 @@ cufflinks
 #pickle
 XlsxWriter
 openpyxl
+boto3
 scipy
 matplotlib
 websockets

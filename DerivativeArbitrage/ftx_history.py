@@ -9,7 +9,7 @@ from ftx_ftx import *
 history_start = datetime(2020, 11, 26)
 
 # all rates annualized, all volumes daily in usd
-async def get_history(futures, start, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
+async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
         dirname = 'Runtime/Mktdata_database'):
     data = pd.concat(await asyncio.gather(*(
             [async_from_parquet(dirname+'/'+f+'_funding.parquet')
@@ -26,11 +26,13 @@ async def get_history(futures, start, end = datetime.now(tz=None).replace(minute
     for f in futures['underlying'].unique():
         data[f + '/rate/size']*=data[f + '/price/o']
 
+    start = end - timedelta(hours=start_or_nb_hours) if isinstance(start_or_nb_hours,int) else start_or_nb_hours
     return data[~data.index.duplicated()].sort_index()[start:end]
 
 async def build_history(futures,exchange,
         end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
         dirname = 'Runtime/Mktdata_database'):
+    '''for now, increments local files and then uploads to s3'''
 
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
@@ -74,6 +76,8 @@ async def build_history(futures,exchange,
         to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/size'],
                                 data=otc_file.loc[f,'size'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 0
                                 ),dirname + '/' + f + '_borrow.parquet',mode='a')
+
+    #os.system("aws s3 sync Runtime/Mktdata_database/ s3://hourlyftx/Mktdata_database")
 
 ### only perps, only borrow and funding, only hourly
 async def borrow_history(coin,exchange,
@@ -318,22 +322,22 @@ async def ftx_history_main_wrapper(*argv):
     futures = futures[futures.index.isin(universe)]
 
     # volume screening
-    hy_history = await build_history(futures, exchange)
+    if argv[0] == 'build':
+        await build_history(futures, exchange)
+    hy_history = await get_history(futures, 24*int(argv[3]))
     await exchange.close()
     return hy_history
 
 def ftx_history_main(*argv):
     argv=list(argv)
     if len(argv) < 1:
-        argv.extend(['build'])
+        argv.extend(['get'])
     if len(argv) < 2:
         argv.extend(['wide']) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
         argv.extend(['ftx']) # exchange_name
     if len(argv) < 4:
         argv.extend([7])# nb days
-    if len(argv) < 5:
-        argv.extend([''])# cache directory
 
     return asyncio.run(ftx_history_main_wrapper(*argv))
 
