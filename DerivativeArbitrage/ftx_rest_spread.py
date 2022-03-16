@@ -307,7 +307,7 @@ async def executer_sysperp(exchange: ccxt.Exchange,weights: pd.DataFrame) -> Exe
     orders_by_underlying = [r[1] for r in weights.groupby('underlying')]
     single_orders = [{'symbol':r.head(1)['name'].values[0], 'size':r.head(1)['diff'].values[0], 'volume':r.head(1)['volume'].values[0]}
                      for r in orders_by_underlying if r.shape[0]==1]
-    log.children += await asyncio.gather(*[slice_single_order(exchange,
+    log.children += await safe_gather([slice_single_order(exchange,
                                                               r['symbol'],
                                                               r['size'],r['volume'])
                                            for r in single_orders])
@@ -316,7 +316,7 @@ async def executer_sysperp(exchange: ccxt.Exchange,weights: pd.DataFrame) -> Exe
                       'symbol2':r.tail(1)['name'].values[0], 'size2':r.tail(1)['diff'].values[0], 'volume':r['volume'].min()}
                      for r in orders_by_underlying
                      if (r.shape[0]==2)]
-    log.children += await asyncio.gather(*[slice_spread_order(exchange,
+    log.children += await safe_gather([slice_spread_order(exchange,
                                                               r['symbol1'],
                                                               r['symbol2'],
                                                               r['size1'],
@@ -336,7 +336,7 @@ async def ftx_rest_spread_main_wrapper(*argv):
     exchange = await open_exchange(argv[1], argv[2])
     weights = await diff_portoflio(exchange, argv[3])
 
-    trades_history_list=await asyncio.gather(*[fetch_trades_history(
+    trades_history_list=await safe_gather([fetch_trades_history(
        s,exchange,datetime.now()-timedelta(weeks=1),datetime.now(),'1s')
                       for s in weights['name'].values])
     weights['volume'] = [th.mean()[s.split('/USD')[0] + '/trades/volume'] for th,s in zip(trades_history_list,weights['name'].values)]

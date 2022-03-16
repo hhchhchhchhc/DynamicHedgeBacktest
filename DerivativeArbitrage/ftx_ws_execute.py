@@ -169,7 +169,7 @@ class myFtx(ccxtpro.ftx):
         end = datetime.now()
         start = end - timedelta(hours=1)
 
-        trades_history_list = await asyncio.gather(*[fetch_trades_history(
+        trades_history_list = await safe_gather([fetch_trades_history(
             self.market(symbol)['id'], self, start, end, frequency=frequency)
             for symbol in weights['name']])
 
@@ -278,7 +278,7 @@ class myFtx(ccxtpro.ftx):
         ''' updates risk in USD.
             all symbols not present when state is built are ignored !
             if some tickers are not initialized, it just uses markets'''
-        risks = await asyncio.gather(*[self.fetch_positions(),self.fetch_balance()])
+        risks = await safe_gather([self.fetch_positions(),self.fetch_balance()])
         positions = risks[0]
         balances = risks[1]
         risk_timestamp = self.milliseconds()
@@ -541,7 +541,7 @@ class myFtx(ccxtpro.ftx):
                         and orders[0]['remaining']>sizeIncrement:
                     nowtime = self.milliseconds()
                     clientMktOrderId = f'stop_{symbol}_{str(nowtime)}'
-                    result = await asyncio.gather(*[self.create_order(symbol, 'market', 'buy' if size>0 else 'sell',orders[0]['remaining'],params={'clientOrderId':clientMktOrderId}),
+                    result = await safe_gather([self.create_order(symbol, 'market', 'buy' if size>0 else 'sell',orders[0]['remaining'],params={'clientOrderId':clientMktOrderId}),
                                                     self.cancel_order(orders[0]['id'],symbol=symbol,params={'clientOrderId':order['clientOrderId']})])
                     order = result[0]
                 # chase
@@ -606,7 +606,7 @@ class myFtx(ccxtpro.ftx):
 
         # in case fills arrived after risk updates
         #     latest_delta_refresh = {x:data['delta_id'] for x,data in self.risk_state[coin].items() if x in self.markets and data['delta_id']}
-        #     coin_fills = await asyncio.gather(*[self.fetch_my_trades(symbol=x,params={'minId':delta_id + 1})
+        #     coin_fills = await safe_gather([self.fetch_my_trades(symbol=x,params={'minId':delta_id + 1})
         #                                         for x,delta_id in latest_delta_refresh.items()])
         #     for symbol_fills in coin_fills:
         #         for fill in symbol_fills:
@@ -761,7 +761,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             exchange.running_symbols = [symbol
                                         for coin_data in exchange.risk_state.values()
                                         for symbol in coin_data.keys() if symbol in exchange.markets]
-            await asyncio.gather(*([exchange.monitor_fills(),exchange.monitor_risk(),exchange.monitor_orders()]+
+            await safe_gather(([exchange.monitor_fills(),exchange.monitor_risk(),exchange.monitor_orders()]+
                                    [exchange.order_master(symbol)
                                     for symbol in exchange.running_symbols]
                                    ))
@@ -784,7 +784,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
 def ftx_ws_spread_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['sysperp'])
+        argv.extend(['unwind'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     logging.info(f'running {argv}')

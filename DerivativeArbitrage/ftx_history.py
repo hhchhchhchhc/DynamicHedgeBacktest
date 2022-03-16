@@ -11,7 +11,7 @@ history_start = datetime(2020, 11, 26)
 # all rates annualized, all volumes daily in usd
 async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
         dirname = 'Runtime/Mktdata_database'):
-    data = pd.concat(await asyncio.gather(*(
+    data = pd.concat(await safe_gather((
             [async_from_parquet(dirname+'/'+f+'_funding.parquet')
              for f in futures[futures['type'] == 'perpetual'].index] +
             [async_from_parquet(dirname+'/'+f+'_futures.parquet')
@@ -64,7 +64,7 @@ async def build_history(futures,exchange,
             coroutines.append(borrow_history(f, exchange, end, start, dirname))
 
     # run all coroutines
-    await asyncio.gather(*coroutines)
+    await safe_gather(coroutines)
 
     # static values for non spot Margin underlyings
     otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
@@ -92,7 +92,7 @@ async def borrow_history(coin,exchange,
     f = max_funding_data * int(resolution)
     start_times = [e - k * f for k in range(1 + int((e - s) / f)) if e - k * f > s] + [s]
 
-    data = pd.concat(await asyncio.gather(*[
+    data = pd.concat(await safe_gather([
         fetch_borrow_rate_history(exchange,coin,start_time,start_time+f-int(resolution))
             for start_time in start_times]),axis=0,join='outer')
     if len(data)==0:
@@ -121,7 +121,7 @@ async def funding_history(future,exchange,
     f = max_funding_data * int(resolution)
     start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
-    lists = await asyncio.gather(*[
+    lists = await safe_gather([
         exchange.fetch_funding_rate_history(exchange.market(future['symbol'])['symbol'], params={'start_time':start_time, 'end_time':start_time+f})
                                 for start_time in start_times])
     funding = [y for x in lists for y in x]
@@ -212,7 +212,7 @@ async def rate_history(future,exchange,
     f = max_mark_data * int(resolution)
     start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
-    mark_indexes = await asyncio.gather(*[
+    mark_indexes = await safe_gather([
         exchange.fetch_ohlcv(exchange.market(future['symbol'])['symbol'], timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
             for start_time in start_times
                 for params in [{'start_time':start_time, 'end_time':start_time+f-int(resolution)},
@@ -284,7 +284,7 @@ async def spot_history(symbol, exchange,
     f = max_mark_data * int(resolution)
     start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
-    spot_lists = await asyncio.gather(*[
+    spot_lists = await safe_gather([
         exchange.fetch_ohlcv(symbol, timeframe=timeframe, params={'start_time':start_time, 'end_time':start_time+f-int(resolution)})
                                 for start_time in start_times])
     spot = [y for x in spot_lists for y in x]

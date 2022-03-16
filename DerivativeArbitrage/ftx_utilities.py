@@ -30,7 +30,7 @@ from datetime import datetime,timezone,timedelta,date
 import dateutil
 import itertools
 
-safe_gather_limit = 20
+safe_gather_limit = 5
 
 def async_wrap(f):
     @functools.wraps(f)
@@ -41,12 +41,13 @@ def async_wrap(f):
         return await loop.run_in_executor(executor, p)
     return run
 
-async def safe_gather(coroutine_list):
-    n = int(len(coroutine_list) / safe_gather_limit)
-    list = []
-    for i in range(n + 1): list.append(
-        await asyncio.gather(*(coroutine_list[(i * safe_gather_limit):(min(len(coroutine_list), (i * safe_gather_limit + safe_gather_limit)))])))
-    return [l for sub_list in list for l in sub_list]
+async def safe_gather(tasks,n=safe_gather_limit):
+    semaphore = asyncio.Semaphore(n)
+
+    async def sem_task(task):
+        async with semaphore:
+            return await task
+    return await asyncio.gather(*(sem_task(task) for task in tasks))
 
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'

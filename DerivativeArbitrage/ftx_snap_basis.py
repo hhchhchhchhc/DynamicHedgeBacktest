@@ -108,8 +108,7 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
                                   slippage_override=-999, slippage_orderbook_depth=depth,
                                   slippage_scaler=1.0,
                                   params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
-        end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)
-        hy_history = await get_history(enriched,start=end-timedelta(hours=2),end=end)
+        hy_history = await get_history(enriched,start_or_nb_hours=48)
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
             HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate
@@ -305,16 +304,16 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
             futures['future_bid'] = -futures['future_ask']
             #futures['speed']=0##*futures['future_ask'] ### just 0
         else:
-            futures['spot_ask'] = [x['slippage'] * slippage_scaler + fees for x in await asyncio.gather(
+            futures['spot_ask'] = [x['slippage'] * slippage_scaler + fees for x in await safe_gather(
                 *[mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth) for
                   x in futures['spot_ticker'].values])]
-            futures['spot_bid'] = [x['slippage'] * slippage_scaler - fees for x in await asyncio.gather(
+            futures['spot_bid'] = [x['slippage'] * slippage_scaler - fees for x in await safe_gather(
                 *[mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth) for
                   x in futures['spot_ticker'].values])]
-            futures['future_ask'] = [x['slippage'] * slippage_scaler + fees for x in await asyncio.gather(
+            futures['future_ask'] = [x['slippage'] * slippage_scaler + fees for x in await safe_gather(
                 *[mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth) for
                   x in futures['symbol'].values])]
-            futures['future_bid'] = [x['slippage'] * slippage_scaler - fees for x in await asyncio.gather(
+            futures['future_bid'] = [x['slippage'] * slippage_scaler - fees for x in await safe_gather(
                 *[mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth) for
                   x in futures['symbol'].values])]
 
@@ -422,8 +421,8 @@ def cash_carry_optimizer(exchange, futures,
 
     # --------- verbose callback function: breaks down pnl during optimization
     progress_display=[]
-    def callbackF(x, progress_display, verbose=False):
-        if verbose:
+    def callbackF(x, progress_display, print_with_flag=None):
+        if print_with_flag:
             progress_display += [pd.Series({
                 'E_int': np.dot(x, E_intCarry),
                 'usdBorrowRefund': E_intUSDborrow * min([equity, sum(x)]),
@@ -433,8 +432,11 @@ def cash_carry_optimizer(exchange, futures,
                 #TODO: covar pre-update
                 # 'loss_tolerance_constraint': loss_tolerance_constraint['fun'](x),
                 'margin_constraint': margin_constraint['fun'](x),
-                'stopout_constraint': stopout_constraint['fun'](x)
+                'stopout_constraint': stopout_constraint['fun'](x),
+                'success': print_with_flag
             }).append(pd.Series(index=futures.index, data=x))]
+            with pd.ExcelWriter('Runtime/runs/paths.xlsx', engine='xlsxwriter') as writer:
+                pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
         return []
 
     xt = previous_weights.values
@@ -447,24 +449,21 @@ def cash_carry_optimizer(exchange, futures,
         #x0=equity*np.array(E_intCarry)/sum(E_intCarry)
         #x1 = x0/np.max([1-margin_constraint['fun'](x0)/equity,1-stopout_constraint['fun'](x0)/equity])
         x1 = xt*0
-        callbackF(x1, progress_display,(True if 'verbose' in optional_params else False))
+        if 'verbose' in optional_params:
+            callbackF(x1, progress_display,'initial')
 
         res = scipy.optimize.minimize(objective, x1, method='SLSQP', jac=objective_jac,
                                       constraints = [margin_constraint,stopout_constraint], # ,loss_tolerance_constraint
                                       bounds = bounds,
-                                      callback=lambda x:callbackF(x,progress_display,(True if 'verbose' in optional_params else False)),
+                                      callback= (lambda x:callbackF(x,progress_display,'interim')) if 'verbose' in optional_params else None,
                                       options = {'ftol': 1e-2, 'disp': False, 'finite_diff_rel_step' : finite_diff_rel_step, 'maxiter': 20*len(x1)})
-        if not res['success']:
+        if (not res['success']) and not res['message'] == 'Iteration limit reached':
+            # cheeky ignore that exception:
+            # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
             logging.error(res['message'])
-            if (True if 'verbose' in optional_params else False):
-                with pd.ExcelWriter('Runtime/runs/paths.xlsx', engine='xlsxwriter') as writer:
-                    pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
-            if not res['message'] == 'Iteration limit reached':
-                # cheeky ignore that exception:
-                # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
-                raise Exception(res['message'])
+            raise Exception(res['message'])
 
-    callbackF(res['x'], progress_display,(True if 'verbose' in optional_params else False))
+    callbackF(res['x'], progress_display,res['message'])
 
     def summarize():
         summary=pd.DataFrame()
@@ -507,10 +506,8 @@ def cash_carry_optimizer(exchange, futures,
         summary.loc['total', 'transactionCost'] = summary['transactionCost'].sum()
         summary.columns.names=['field']
 
-        if (True if 'verbose' in optional_params else False):
-            with pd.ExcelWriter('Runtime/runs/paths.xlsx', engine='xlsxwriter') as writer:
-                summary.to_excel(writer, sheet_name='futureinfo')
-                pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
+        with pd.ExcelWriter('Runtime/runs/paths.xlsx', engine='xlsxwriter') as writer:
+            summary.to_excel(writer, sheet_name='futureinfo')
 
         return summary
     return summarize()

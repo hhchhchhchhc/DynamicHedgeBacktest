@@ -68,7 +68,7 @@ async def main(loop):
 
     while True:
         try:
-            await asyncio.gather(*[watch_order_book(exchange,symbol),
+            await safe_gather([watch_order_book(exchange,symbol),
                                        watch_orders(exchange,symbol)])
         except Exception as e:
             print(type(e).__name__, str(e))

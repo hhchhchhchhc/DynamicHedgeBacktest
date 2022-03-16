@@ -13,11 +13,11 @@ async def refresh_universe(exchange,universe_size):
             logging.exception('invalid Runtime/configs/universe.xlsx', exc_info=True)
 
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
-    markets=await exchange.fetch_markets()
+    markets = await exchange.fetch_markets()
 
     universe_start = datetime(2021, 10, 1)
-    universe_end = datetime(2022, 1, 1)
-    borrow_decile = 0.25
+    universe_end = datetime(2022, 3, 1)
+    borrow_decile = 0.5
     #type_allowed=['perpetual']
     screening_params=pd.DataFrame(
         index=['future_volume_threshold','spot_volume_threshold','borrow_volume_threshold','open_interest_threshold'],
@@ -32,7 +32,8 @@ async def refresh_universe(exchange,universe_size):
         & (futures['tokenizedEquity'] != True)]
 
     # volume screening
-    hy_history = await get_history(futures, end=universe_end, start=universe_start)
+    await build_history(futures,exchange)
+    hy_history = await get_history(futures, end=universe_end, start_or_nb_hours=universe_start)
     futures = market_capacity(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
@@ -116,7 +117,7 @@ async def perp_vs_cash(
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
     await build_history(enriched,exchange)
-    hy_history = await get_history(enriched, end=backtest_end,start=backtest_start-signal_horizon-holding_period)
+    hy_history = await get_history(enriched, end=backtest_end, start_or_nb_hours=backtest_start-signal_horizon-holding_period)
     enriched = market_capacity(enriched, hy_history)
 
     # ------- build derived data history
@@ -171,6 +172,7 @@ async def perp_vs_cash(
 
         # increment
         trajectory = trajectory.append(optimized.reset_index().rename({'name': 'symbol'}), ignore_index=True)
+        trajectory.to_excel('Runtime/runs/temp_trajectory.xlsx')
         previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
         previous_time = point_in_time
         point_in_time += holding_period
@@ -245,7 +247,7 @@ async def strategy_wrapper(**kwargs):
         exchange = await open_exchange(kwargs['exchange'],EQUITY, config={'asyncio_loop':asyncio.get_running_loop()})
     await exchange.load_markets()
 
-    result = await asyncio.gather(*[perp_vs_cash(
+    result = await safe_gather([perp_vs_cash(
         exchange=exchange,
         equity=equity,
         concentration_limit=concentration_limit,
@@ -271,7 +273,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['depth'])
+        argv.extend(['backtest'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -306,13 +308,13 @@ def strategies_main(*argv):
             for res,equity in zip(results,equities):
                 res.to_excel(writer,sheet_name=str(equity))
     elif argv[0] == 'backtest':
-        for equity in [[1000000]]:
+        for equity in [[100000]]:
             for concentration_limit in [[1]]:
                 for mktshare_limit in [[MKTSHARE_LIMIT]]:
                     for minimum_carry in [[MINIMUM_CARRY]]:
                         for signal_horizon in [[timedelta(hours=h) for h in [12, 60]]]:
                             for holding_period in [[timedelta(hours=h) for h in [48]]]:
-                                for slippage_override in [[0.0002]]:
+                                for slippage_override in [[0.0000]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange='ftx',
                                         equity=equity,
@@ -323,8 +325,8 @@ def strategies_main(*argv):
                                         signal_horizon=signal_horizon,
                                         holding_period=holding_period,
                                         slippage_override=slippage_override,
-                                        backtest_start=datetime(2021,11,1),
-                                        backtest_end=datetime(2022,2,1)))
+                                        backtest_start=datetime(2021,9,1),
+                                        backtest_end=datetime(2022,3,1)))
     else:
         print(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
 

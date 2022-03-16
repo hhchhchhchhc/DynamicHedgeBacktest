@@ -14,15 +14,6 @@ async def ftx_history(coin_list=[]):
 
     # filtering params
     type_allowed = ['future','perpetual']
-
-    # qualitative filtering
-    universe = await refresh_universe(exchange,'max')
-    universe = universe[~universe['underlying'].isin(EXCLUSION_LIST)]
-
-
-    futures = futures[(futures['type'].isin(type_allowed))
-                       & (futures['symbol'].isin(universe.index))]
-
     futures = futures[#(futures['expired'] == False) &
         (futures['enabled'] == True) & (futures['type'] != "move")
         & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)

@@ -18,7 +18,7 @@ def main(*argv,**kwargs):
     relevant_exchanges = set(exchange for exchange in haves['fetchTickers'] if not exchange.id in ['vcc'])#[exchange for exchange in async_exchanges if exchange.id in ['okex5','huobipro','ftx']]
 
     async def get_all(relevant_exchanges):
-        symbols_all_exchanges = await asyncio.gather(*[exchange.fetch_markets()
+        symbols_all_exchanges = await safe_gather([exchange.fetch_markets()
                                                        for exchange in relevant_exchanges])
         async def safe_fetch_ticker(exchange,symbol):
             try:
@@ -31,7 +31,7 @@ def main(*argv,**kwargs):
             symbol_df = pd.DataFrame(symbols)
             symbol_df=symbol_df[symbol_df['active']==True]
             symbol_df.loc[symbol_df['type']==True,'index']
-            ticker_list = await asyncio.gather(*[safe_fetch_ticker(exchange,symbol['symbol']) for symbol in symbols])
+            ticker_list = await safe_gather([safe_fetch_ticker(exchange,symbol['symbol']) for symbol in symbols])
             tickers |= {exchange:{ticker['symbol']: {key: ticker[key] for key in ['close']} for ticker in ticker_list}}
             logging.info('done {}'.format(exchange.id))
 
@@ -59,7 +59,7 @@ def main(*argv,**kwargs):
 
     # fetch_borrow_rates
     #accessible_exchanges = [ftx_utilities.open_exchange(exchange,'') for exchange in ['okex5','huobi']]
-    #await asyncio.gather(*[exchange.fetch_borrow_rates() for exchange in accessible_exchanges])
+    #await safe_gather([exchange.fetch_borrow_rates() for exchange in accessible_exchanges])
     a=0
     # watch order book
     #pro_exchanges = [getattr(ccxtpro, id)() for id in ccxtpro.exchanges]
