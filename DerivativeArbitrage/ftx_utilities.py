@@ -290,8 +290,12 @@ def log_reader(prefix='latest',dirname='Runtime/logs'):
     history = from_parquet(f'{path}_minutely.parquet')
 
     with pd.ExcelWriter(f'{dirname}/latest_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
-        events[events['order_narrative']!='remote_risk'].sort_values(by='event_timestamp',ascending=True).to_excel(writer, sheet_name='order_lifecycle')
-        events[events['order_narrative']=='remote_risk'].sort_values(by='event_timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
+        order_events = events[events['lifecycle_status']!='remote_risk']
+        if not order_events.empty:
+            order_events.sort_values(by='in_flight_timestamp',ascending=True).to_excel(writer, sheet_name='order_lifecycle')
+        risk_events = events[events['lifecycle_status']=='remote_risk']
+        if not risk_events.empty:
+            risk_events.sort_values(by='timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
         request.to_excel(writer, sheet_name='request')
         history.to_excel(writer, sheet_name='history')
 

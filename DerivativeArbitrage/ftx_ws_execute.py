@@ -12,7 +12,7 @@ from ftx_portfolio import diff_portoflio,MarginCalculator
 from ftx_history import fetch_trades_history
 from ftx_ftx import fetch_latencyStats,fetch_futures
 
-max_nb_coins = 1  # TODO: sharding needed
+max_nb_coins = 20  # TODO: sharding needed
 entry_tolerance = 0.5 # green light if basket better than median
 edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(10) # stop on 10min stdev
@@ -86,7 +86,8 @@ class myFtx(ccxtpro.ftx):
 
     def filter_orders(self,key_value_dict):
         if self.orders:
-            return [order for order in self.orders if all(order[key]==value for key,value in key_value_dict.items())]
+            return [order for order in self.orders if all(order[key]==value for key,value in key_value_dict.items() if key in order)]
+            #return [order for order in self.orders_lifecyle if all(order[key] == value for key, value in key_value_dict.items() if key in order)]
         else:
             return []
 
@@ -475,8 +476,8 @@ class myFtx(ccxtpro.ftx):
         self.margin_headroom = self.margin_calculator.actual_IM
 
         # log risk
-        if False:
-            [self.lifecycle_in_flight({'narrative': 'remote_risk', 'symbol':symbol_, 'timestamp':self.milliseconds()})  # kinda hack but logs it...
+        if True:
+            self.orders_lifecyle += [{'lifecycle_status': 'remote_risk', 'symbol':symbol_, 'timestamp':self.milliseconds()}
              for coin_,coin_data in self.risk_state.items()
              for symbol_ in coin_data.keys() if symbol_ in self.markets]
 
@@ -613,15 +614,15 @@ class myFtx(ccxtpro.ftx):
         edit_price = float(self.price_to_precision(symbol,opposite_side - (1 if size>0 else -1)*max(priceIncrement*1.1,edit_price_depth)))
 
         try:
-            orders = self.filter_orders({'symbol':symbol, 'status':'open'})
+            orders = self.filter_orders({'symbol':symbol, 'status':'open', 'lifecycle_status':'ackowledged'})
             if len(orders) > 1:
-                for _order in orders[1:]:
-                    await self.cancel_order(_order['id'],symbol=symbol,params={'clientOrderId':_order['clientOrderId'],'dubious':True})
-                    self.logger.warning('cancelled duplicate {} order {}'.format(symbol,_order['id']))
+                for order in orders[1:]:
+                    await self.cancel_order(order['id'],symbol=symbol,params={'clientOrderId':order['clientOrderId'],'dubious':True})
+                    self.logger.warning('cancelled duplicate {} order {}'.format(symbol,order['id']))
 
             if len(orders)==0:
                 clientOrderId = f'new_{symbol}_{str(self.milliseconds())}'
-                await self.create_order(symbol, 'limit', 'buy' if size>0 else 'sell', np.abs(size), price=edit_price,
+                order = await self.create_order(symbol, 'limit', 'buy' if size>0 else 'sell', np.abs(size), price=edit_price,
                                                 params={'postOnly': True, 'clientOrderId':clientOrderId})
             else:
                 order = orders[0]
@@ -632,7 +633,7 @@ class myFtx(ccxtpro.ftx):
                         and order['remaining']>sizeIncrement:
 
                     clientMktOrderId = f'stop_{symbol}_{str(self.milliseconds())}'
-                    result = await safe_gather([self.create_order(symbol, 'market', 'buy' if size>0 else 'sell',order['remaining'],params={'clientOrderId':clientMktOrderId}),
+                    await safe_gather([self.create_order(symbol, 'market', 'buy' if size>0 else 'sell',order['remaining'],params={'clientOrderId':clientMktOrderId}),
                                                     self.cancel_order(order['id'],symbol=symbol,params={'clientOrderId':order['clientOrderId'],'dubious':False})],semaphore=self.rest_semaphor)
                 # chase
                 if (order_distance>edit_trigger) \
