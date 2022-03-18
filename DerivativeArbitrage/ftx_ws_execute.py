@@ -12,7 +12,7 @@ from ftx_portfolio import diff_portoflio,MarginCalculator
 from ftx_history import fetch_trades_history
 from ftx_ftx import fetch_latencyStats,fetch_futures
 
-max_nb_coins = 10  # TODO: sharding needed
+max_nb_coins = 1  # TODO: sharding needed
 entry_tolerance = 0.5 # green light if basket better than median
 edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(10) # stop on 10min stdev
@@ -141,10 +141,10 @@ class myFtx(ccxtpro.ftx):
         symbol = clientOrderId.split('_')[1]
         coin = self.markets[symbol]['base']
         if (coin in self.orders_in_flight) and clientOrderId in self.orders_in_flight[coin]:
+            self.orders_in_flight[coin].remove(clientOrderId)
             self.logger.info('order {} resolved. {} coins in flight'.format(
                 clientOrderId,
                 len([in_flight for in_flight in self.orders_in_flight.values() if in_flight != []])))
-            self.orders_in_flight[coin].remove(clientOrderId)
 
     def lifecycle_in_flight(self, order_event):
         ## generic info
