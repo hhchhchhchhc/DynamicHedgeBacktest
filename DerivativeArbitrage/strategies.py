@@ -15,7 +15,7 @@ async def refresh_universe(exchange,universe_size):
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = await exchange.fetch_markets()
 
-    universe_start = datetime(2021, 10, 1)
+    universe_start = datetime(2021, 12, 1)
     universe_end = datetime(2022, 3, 1)
     borrow_decile = 0.5
     #type_allowed=['perpetual']
@@ -273,7 +273,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['backtest'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -308,13 +308,13 @@ def strategies_main(*argv):
             for res,equity in zip(results,equities):
                 res.to_excel(writer,sheet_name=str(equity))
     elif argv[0] == 'backtest':
-        for equity in [[100000]]:
+        for equity in [[1000000]]:
             for concentration_limit in [[1]]:
                 for mktshare_limit in [[MKTSHARE_LIMIT]]:
                     for minimum_carry in [[MINIMUM_CARRY]]:
-                        for signal_horizon in [[timedelta(hours=h) for h in [12, 60]]]:
+                        for signal_horizon in [[timedelta(hours=h) for h in [24]]]:
                             for holding_period in [[timedelta(hours=h) for h in [48]]]:
-                                for slippage_override in [[0.0000]]:
+                                for slippage_override in [[0.0002]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange='ftx',
                                         equity=equity,
