@@ -30,7 +30,7 @@ from datetime import datetime,timezone,timedelta,date
 import dateutil
 import itertools
 
-safe_gather_limit = 5
+safe_gather_limit = 50
 
 def async_wrap(f):
     @functools.wraps(f)
@@ -41,8 +41,8 @@ def async_wrap(f):
         return await loop.run_in_executor(executor, p)
     return run
 
-async def safe_gather(tasks,n=safe_gather_limit):
-    semaphore = asyncio.Semaphore(n)
+async def safe_gather(tasks,n=safe_gather_limit,semaphore=None):
+    semaphore = semaphore if semaphore else asyncio.Semaphore(n)
 
     async def sem_task(task):
         async with semaphore:
