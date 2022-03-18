@@ -18,7 +18,7 @@ edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(10) # stop on 10min stdev
 time_budget = 30*60 # 30m. used in transaction speed screener
 delta_limit = 0.2 # delta limit / pv
-slice_factor = 0.1 # % of request
+slice_factor = 0.25 # % of request
 edit_price_tolerance=np.sqrt(10/60)#price on 10s std
 
 class myFtx(ccxtpro.ftx):
@@ -54,8 +54,8 @@ class myFtx(ccxtpro.ftx):
 
     class DoneDeal(Exception):
         def __init__(self,symbol):
-            self.symbol = symbol
             super().__init__('{} done'.format(symbol))
+            self.symbol = symbol
 
     class LimitBreached(Exception):
         def __init__(self,limit=None,check_frequency=600):
@@ -613,35 +613,34 @@ class myFtx(ccxtpro.ftx):
         edit_price = float(self.price_to_precision(symbol,opposite_side - (1 if size>0 else -1)*max(priceIncrement*1.1,edit_price_depth)))
 
         try:
-            order = None
             orders = self.filter_orders({'symbol':symbol, 'status':'open'})
             if len(orders) > 1:
-                for order in orders[:-1]:
-                    await self.cancel_order(order['id'],symbol=symbol,params={'clientOrderId':order['clientOrderId'],'dubious':True})
-                    self.logger.warning('cancelled duplicate {} order {}'.format(symbol,order['id']))
+                for _order in orders[1:]:
+                    await self.cancel_order(_order['id'],symbol=symbol,params={'clientOrderId':_order['clientOrderId'],'dubious':True})
+                    self.logger.warning('cancelled duplicate {} order {}'.format(symbol,_order['id']))
 
             if len(orders)==0:
                 clientOrderId = f'new_{symbol}_{str(self.milliseconds())}'
-                order = await self.create_order(symbol, 'limit', 'buy' if size>0 else 'sell', np.abs(size), price=edit_price,
+                await self.create_order(symbol, 'limit', 'buy' if size>0 else 'sell', np.abs(size), price=edit_price,
                                                 params={'postOnly': True, 'clientOrderId':clientOrderId})
             else:
-                order_distance = (1 if orders[0]['side']=='buy' else -1)*(opposite_side-orders[0]['price'])
+                order = orders[0]
+                order_distance = (1 if order['side']=='buy' else -1)*(opposite_side-order['price'])
                 # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
                 if stop_depth \
                         and order_distance>stop_trigger \
-                        and orders[0]['remaining']>sizeIncrement:
+                        and order['remaining']>sizeIncrement:
 
                     clientMktOrderId = f'stop_{symbol}_{str(self.milliseconds())}'
-                    result = await safe_gather([self.create_order(symbol, 'market', 'buy' if size>0 else 'sell',orders[0]['remaining'],params={'clientOrderId':clientMktOrderId}),
-                                                    self.cancel_order(orders[0]['id'],symbol=symbol,params={'clientOrderId':order['clientOrderId'],'dubious':False})],semaphore=self.rest_semaphor)
-                    order = result[0]
+                    result = await safe_gather([self.create_order(symbol, 'market', 'buy' if size>0 else 'sell',order['remaining'],params={'clientOrderId':clientMktOrderId}),
+                                                    self.cancel_order(order['id'],symbol=symbol,params={'clientOrderId':order['clientOrderId'],'dubious':False})],semaphore=self.rest_semaphor)
                 # chase
                 if (order_distance>edit_trigger) \
-                        and (np.abs(edit_price-orders[0]['price'])>=priceIncrement) \
-                        and (orders[0]['remaining']>sizeIncrement):
-                    await self.cancel_order(orders[0]['id'], symbol=symbol, params={'clientOrderId': orders[0]['clientOrderId'],'dubious':False})
+                        and (np.abs(edit_price-order['price'])>=priceIncrement) \
+                        and (order['remaining']>sizeIncrement):
+                    await self.cancel_order(order['id'], symbol=symbol, params={'clientOrderId': order['clientOrderId'],'dubious':False})
                     clientOrderId = f'chase_{symbol}_{str(self.milliseconds())}'
-                    order = await self.create_order(symbol, 'limit', 'buy' if size > 0 else 'sell', np.abs(size),price=edit_price,
+                    await self.create_order(symbol, 'limit', 'buy' if size > 0 else 'sell', np.abs(size),price=edit_price,
                                                     params={'postOnly': True, 'clientOrderId': clientOrderId})
 
         ### see error_hierarchy in DerivativeArbitrage/venv/Lib/site-packages/ccxt/base/errors.py
@@ -650,9 +649,9 @@ class myFtx(ccxtpro.ftx):
             self.logger.warning(f'marginal cost {cost}, vs margin_headroom {self.margin_headroom} and calculated_IM {self.calculated_IM}')
         except ccxt.InvalidOrder as e: # is ExchangeError
             if "Order already queued for cancellation" in str(e):
-                self.logger.warning(str(e) + str(orders[0]))
+                self.logger.warning(str(e) + str(order))
             elif ("Order already closed" in str(e)) or ("Order not found" in str(e)):
-                self.logger.warning(str(e) + str(orders[0]))
+                self.logger.warning(str(e) + str(order))
             elif ("Size too small for provide" or "Size too small") in str(e):
                 # usually because filled btw remaining checked and order modify
                 self.logger.warning('{}: {} too small {}...or {} < {}'.format(order,np.abs(size),sizeIncrement,clientOrderId.split('_')[2],'order[timestamp]'))
@@ -660,7 +659,7 @@ class myFtx(ccxtpro.ftx):
                 self.logger.warning(str(e) + str(order))
         except ccxt.ExchangeError as e:  # is base error
             if "Must modify either price or size" in str(e):
-                self.logger.warning(str(e) + str(orders[0]))
+                self.logger.warning(str(e) + str(order))
             else:
                 self.logger.warning(str(e), exc_info=True)
         except ccxt.DDoSProtection as e:
@@ -668,8 +667,6 @@ class myFtx(ccxtpro.ftx):
         except Exception as e:
             self.logger.exception('{} {} {} at {} raised {}'.format('buy' if size > 0 else 'sell', np.abs(size), symbol, price, e))
             raise e
-
-        return order
 
     async def watch_ticker(self, symbol, params={}):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
@@ -719,6 +716,7 @@ class myFtx(ccxtpro.ftx):
         # size < slice_size and margin_headroom
         size = np.sign(size)*float(self.amount_to_precision(symbol, min([np.abs(size), params['slice_size']])))
         if (np.abs(size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
+            self.logger.info(f'{symbol} done')
             raise myFtx.DoneDeal(symbol)
         # if not enough margin, hold it# TODO: this may be slow, and depends on orders anyway
         #if self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance) > self.margin_headroom:
@@ -726,11 +724,10 @@ class myFtx(ccxtpro.ftx):
         #    self.logger.info('margin {} too small for order size {}'.format(size*mid, self.margin_headroom))
         #    return None
 
-        order = None
-
         # if increases risk, go passive
         if np.abs(netDelta+size)-np.abs(netDelta)>0:
             if self.exec_parameters[coin]['entry_level'] is None: # for a purely risk reducing exercise
+                self.logger.info(f'dont do {symbol}, would increses risk')
                 raise myFtx.DoneDeal(symbol)
             # set limit at target quantile
             #current_basket_price = sum(self.mid(symbol)*self.exec_parameters[coin][symbol]['diff']
@@ -738,13 +735,13 @@ class myFtx(ccxtpro.ftx):
             #edit_price_depth = max([0,(current_basket_price-self.exec_parameters[coin]['entry_level'])/params['diff']])#TODO: sloppy logic assuming no correlation
             edit_price_depth = (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
             edit_trigger_depth=params['edit_trigger_depth']
-            order = await self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=None)
+            await self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=None)
         # if decrease risk, go aggressive
         else:
             edit_trigger_depth=params['edit_trigger_depth']
             edit_price_depth=params['edit_price_depth']
             stop_depth=params['stop_depth']
-            order = await self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
+            await self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
 async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     allDone = False
