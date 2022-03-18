@@ -9,8 +9,10 @@ cufflinks
 #pickle
 XlsxWriter
 openpyxl
+boto3
 scipy
 matplotlib
 websockets
 python-telegram-bot
 dataframe-image
+prometheus-client

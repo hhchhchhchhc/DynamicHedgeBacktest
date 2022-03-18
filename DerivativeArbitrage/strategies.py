@@ -13,11 +13,11 @@ async def refresh_universe(exchange,universe_size):
             logging.exception('invalid Runtime/configs/universe.xlsx', exc_info=True)
 
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
-    markets=await exchange.fetch_markets()
+    markets = await exchange.fetch_markets()
 
-    universe_start = datetime(2021, 10, 1)
-    universe_end = datetime(2022, 1, 1)
-    borrow_decile = 0.25
+    universe_start = datetime(2021, 12, 1)
+    universe_end = datetime(2022, 3, 1)
+    borrow_decile = 0.5
     #type_allowed=['perpetual']
     screening_params=pd.DataFrame(
         index=['future_volume_threshold','spot_volume_threshold','borrow_volume_threshold','open_interest_threshold'],
@@ -32,9 +32,8 @@ async def refresh_universe(exchange,universe_size):
         & (futures['tokenizedEquity'] != True)]
 
     # volume screening
-    hy_history = await build_history(futures, exchange,
-                                     timeframe='1h', end=universe_end, start=universe_start,
-                                     dirname='Runtime/configs/universe_history_cache')
+    await build_history(futures,exchange)
+    hy_history = await get_history(futures, end=universe_end, start_or_nb_hours=universe_start)
     futures = market_capacity(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
@@ -66,29 +65,19 @@ async def perp_vs_cash(
         equity,
         concentration_limit,
         mktshare_limit,
+        minimum_carry,
         exclusion_list,
-        run_dir='',
         backtest_start = None,# None means live-only
         backtest_end = None):
-    try:
-        first_history=pd.read_parquet(run_dir+'/'+os.listdir(run_dir)[0])
-        if max(first_history.index)==datetime.now().replace(minute=0,second=0,microsecond=0):
-            pass# if fetched less on this hour
-        else:
-            for file in os.listdir(run_dir): os.remove(run_dir+'/'+file)# otherwise do nothing and build_history will use what's there
-    except:
-        if run_dir!='':
-            for file in os.listdir(run_dir): os.remove(run_dir + '/' + file)
 
     markets = await exchange.fetch_markets()
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
     now_time = datetime.now()
 
     # qualitative filtering
-    universe=await refresh_universe(exchange,UNIVERSE)
-    universe=universe[~universe['underlying'].isin(exclusion_list)]
+    universe = await refresh_universe(exchange,UNIVERSE)
+    universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = TYPE_ALLOWED
-
     filtered = futures[(futures['type'].isin(type_allowed))
                        & (futures['symbol'].isin(universe.index))]
     futures = None #safety..
@@ -99,9 +88,9 @@ async def perp_vs_cash(
 
     # previous book
     if not equity is None:
-        pass
+        previous_weights_df = pd.DataFrame(index=[],columns=['optimalWeight'],data=0.0)
     elif EQUITY.isnumeric():
-        previous_weights_df = pd.DataFrame(index=filtered.index,columns=['optimalWeight'],data=0.0)
+        previous_weights_df = pd.DataFrame(index=[],columns=['optimalWeight'],data=0.0)
         equity = float(EQUITY)
     elif '.xlsx' in EQUITY:
         previous_weights_df = pd.read_excel(EQUITY, sheet_name='optimized', index_col=0)['optimalWeight']
@@ -115,30 +104,30 @@ async def perp_vs_cash(
         equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # run a trajectory
-    if backtest_start == backtest_end:
+    if backtest_start and backtest_end:
+        point_in_time = backtest_start + signal_horizon + holding_period
+    else:
         point_in_time = now_time.replace(minute=0, second=0, microsecond=0)
         backtest_start = point_in_time
         backtest_end = point_in_time
-    else:
-        point_in_time = backtest_start + signal_horizon + holding_period
 
     ## ----------- enrich/carry filter, get history, populate concentration limit
     enriched = await enricher(exchange, filtered, holding_period, equity=equity,
                               slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
-    hy_history = await build_history(enriched, exchange,
-                                     timeframe='1h', end=backtest_end, start=backtest_start-signal_horizon-holding_period,
-                                     dirname=run_dir)
+    await build_history(enriched,exchange)
+    hy_history = await get_history(enriched, end=backtest_end, start_or_nb_hours=backtest_start-signal_horizon-holding_period)
     enriched = market_capacity(enriched, hy_history)
 
     # ------- build derived data history
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
         exchange, enriched, hy_history,
         holding_period,  # to convert slippage into rate
-        signal_horizon,filename='history')  # historical window for expectations)
-    updated, _ = update(enriched, point_in_time, hy_history, equity,
-                                 intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
+        signal_horizon,filename='Runtime/runs/history.xlsx')  # historical window for expectations)
+    updated = update(enriched, point_in_time, hy_history, equity,
+                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
+                     minimum_carry=0) # do not remove futures using minimum_carry
     enriched = None  # safety..
 
     # final filter, needs some history and good avg volumes
@@ -158,10 +147,12 @@ async def perp_vs_cash(
         previous_weights['optimalWeight'] = 0
 
     while point_in_time <= backtest_end:
-        updated, excess_margin = update(filtered, point_in_time, hy_history, equity,
-                                        intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow)
+        updated = update(filtered, point_in_time, hy_history, equity,
+                         intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
+                         minimum_carry=minimum_carry,
+                         previous_weights_index=previous_weights.index)
 
-        optimized = cash_carry_optimizer(exchange, updated, excess_margin,
+        optimized = cash_carry_optimizer(exchange, updated,
                                          previous_weights_df=previous_weights[
                                              previous_weights.index.isin(filtered.index)],
                                          holding_period=holding_period,
@@ -169,15 +160,19 @@ async def perp_vs_cash(
                                          concentration_limit=concentration_limit,
                                          mktshare_limit=mktshare_limit,
                                          equity=equity,
-                                         optional_params=['verbose']
-                                         )
+                                         optional_params=['verbose'] + (['cost_blind']
+                                         if (point_in_time == backtest_start)&(backtest_start != backtest_end)
+                                         else [])) # ignore costs on first time of a backtest
         # need to assign RealizedCarry to previous_time
-        if not trajectory.empty: trajectory.loc[trajectory['time'] == previous_time, 'RealizedCarry'] = optimized[
-            'RealizedCarry'].values
+        if not trajectory.empty:
+            trajectory.loc[trajectory['time'] == previous_time,'RealizedCarry'] = \
+                trajectory.loc[trajectory['time'] == previous_time,'name'].apply(
+                    lambda f: optimized.loc[f,'RealizedCarry'] if f in optimized.index else 0)
         optimized['time'] = point_in_time
 
         # increment
         trajectory = trajectory.append(optimized.reset_index().rename({'name': 'symbol'}), ignore_index=True)
+        trajectory.to_excel('Runtime/runs/temp_trajectory.xlsx')
         previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
         previous_time = point_in_time
         point_in_time += holding_period
@@ -208,7 +203,7 @@ async def perp_vs_cash(
         display['absWeight']=display['optimalWeight'].apply(abs)
         display.loc['total','absWeight']=display.drop(index='total')['absWeight'].sum()
         display=display.sort_values(by='absWeight',ascending=True)
-        display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
+        #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
         print(display)
 
         return optimized
@@ -252,27 +247,28 @@ async def strategy_wrapper(**kwargs):
         exchange = await open_exchange(kwargs['exchange'],EQUITY, config={'asyncio_loop':asyncio.get_running_loop()})
     await exchange.load_markets()
 
-    result = await asyncio.gather(*[perp_vs_cash(
+    result = await safe_gather([perp_vs_cash(
         exchange=exchange,
         equity=equity,
         concentration_limit=concentration_limit,
         mktshare_limit=mktshare_limit,
+        minimum_carry=minimum_carry,
         exclusion_list=kwargs['exclusion_list'],
         signal_horizon=signal_horizon,
         holding_period=holding_period,
         slippage_override=slippage_override,
-        run_dir=kwargs['run_dir'],
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'])
         for equity in kwargs['equity']
         for concentration_limit in kwargs['concentration_limit']
         for mktshare_limit in kwargs['mktshare_limit']
+        for minimum_carry in kwargs['minimum_carry']
         for signal_horizon in kwargs['signal_horizon']
         for holding_period in kwargs['holding_period']
         for slippage_override in kwargs['slippage_override']])
     await exchange.close()
 
-    return None
+    return result
 
 def strategies_main(*argv):
     argv=list(argv)
@@ -282,38 +278,57 @@ def strategies_main(*argv):
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
     if argv[0] == 'sysperp':
-        return asyncio.run(strategy_wrapper(
+        asyncio.run(strategy_wrapper(
             exchange='ftx',
             equity=[None],
             concentration_limit=[CONCENTRATION_LIMIT],
             mktshare_limit=[MKTSHARE_LIMIT],
+            minimum_carry=[MINIMUM_CARRY],
             exclusion_list=EXCLUSION_LIST,
             signal_horizon=[argv[1]],
             holding_period=[argv[2]],
             slippage_override=[SLIPPAGE_OVERRIDE],
-            run_dir='Runtime/Live_parquets',
             backtest_start=None,backtest_end=None))
+    elif argv[0] == 'depth':
+        global UNIVERSE
+        UNIVERSE = 'max' # set universe to 'max'
+        equities = [100000, 1000000, 5000000]
+        results = asyncio.run(strategy_wrapper(
+            exchange='ftx',
+            equity=equities,
+            concentration_limit=[CONCENTRATION_LIMIT],
+            mktshare_limit=[MKTSHARE_LIMIT],
+            minimum_carry=[MINIMUM_CARRY],
+            exclusion_list=EXCLUSION_LIST,
+            signal_horizon=[argv[1]],
+            holding_period=[argv[2]],
+            slippage_override=[SLIPPAGE_OVERRIDE],
+            backtest_start=None, backtest_end=None))
+        with pd.ExcelWriter('Runtime/runs/depth.xlsx', engine='xlsxwriter') as writer:
+            for res,equity in zip(results,equities):
+                res.to_excel(writer,sheet_name=str(equity))
     elif argv[0] == 'backtest':
-        for equity in [[100000], [1000000]]:
+        for equity in [[1000000]]:
             for concentration_limit in [[1]]:
                 for mktshare_limit in [[MKTSHARE_LIMIT]]:
-                    for signal_horizon in [[timedelta(hours=h) for h in [12, 60]]]:
-                        for holding_period in [[timedelta(hours=h) for h in [24]]]:
-                            for slippage_override in [[0.0005]]:
-                                asyncio.run(strategy_wrapper(
-                                    exchange='ftx',
-                                    equity=equity,
-                                    concentration_limit=concentration_limit,
-                                    mktshare_limit=mktshare_limit,
-                                    exclusion_list=EXCLUSION_LIST,
-                                    signal_horizon=signal_horizon,
-                                    holding_period=holding_period,
-                                    slippage_override=slippage_override,
-                                    run_dir='',
-                                    backtest_start=datetime(2021,11,1),
-                                    backtest_end=datetime(2022,2,1)))
+                    for minimum_carry in [[MINIMUM_CARRY]]:
+                        for signal_horizon in [[timedelta(hours=h) for h in [24]]]:
+                            for holding_period in [[timedelta(hours=h) for h in [48]]]:
+                                for slippage_override in [[0.0002]]:
+                                    asyncio.run(strategy_wrapper(
+                                        exchange='ftx',
+                                        equity=equity,
+                                        concentration_limit=concentration_limit,
+                                        mktshare_limit=mktshare_limit,
+                                        minimum_carry=minimum_carry,
+                                        exclusion_list=EXCLUSION_LIST,
+                                        signal_horizon=signal_horizon,
+                                        holding_period=holding_period,
+                                        slippage_override=slippage_override,
+                                        backtest_start=datetime(2021,9,1),
+                                        backtest_end=datetime(2022,3,1)))
     else:
-        print(f'commands: sysperp [signal_horizon] [holding_period], backtest')
+        print(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
 
 if __name__ == "__main__":
     strategies_main(*sys.argv[1:])

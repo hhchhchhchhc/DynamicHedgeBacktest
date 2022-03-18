@@ -3,6 +3,8 @@ import logging
 import os
 import sys
 import asyncio
+import functools
+import aiofiles
 import platform
 if platform.system()=='Windows':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -18,7 +20,7 @@ import pickle
 import pyarrow as pa
 import pyarrow.parquet as pq
 import xlsxwriter
-#from s3 import *
+import boto3
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
@@ -27,6 +29,25 @@ import plotly.express as px
 from datetime import datetime,timezone,timedelta,date
 import dateutil
 import itertools
+
+safe_gather_limit = 50
+
+def async_wrap(f):
+    @functools.wraps(f)
+    async def run(*args, loop=None, executor=None, **kwargs):
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        p = functools.partial(f, *args, **kwargs)
+        return await loop.run_in_executor(executor, p)
+    return run
+
+async def safe_gather(tasks,n=safe_gather_limit,semaphore=None):
+    semaphore = semaphore if semaphore else asyncio.Semaphore(n)
+
+    async def sem_task(task):
+        async with semaphore:
+            return await task
+    return await asyncio.gather(*(sem_task(task) for task in tasks))
 
 def timedeltatostring(dt):
     return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
@@ -47,6 +68,7 @@ HOLDING_PERIOD = pd.Timedelta(static_params.loc['HOLDING_PERIOD','value'])
 SLIPPAGE_OVERRIDE = float(static_params.loc['SLIPPAGE_OVERRIDE','value'])
 CONCENTRATION_LIMIT = float(static_params.loc['CONCENTRATION_LIMIT','value'])
 MKTSHARE_LIMIT = float(static_params.loc['MKTSHARE_LIMIT','value'])
+MINIMUM_CARRY = float(static_params.loc['MINIMUM_CARRY','value'])
 EXCLUSION_LIST = [c for c in static_params.loc['REBASE_TOKENS','value'].split('+')]+[c for c in static_params.loc['EXCLUSION_LIST','value'].split('+')]
 DELTA_BLOWUP_ALERT = float(static_params.loc['DELTA_BLOWUP_ALERT','value'])
 UNIVERSE = str(static_params.loc['UNIVERSE','value'])
@@ -81,11 +103,22 @@ def pickleit(object,filename,mode="ab+"):############ timestamp and append to pi
     return
 
 def to_parquet(df,filename,mode="w"):
+    if mode == 'a' and os.path.isfile(filename):
+        previous = from_parquet(filename)
+        df = pd.concat([previous,df],axis=0)
+        df = df[~df.index.duplicated()].sort_index()
     pq_df = pa.Table.from_pandas(df)
     pq.write_table(pq_df, filename)
     return None
+async def async_to_parquet(df,filename,mode="w"):
+    coro = async_wrap(to_parquet)
+    return await coro(df,filename,mode)
+
 def from_parquet(filename):
     return pq.read_table(filename).to_pandas()
+async def async_from_parquet(filename):
+    coro = async_wrap(from_parquet)
+    return await coro(filename)
 
 def openit(filename,mode="rb"):#### to open pickle
     data=pd.DataFrame()
@@ -246,16 +279,21 @@ class NpEncoder(json.JSONEncoder):
             return obj.to_json()
         return super(NpEncoder, self).default(obj)
 
-def log_reader(dirname='Runtime/logs'):
-    with open(dirname+'/latest_events.json', 'r') as file:
+def log_reader(prefix='latest',dirname='Runtime/logs'):
+    path = f'{dirname}/{prefix}'
+    with open(f'{path}_events.json', 'r') as file:
         d = json.load(file)
         events=pd.DataFrame(d)
-    with open(dirname+'/latest_request.json', 'r') as file:
+    with open(f'{path}_request.json', 'r') as file:
         d = json.load(file)
-        request = pd.Series(d)
-    with pd.ExcelWriter('Runtime/logs/latest_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
-        events.sort_values(by='event_timestamp',ascending=True).to_excel(writer, sheet_name='events')
+        request=pd.DataFrame(d)
+    history = from_parquet(f'{path}_minutely.parquet')
+
+    with pd.ExcelWriter(f'{dirname}/latest_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
+        events[events['order_narrative']!='remote_risk'].sort_values(by='event_timestamp',ascending=True).to_excel(writer, sheet_name='order_lifecycle')
+        events[events['order_narrative']=='remote_risk'].sort_values(by='event_timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
         request.to_excel(writer, sheet_name='request')
+        history.to_excel(writer, sheet_name='history')
 
 if __name__ == "__main__":
-    log_reader()
+    log_reader(*sys.argv[1:])

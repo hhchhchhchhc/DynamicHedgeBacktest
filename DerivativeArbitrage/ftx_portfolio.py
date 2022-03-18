@@ -7,85 +7,207 @@ from ftx_utilities import *
 from ftx_ftx import *
 from ftx_history import spot_history
 
-## calc various margins for a cash and carry.
-# weights is position size, not %
-# note: weight.shape = futures.shape, but returns a shape = futures.shape+1 !
+class MarginCalculator:
+    '''low level class to compute margins
+    weights is position size in usd
+    '''
+    def __init__(self, account_leverage, collateralWeight, imfFactor):  # imfFactor by symbol, collateralWeight by coin
+        self._account_leverage = account_leverage
+        self._collateralWeight = collateralWeight
+        self._imfFactor = imfFactor
+        self._collateralWeightInitial = {coin: collateralWeightInitial({'underlying': coin, 'collateralWeight': data})
+                                         for coin, data in collateralWeight.items()}
+        self.estimated_IM = None #dict
+        self.estimated_MM = None # dict
+        self.actual_futures_IM = None #dict, keys by id not symbol
+        self.actual_IM = None #float
+        self.actual_MM = None #float
 
-class ExcessMargin:
-    def __init__(self,futures,equity,
-                    long_blowup=LONG_BLOWUP,short_blowup=SHORT_BLOWUP,nb_blowups=NB_BLOWUPS,params={'positive_carry_on_balances': False}):
-        ## inputs
-        self._account_leverage=futures['account_leverage'].values[0]
-        self._collateralWeight=futures['collateralWeight'].values
-        self._imfFactor = futures['imfFactor'].values
-        self._mark = futures['mark'].values
-        self._collateralWeightInitial = futures.apply(collateralWeightInitial,axis=1).values
-        self._equity=float(equity)
+    @staticmethod
+    def add_pending_orders(exchange,spot_weight,future_weight):
+        '''add orders as if done'''
+        for order in exchange.orders:
+            if order['status'] == 'open':
+                symbol = order['symbol']
+                if exchange.markets[symbol]['spot']:
+                    coin = exchange.markets[symbol]['base']
+                    if coin not in spot_weight: spot_weight[coin] = {'weight': 0, 'mark': exchange.mid(symbol)}
+                    spot_weight[coin]['weight'] += order['amount'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+                else:
+                    if symbol not in future_weight: future_weight[symbol] = {'weight': 0, 'mark': exchange.mid(symbol)}
+                    future_weight[symbol]['weight'] += order['amount'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+        return (spot_weight,future_weight)
+    
+    def futureMargins(self, weights):
+        '''weights = {symbol: 'weight, 'mark'''
+        im_fut = {symbol:
+            abs(data['weight']) * max(1.0 / self._account_leverage,
+                                      self._imfFactor[symbol] * np.sqrt(abs(data['weight']) / data['mark']))
+            for symbol, data in weights.items()}
+        mm_fut = {symbol:
+            max([0.03 * data['weight'], 0.6 * im_fut[symbol]])
+            for symbol, data in weights.items()}
+
+        return (im_fut, mm_fut)
+
+    def spotMargins(self, weights):
+        # https://help.ftx.com/hc/en-us/articles/360031149632
+        collateral = {coin+'/USD':
+            data['weight'] if data['weight'] < 0
+            else data['weight'] * min(self._collateralWeight[coin],
+                                      1.1 / (1 + self._imfFactor[coin + '/USD:USD'] * np.sqrt(
+                                          abs(data['weight']) / data['mark'])))
+            for coin, data in weights.items()}
+        # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
+        im_short = {coin+'/USD':
+            0 if data['weight'] > 0
+            else -data['weight'] * max(1.1 / self._collateralWeightInitial[coin] - 1,
+                                       self._imfFactor[coin + '/USD:USD'] * np.sqrt(abs(data['weight']) / data['mark']))
+            for coin, data in weights.items()}
+        mm_short = {coin+'/USD':
+            0 if data['weight'] > 0
+            else -data['weight'] * max(1.03 / self._collateralWeightInitial[coin] - 1,
+                                       0.6 * self._imfFactor[coin + '/USD:USD'] * np.sqrt(
+                                           abs(data['weight']) / data['mark']))
+            for coin, data in weights.items()}
+
+        return (collateral, im_short, mm_short)
+
+    def estimate(self, usd_balance, spot_weights, future_weights):
+        (collateral, im_short, mm_short) = self.spotMargins(spot_weights)
+        (im_fut, mm_fut) = self.futureMargins(future_weights)
+        self.estimated_IM = {symbol:
+                                 collateral[symbol] - im_short[symbol]
+                             for symbol in im_short.keys()}\
+                            |{symbol:
+                                 - im_fut[symbol]
+                             for symbol in im_fut.keys()}\
+                            |{'USD':usd_balance + 0.1 * min([0, usd_balance]) }
+        self.estimated_MM = {symbol:
+                                 collateral[symbol] + usd_balance + 0.03 * min([0, usd_balance]) - mm_short[symbol]
+                             for symbol in mm_short.keys()}\
+                            |{symbol:
+                                 - mm_fut[symbol]
+                             for symbol in mm_fut.keys()} \
+                            | {'USD': usd_balance + 0.03 * min([0, usd_balance])}
+
+    def actual(self,account_information):
+        self.actual_futures_IM = {position['future']:float(position['collateralUsed'])
+                                  for position in account_information['positions'] if float(position['netSize'])!=0}
+        self.actual_IM = float(account_information['totalPositionSize']) * (
+                    float(account_information['openMarginFraction']) - float(account_information['initialMarginRequirement']))
+        self.actual_MM = float(account_information['totalPositionSize']) * (
+                    float(account_information['openMarginFraction']) - float(account_information['maintenanceMarginRequirement']))
+
+    def margins_from_exchange(self,exchange):
+        '''not used, as would need all risks not only self.risk_state'''
+        raise('Not implemented')
+        future_weight = {symbol: {'weight': data['delta'], 'mark': exchange.mid(symbol)}
+                         for coin,coin_data in exchange.risk_state.items() if coin in exchange.currencies
+                         for symbol,data in coin_data.items() if symbol in exchange.markets and exchange.markets[symbol]['contract']}
+        spot_weight = {coin: {'weight': data['delta'], 'mark': exchange.mid(symbol)}
+                         for coin,coin_data in exchange.risk_state.items() if coin in exchange.currencies
+                         for symbol,data in coin_data.items() if symbol in exchange.markets and exchange.markets[symbol]['spot']}
+
+        (collateral, im_short, mm_short) = self.spotMargins(spot_weight)
+        (im_fut, mm_fut) = self.futureMargins(future_weight)
+        IM = collateral + exchange.usd_balance + 0.1 * min([0, exchange.usd_balance]) - im_fut - im_short
+        MM = collateral + exchange.usd_balance + 0.03 * min([0, exchange.usd_balance]) - mm_fut - mm_short
+
+        return {'IM': IM, 'MM': MM}
+
+    def margin_cost(self, symbol, mid, size, usd_balance):
+        '''margin impact of an order'''
+        if symbol in self._imfFactor:  # --> derivative
+            (im_fut, mm_fut) = self.futureMargins({symbol: {'weight': size * mid, 'mark': mid}})
+            return -im_fut[symbol]
+        elif symbol in self._collateralWeight:  # --> coin
+            (collateral, im_short, mm_short) = self.spotMargins({symbol: {'weight': size * mid, 'mark': mid}})
+            usd_balance_chg = -size * mid
+            return collateral[symbol+'/USD'] + usd_balance_chg + 0.1 * (
+                        min([0, usd_balance + usd_balance_chg]) - min([0, usd_balance])) - im_short[symbol+'/USD']
+        logging.exception(f'IM impact: {symbol} neither derivative or cash')
+
+class BasisMarginCalculator(MarginCalculator):
+    '''implement specific contraints for carry trades, w/risk mgmt
+    x will be spot weights in USD
+    spot_marks, future_marks'''
+    def __init__(self, account_leverage, collateralWeight, imfFactor,
+                 equity, spot_marks, future_marks,
+                 long_blowup=LONG_BLOWUP,short_blowup=SHORT_BLOWUP,nb_blowups=NB_BLOWUPS):
+        super().__init__(account_leverage, collateralWeight, imfFactor)
+        self._equity = equity
+        self.spot_marks = spot_marks
+        self.future_marks = future_marks
         self._long_blowup= float(long_blowup)
         self._short_blowup = float(short_blowup)
         self._nb_blowups = int(nb_blowups)
-        self._params=params
 
-    def basisMargins(self,x,mark):
-        n = len(x)
-        # TODO: staked counts towards MM not IM
-        # https://help.ftx.com/hc/en-us/articles/360031149632
-        collateral = np.array([
-            x[i] if x[i] < 0
-            else x[i] * min(self._collateralWeight[i],
-                            1.1 / (1 + self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i])))
-            for i in range(n)])
-        # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
-        im_short = np.array([
-            0 if x[i] > 0
-            else -x[i] * max(1.1 / self._collateralWeightInitial[i] - 1,
-                             self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
-            for i in range(n)])
-        mm_short = np.array([
-            0 if x[i] > 0
-            else -x[i] * max(1.03 / self._collateralWeightInitial[i] - 1,
-                             0.6 * self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
-            for i in range(n)])
-        im_fut = np.array([
-            abs(x[i]) * max(1.0 / self._account_leverage, self._imfFactor[i] * np.sqrt(abs(x[i]) / mark[i]))
-            for i in range(n)])
-        mm_fut = np.array([
-            max([0.03 * x[i], 0.6 * im_fut[i]])# TODO: doesn't reconcile with account_details...
-            for i in range(n)])
+    def shockedEstimate(self, x):
+        ''' blowsup carry trade with a spike situation on the nb_blowups biggest deltas
+         long: new freeColl = (1+ds)w-(ds+blow)-fut_mm(1+ds+blow)
+         freeColl move = w ds-(ds+blow)-mm(ds+blow) = blow(1-mm) -ds(1-w+mm) ---> ~blow
+         short: new freeColl = -(1+ds)+(ds+blow)-fut_mm(1+ds+blow)-spot_mm(1+ds)
+         freeColl move = blow - fut_mm(ds+blow)-spot_mm ds = blow(1-fut_mm)-ds(fut_mm+spot_mm) ---> ~blow
+        '''
+        future_weights = {symbol: {'weight': -x[i], 'mark': self.future_marks[symbol]}
+                     for i, symbol in enumerate(self.future_marks)}
+        spot_weights = {coin: {'weight': x[i], 'mark': self.spot_marks[coin]}
+                     for i, coin in enumerate(self.spot_marks)}
+        usd_balance = self._equity - sum(x)
 
-        return (collateral,im_short,mm_short,im_fut,mm_fut)
-
-    def call(self,x):
-        n=len(x)
-
-        # blowups deal with a spike situation on the nb_blowups biggest deltas
-        # long: new freeColl = (1+ds)w-(ds+blow)-fut_mm(1+ds+blow)
-        # freeColl move = w ds-(ds+blow)-mm(ds+blow) = blow(1-mm) -ds(1-w+mm) ---> ~blow
-        # short: new freeColl = -(1+ds)+(ds+blow)-fut_mm(1+ds+blow)-spot_mm(1+ds)
-        # freeColl move = blow - fut_mm(ds+blow)-spot_mm ds = blow(1-fut_mm)-ds(fut_mm+spot_mm) ---> ~blow
-        blowup_idx=np.argpartition(np.apply_along_axis(abs,0,x), -self._nb_blowups)[-self._nb_blowups:]
-        blowups=np.zeros(n)
-        for i in range(n): 
-            for j in range(len(blowup_idx)):
-                i=blowup_idx[j]
-                blowups[i] = x[i]*self._long_blowup if x[i]>0 else -x[i]*self._short_blowup
+        # blowup symbols are _nb_blowups the biggest weights
+        blowup_idx = np.argpartition(np.apply_along_axis(abs, 0, x),
+                                     -self._nb_blowups)[-self._nb_blowups:]
+        blowups = np.zeros(len(x))
+        for j in range(len(blowup_idx)):
+            i = blowup_idx[j]
+            blowups[i] = x[i] * self._long_blowup if x[i] > 0 else -x[i] * self._short_blowup
 
         # assume all coins go either LONG_BLOWUP or SHORT_BLOWUP..what is the margin impact incl future pnl ?
-        (collateral_up,im_short_up,mm_short_up,im_fut_up,mm_fut_up) = self.basisMargins(x*(1+LONG_BLOWUP),self._mark*(1+LONG_BLOWUP))
-        MM_up = collateral_up - mm_fut_up - mm_short_up - x * LONG_BLOWUP # the futures pnl
-        (collateral_down,im_short_down,mm_short_down,im_fut_down,mm_fut_down) = self.basisMargins(x*(1-SHORT_BLOWUP),self._mark*(1-SHORT_BLOWUP))
-        MM_down = collateral_down - mm_fut_down - mm_short_down + x * SHORT_BLOWUP # the futures pnl
-        (collateral,im_short,mm_short,im_fut,mm_fut) = self.basisMargins(x,self._mark)
-        MM = collateral - mm_fut - mm_short - blowups
+        # up...
+        future_up = {symbol: {'weight': data['weight'] * (1 + LONG_BLOWUP), 'mark': data['mark'] * (1 + LONG_BLOWUP)}
+                     for symbol, data in future_weights.items()}
+        spot_up = {coin: {'weight': data['weight'] * (1 + LONG_BLOWUP), 'mark': data['mark'] * (1 + LONG_BLOWUP)}
+                   for coin, data in spot_weights.items()}
+        (collateral_up, im_short_up, mm_short_up) = self.spotMargins(spot_up)
+        (im_fut_up, mm_fut_up) = self.futureMargins(future_up)
+        sum_MM_up = sum(x for x in collateral_up.values()) - \
+                    sum(x for x in mm_fut_up.values()) - \
+                    sum(x for x in mm_short_up.values()) - \
+                    sum(x) * LONG_BLOWUP  # add futures pnl
 
-        IM = collateral - im_fut - im_short
-        totalIM = self._equity -sum(x) - 0.1* max([0,sum(x)-self._equity]) + sum(IM)
-        totalMM = self._equity -sum(x) - 0.03 * max([0, sum(x) - self._equity]) + min([sum(MM),sum(MM_up),sum(MM_down)])
+        # down...
+        future_down = {
+            symbol: {'weight': data['weight'] * (1 - SHORT_BLOWUP), 'mark': data['mark'] * (1 - SHORT_BLOWUP)}
+            for symbol, data in future_weights.items()}
+        spot_down = {coin: {'weight': data['weight'] * (1 - SHORT_BLOWUP), 'mark': data['mark'] * (1 - SHORT_BLOWUP)}
+                     for coin, data in spot_weights.items()}
+        (collateral_down, im_short_down, mm_short_down) = self.spotMargins(spot_down)
+        (im_fut_down, mm_fut_down) = self.futureMargins(future_down)
+        sum_MM_down = sum(x for x in collateral_down.values()) - \
+                    sum(x for x in mm_fut_down.values()) - \
+                    sum(x for x in mm_short_down.values()) + \
+                    sum(x) * SHORT_BLOWUP # add the futures pnl
 
-        return {'totalIM':totalIM,
-                'totalMM':totalMM,
-                'IM':IM,
-                'MM':MM}
+        # flat + a blowup_idx only shock
+        (collateral, im_short, mm_short) = self.spotMargins(spot_weights)
+        (im_fut, mm_fut) = self.futureMargins(future_weights)
+        MM = pd.DataFrame([collateral]).T - pd.DataFrame([mm_short]).T
+        MM = MM.append(-pd.DataFrame([mm_fut]).T)
+        sum_MM = sum(MM[0]) - sum(blowups)  # add the futures pnl
+
+        # aggregate
+        IM = pd.DataFrame([collateral]).T - pd.DataFrame([im_short]).T
+        IM = IM.append(-pd.DataFrame([im_fut]).T)
+        totalIM = self._equity - sum(x) - 0.1 * max([0, sum(x) - self._equity]) + sum(IM[0])  - self._equity*OPEN_ORDERS_HEADROOM
+        totalMM = self._equity - sum(x) - 0.03 * max([0, sum(x) - self._equity]) + min(
+            [sum_MM, sum_MM_up, sum_MM_down])
+
+        return {'totalIM': totalIM,
+                'totalMM': totalMM,
+                'IM': IM,
+                'MM': MM}
 
 ### list of dicts positions (resp. balances) assume unique 'future' (resp. 'coin')
 ### positions need netSize, future, initialMarginRequirement, maintenanceMarginRequirement, realizedPnl, unrealizedPnl
@@ -336,7 +458,8 @@ async def fetch_portfolio(exchange,time):
     # fetch mark,spot and balances as closely as possible
     markets = await exchange.fetch_markets()
     balances = (await exchange.fetch_balance(params={}))['info']['result']
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True)).set_index('name')
+    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True))
+    futures=futures.set_index('name')
 
     markets = pd.DataFrame([r['info'] for r in markets], dtype=float).set_index('name')
     balances=pd.DataFrame(balances, dtype=float)
@@ -352,7 +475,9 @@ async def fetch_portfolio(exchange,time):
         positions['event_type'] = 'delta'
         positions['attribution'] = positions['future']
         positions['mark'] = positions['attribution'].apply(lambda f: markets.loc[f,'price'])
-        positions['spot'] = positions['attribution'].apply(lambda f: markets.loc[markets.loc[f, 'underlying']+'/USD','price'])
+        positions['spot'] = positions['attribution'].apply(lambda f:
+                                                           float(exchange.market((futures.loc[f,'underlying']+'/USD') if (futures.loc[f,'underlying']+'/USD') in exchange.markets
+                                                                                 else f)['info']['price']))
         positions['usdAmt'] = positions['coinAmt'] * positions['mark']
 
         positions.loc[~positions['attribution'].isin(futures.index),'rate'] = 0.0
@@ -372,8 +497,8 @@ async def fetch_portfolio(exchange,time):
     balances.loc[balances['coin']=='USD','coinAmt'] += unrealizedPnL
     balances['time']=time.replace(tzinfo=None)
     balances['event_type'] = 'delta'
-    balances['attribution'] = balances['coin']
     balances['coin'] = balances['coin'].apply(lambda f:f.replace('_LOCKED', ''))
+    balances['attribution'] = balances['coin']
     balances['spot'] = balances['coin'].apply(lambda f: 1.0 if f == 'USD' else float(markets.loc[f + '/USD', 'price']))
     balances['mark'] = balances['spot']
     balances['usdAmt'] = balances['coinAmt'] * balances['mark']
@@ -473,6 +598,8 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     trades = pd.DataFrame((await exchange.privateGetFills(params))['result'], dtype=float)
     future_trades=pd.DataFrame()
     if not trades.empty:
+        trades['baseCurrency'] = trades['baseCurrency'].apply(lambda s: s.replace('_LOCKED', '') if s else s)
+        trades['feeCurrency'] = trades['feeCurrency'].apply(lambda s: s.replace('_LOCKED', '') if s else s)
         #trades=trades[trades['type']=='order'] # TODO: dealt with unlock and otc later
         # spot trade first, attribute to baseccy
         base_trades=trades[~trades['future'].isin(futures.index)]
@@ -538,15 +665,18 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
         for f in set(symbol_list)-set(result['attribution']):
             if type(f)!=str: continue
             if f in futures.index:
-                spot_ticker = futures.loc[f, 'underlying'] + '/USD'
-                mark_ticker = futures.loc[futures['symbol']==f,'symbol'].values[0]
+                spot_ticker = futures.loc[f.replace('_LOCKED',''), 'underlying'] + '/USD'
+                mark_ticker = futures.loc[futures['symbol'] == f, 'symbol'].values[0]
+                # some have no spot
+                spot_ticker = spot_ticker if spot_ticker in exchange.markets else mark_ticker
             else:
-                spot_ticker = f + ('' if ('/USD' in f) else '/USD')
+                spot_ticker = f.replace('_LOCKED', '')
+                if '/USD' not in f: spot_ticker += '/USD'
                 mark_ticker = spot_ticker
 
             params={'start_time':point_in_time.timestamp(), 'end_time':point_in_time.timestamp()+15}
             result=result.append(pd.Series(
-                {'attribution':f,
+                {'attribution': f.replace('_LOCKED', ''),
                 'spot':(await exchange.fetch_ohlcv(spot_ticker, timeframe='15s', params=params))[0][1],
                 'mark':(await exchange.fetch_ohlcv(mark_ticker, timeframe='15s', params=params))[0][1]
                  }),ignore_index=True)
@@ -663,7 +793,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-async def run_plex_wrapper(exchange_name='ftx',subaccount='SysPerp'):
+async def run_plex_wrapper(exchange_name='ftx',subaccount='debug'):
     exchange = await open_exchange(exchange_name,subaccount)
     plex= await run_plex(exchange)
     await exchange.close()
@@ -671,7 +801,7 @@ async def run_plex_wrapper(exchange_name='ftx',subaccount='SysPerp'):
 
 async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
 
-    filename = dirname+'portfolio_history_'+exchange.describe()['id']+'_'+exchange.headers['FTX-SUBACCOUNT']+'.xlsx'
+    filename = dirname+'portfolio_history_'+exchange.describe()['id']+('_'+exchange.headers['FTX-SUBACCOUNT'] if 'FTX-SUBACCOUNT' in exchange.headers else '')+'.xlsx'
     if not os.path.isfile(filename):
         risk_history = pd.DataFrame()
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
@@ -715,9 +845,9 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['fromOptimal'])
+        argv.extend(['risk'])
     if len(argv) < 3:
-        argv.extend(['ftx', ''])
+        argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
     if argv[0] == 'fromOptimal':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))

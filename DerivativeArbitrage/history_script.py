@@ -1,65 +1,33 @@
 from time import sleep
+
+import pandas as pd
+
 from ftx_history import *
 from ftx_utilities import *
-from ftx_snap_basis import enricher,forecast
+from strategies import refresh_universe
 
-def ftx_read_history(dirname='',coin_list=[]):
-    #exchange = open_exchange('ftx')
-    #futures = pd.DataFrame(fetch_futures(exchange, includeExpired=False)).set_index('name')
-   # if coin_list!=[]: futures=futures[futures['underlying'].isin(coin_list)]
-
-    # pass timeframe=np.NaN to avoid recreating history....
-    return 0#build_history(futures, exchange, dirname=dirname, timeframe=np.NaN).dropna()
-
-def ftx_history(dirname='',
-                       start=datetime(2021, 9, 20),
-                       end = datetime(2021, 11, 16),
-                       timeframe='5m',
-                       coin_list=[]
-                        ):
-    exchange = open_exchange('ftx')
-    markets = exchange.fetch_markets()
-    futures = pd.DataFrame(fetch_futures(exchange, includeExpired=True)).set_index('name')
+async def ftx_history(coin_list=[]):
+    exchange = await open_exchange('ftx','')
+    markets = await exchange.fetch_markets()
+    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True)).set_index('name')
     if coin_list!=[]: futures=futures[futures['underlying'].isin(coin_list)]
 
     # filtering params
     type_allowed = ['future','perpetual']
-    max_nb_coins = 15
-    carry_floor = 0.4
-
-    # fee estimation params
-    slippage_override = 2e-4  #### this is given by mktmaker
-    slippage_scaler = 1
-    slippage_orderbook_depth = 1000
-    equity = 20000
-    holding_period=timedelta(days=7)
-    signal_horizon = timedelta(days=7)
-
-    ## ----------- enrich, get history, filter
-    enriched = enricher(exchange, futures, holding_period, equity=equity,
-                        slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
-                        slippage_scaler=slippage_scaler,
-                        params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
+    futures = futures[#(futures['expired'] == False) &
+        (futures['enabled'] == True) & (futures['type'] != "move")
+        & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
+        & (futures['tokenizedEquity'] != True)
+        & (futures['type'].isin(type_allowed)==True)]
 
     #### get history ( this is sloooow)
-    hy_history = build_history(enriched, exchange, timeframe=timeframe, end=end, start=start,dirname=dirname)
-#    for (i,f) in enriched[enriched['type']=='perpetual'].iterrows():
-#        hy_history[f['underlying']+'/CarryLong'] = - hy_history['USD/rate/borrow'] + hy_history[f['underlying']+'/rate/funding']
-#        hy_history[f['underlying']+'/CarryShort'] = - hy_history[f['underlying']+'/rate/borrow'] - hy_history[f['underlying'] +'/rate/funding']
+    await build_history(futures, exchange)
+    await exchange.close()
 
-    if dirname!='':
-        hy_history.to_parquet(dirname+'/history.parquet')
-        enriched.to_excel(dirname+'/history.xlsx')
-
-    return hy_history
-
-i=1
+i=0
 while i<1:
     try:
-        end_time = datetime(2021, 12, 13)  # datetime.today().replace(minute=0,second=0,microsecond=0)
-        start_time = datetime(2020, 12, 13)
-        coins = ['1INCH','AAVE','BAL','BCH','BNB','BTC','BTC','CHZ','COMP','DOGE','EDEN','ETH','ETH','GRT','LINK','LTC','OKB','OMG','REEF','SOL','SUSHI','SXP','TRX','UNI','USDT','WAVES','XRP','YFI']
-        ftx_history(dirname='Runtime/temporary_parquets',start=start_time,end=end_time,timeframe='1h',coin_list=coins)
+        asyncio.run(ftx_history())
     except:
-        sleep(5)
+        sleep(10)
     i=i+1

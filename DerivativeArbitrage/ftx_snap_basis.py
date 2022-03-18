@@ -2,7 +2,7 @@ import dateutil.parser
 import scipy.optimize
 finite_diff_rel_step = 1e-4
 
-from ftx_portfolio import ExcessMargin
+from ftx_portfolio import BasisMarginCalculator
 from ftx_history import *
 from ftx_ftx import *
 
@@ -12,8 +12,8 @@ def market_capacity(futures, hy_history, universe_filter_window=[]):
     borrow_decile=0.5
     futures['borrow_volume_decile'] =0
     futures.loc[futures['spotMargin']!=False,'borrow_volume_decile'] = futures[futures['spotMargin']!=False].apply(lambda f:
-                                                                                                                  (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']).quantile(q=borrow_decile)
-                                                                                                                  ,axis=1)
+                                                                                                                   (hy_history.loc[universe_filter_window,f['underlying']+'/rate/size']).quantile(q=borrow_decile)
+                                                                                                                   ,axis=1)
     futures['spot_volume_avg'] = futures.apply(lambda f:
                                                (hy_history.loc[universe_filter_window,f['underlying'] + '/price/volume'] ).mean()
                                                ,axis=1)
@@ -54,8 +54,7 @@ async def enricher(exchange,futures,holding_period,equity,
     futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
     ########### naive basis for all futures
     if not futures[futures['type'] == 'perpetual'].empty:
-        list = await asyncio.gather(*[
-            exchange.publicGetFuturesFutureNameStats({'future_name': f})
+        list = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
             for f in futures[futures['type'] == 'perpetual'].index])
         list = [float(l['result']['nextFundingRate'])*24*365.325 for l in list]
         futures.loc[futures['type'] == 'perpetual','basis_mid'] = list
@@ -64,9 +63,9 @@ async def enricher(exchange,futures,holding_period,equity,
         futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
             lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
 
-    #### need borrow to be present
-    #futures = futures[futures['borrow_open_interest']>0]
+    #### fill in borrow for spotMargin==False ot OTC override
     futures.loc[futures['spotMargin']==False,'borrow']=999
+    futures.loc[futures['spotMargin'] == False, 'lend'] = -999
     futures.loc[futures['spotMargin']=='OTC','borrow']=futures.loc[futures['spotMargin']=='OTC','underlying'].apply(lambda f:otc_file.loc[f,'borrow'])
     futures.loc[futures['spotMargin'] == 'OTC', 'lend'] = futures.loc[
         futures['spotMargin'] == 'OTC', 'underlying'].apply(lambda f: otc_file.loc[f, 'lend'])
@@ -101,19 +100,19 @@ async def enricher(exchange,futures,holding_period,equity,
 
 def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
     async def enricher_subwrapper(exchange_name,type,depth):
-        holding_period=timedelta(hours=2)
+
         exchange= await open_exchange(exchange_name,'')
         futures = pd.DataFrame(await fetch_futures(exchange)).set_index('name')
         filtered = futures[~futures['underlying'].isin(EXCLUSION_LIST)]
         enriched = await enricher(exchange, filtered, timedelta(weeks=1), equity=1.0,
-                              slippage_override=-999, slippage_orderbook_depth=depth,
-                              slippage_scaler=1.0,
-                              params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
-        hy_history = await build_history(enriched,exchange,dirname='Runtime/temporary_parquets')
+                                  slippage_override=-999, slippage_orderbook_depth=depth,
+                                  slippage_scaler=1.0,
+                                  params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
+        hy_history = await get_history(enriched,start_or_nb_hours=48)
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
             HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate
-            filename='history')  # historical window for expectations)
+            filename='Runtime/runs/history.xlsx')  # historical window for expectations)
         point_in_time = max(hy_history.index)
         updated, marginFunc = update(enriched, point_in_time, hy_history, depth,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short,
@@ -125,7 +124,9 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
     return asyncio.run(enricher_subwrapper(exchange_name,type,depth))
 
 def update(futures,point_in_time,history,equity,
-           intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow):
+           intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow,
+           minimum_carry=0.0,
+           previous_weights_index=[]):
     ####### spot quantities. Not used by optimizer. Careful about foresight bias when using those !
     # add borrows
     futures['borrow']=futures['underlying'].apply(lambda f:history.loc[point_in_time,f + '/rate/borrow'])
@@ -136,8 +137,8 @@ def update(futures,point_in_time,history,equity,
     # spot basis
     futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
         lambda f: history.loc[point_in_time, f.name + '/rate/funding'],axis=1)
-    futures['mark']=futures.apply(
-        lambda f:history.loc[point_in_time,f.name+'/mark/o'],axis=1)
+    futures['mark'] = futures.apply(
+        lambda f: history.loc[point_in_time, f.name + '/mark/o'],axis=1)
     futures['index'] = futures.apply(
         lambda f: history.loc[point_in_time, f.name + '/indexes/o'],axis=1)
     futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future'].apply(
@@ -170,15 +171,18 @@ def update(futures,point_in_time,history,equity,
     futures['E_intUSDborrow']= E_intUSDborrow.loc[point_in_time]
 
     ##### assume direction only depends on sign(E[long]-E[short]), no integral.
-    # Freeze direction into Carry_t and assign max weights.
+    # Freeze direction into Carry_t and assign max weights. filter out assets with too little carry.
     futures['direction'] = 0
     futures.loc[(futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] < 0)
-                &(futures['E_short']<0)
+                &(futures['E_short']<-minimum_carry)
                 &(futures['spotMargin']!=False),
                 'direction'] = -1
     futures.loc[(futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] > 0)
-                & (futures['E_long'] > 0),
+                & (futures['E_long'] > minimum_carry),
                 'direction'] = 1
+
+    # remove low yielding underlyings, except if were in previous portfolio.
+    futures = futures[(futures['direction']!=0)|(futures.index.isin(previous_weights_index))]
 
     # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
     futures['intCarry'] = 0
@@ -190,9 +194,7 @@ def update(futures,point_in_time,history,equity,
     # TODO: covar pre-update
     # C_int = integralCarry_t.ewm(times=hy_history.index, halflife=signal_horizon, axis=0).cov().loc[point_in_time]
 
-    ##### initialize optimizer functions
-    excess_margin = ExcessMargin(futures,equity=equity)
-    return futures,excess_margin
+    return futures
 
 # return rolling expectations of integrals
 def forecast(exchange, futures, hy_history,
@@ -259,7 +261,7 @@ def forecast(exchange, futures, hy_history,
     #                        axis=1)
 
     if filename!='':
-        with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter') as writer:
+        with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             futures.to_excel(writer, sheet_name='futureinfo')
             for col in futures.index:
                 all = pd.concat([intLongCarry[col],
@@ -302,16 +304,16 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
             futures['future_bid'] = -futures['future_ask']
             #futures['speed']=0##*futures['future_ask'] ### just 0
         else:
-            futures['spot_ask'] = [x['slippage'] * slippage_scaler + fees for x in await asyncio.gather(
+            futures['spot_ask'] = [x['slippage'] * slippage_scaler + fees for x in await safe_gather(
                 *[mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth) for
                   x in futures['spot_ticker'].values])]
-            futures['spot_bid'] = [x['slippage'] * slippage_scaler - fees for x in await asyncio.gather(
+            futures['spot_bid'] = [x['slippage'] * slippage_scaler - fees for x in await safe_gather(
                 *[mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth) for
                   x in futures['spot_ticker'].values])]
-            futures['future_ask'] = [x['slippage'] * slippage_scaler + fees for x in await asyncio.gather(
+            futures['future_ask'] = [x['slippage'] * slippage_scaler + fees for x in await safe_gather(
                 *[mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth) for
                   x in futures['symbol'].values])]
-            futures['future_bid'] = [x['slippage'] * slippage_scaler - fees for x in await asyncio.gather(
+            futures['future_bid'] = [x['slippage'] * slippage_scaler - fees for x in await safe_gather(
                 *[mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth) for
                   x in futures['symbol'].values])]
 
@@ -348,7 +350,7 @@ def transaction_cost_calculator(dx,buy_slippage,sell_slippage):
 
 ###### use convex optimiziation
 # https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
-def cash_carry_optimizer(exchange, futures,excess_margin,
+def cash_carry_optimizer(exchange, futures,
                          previous_weights_df,
                          holding_period,  # to convert slippag into rate
                          signal_horizon,  # historical window for expectations
@@ -356,6 +358,10 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
                          mktshare_limit,
                          equity,# for markovitz
                          optional_params=[]):             # use external rather than order book
+    # freeze universe, from now on must ensure order is the same
+    futures = futures.join(previous_weights_df, how='left', lsuffix='_')
+    previous_weights = futures['optimalWeight'].fillna(0.0)
+
     intCarry=futures['intCarry'].values
     intBorrow = futures['intBorrow'].values
     intUSDborrow=futures['intUSDborrow'].values[0]
@@ -364,9 +370,6 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
     E_intUSDborrow=futures['E_intUSDborrow'].values[0]
     buy_slippage=futures['buy_slippage'].values
     sell_slippage = futures['sell_slippage'].values
-    # xt: must ensure order is the same
-    previous_weights=futures.join(previous_weights_df,how='left',lsuffix='_')['optimalWeight'].fillna(0.0)
-    xt=previous_weights.values
 
     ##### optimization functions
 
@@ -389,30 +392,37 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
     )
 
     #subject to weight bounds, margin and loss probability ceiling
-    n = len(futures.index)
     # TODO: covar pre-update
     #loss_tolerance_constraint = {'type': 'ineq',
     #            'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
+    futures_dict = futures[['new_symbol', 'account_leverage','imfFactor','mark']].set_index('new_symbol').to_dict()
+    spot_dict = futures[['underlying','collateralWeight','index']].set_index('underlying').to_dict()
+    excess_margin = BasisMarginCalculator(futures['account_leverage'].values[0],
+                                                 spot_dict['collateralWeight'],
+                                                 futures_dict['imfFactor'],
+                                                 equity,
+                                                 spot_dict['index'],#TODO: strictly speaking whould be price of spot
+                                                 futures_dict['mark'])
     margin_constraint = {'type': 'ineq',
-                         'fun': lambda x: excess_margin.call(x)['totalIM'] - equity*OPEN_ORDERS_HEADROOM}
+                         'fun': lambda x: excess_margin.shockedEstimate(x)['totalIM']}
     stopout_constraint = {'type': 'ineq',
-                          'fun': lambda x: excess_margin.call(x)['totalMM']}
+                          'fun': lambda x: excess_margin.shockedEstimate(x)['totalMM']}
 
     # bounds: mktshare and concentration
     # scipy understands [0,0] bounds
-    lower_bound = futures.apply(lambda future: 0 if future['direction'] >= 0 else
+    lower_bound = futures.apply(lambda future: 0 if future['direction'] > 0 else
     max(-concentration_limit*equity,-mktshare_limit*future['concentration_limit_short']) # 0 bounds if short  + no spotMargin...invalid for institutionals
                                 ,axis=1)
-    upper_bound = futures.apply(lambda future: 0 if future['direction'] <= 0 else
+    upper_bound = futures.apply(lambda future: 0 if future['direction'] < 0 else
     min(concentration_limit*equity,mktshare_limit*future['concentration_limit_long'])
                                 , axis=1)
     bounds = scipy.optimize.Bounds(lb=np.asarray(lower_bound.values,dtype=object),
-                                       ub=np.asarray(upper_bound.values,dtype=object))
+                                   ub=np.asarray(upper_bound.values,dtype=object))
 
-    # --------- breaks down pnl during optimization
+    # --------- verbose callback function: breaks down pnl during optimization
     progress_display=[]
-    def callbackF(x, progress_display, verbose=False):
-        if verbose:
+    def callbackF(x, progress_display, print_with_flag=None):
+        if print_with_flag:
             progress_display += [pd.Series({
                 'E_int': np.dot(x, E_intCarry),
                 'usdBorrowRefund': E_intUSDborrow * min([equity, sum(x)]),
@@ -422,10 +432,14 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
                 #TODO: covar pre-update
                 # 'loss_tolerance_constraint': loss_tolerance_constraint['fun'](x),
                 'margin_constraint': margin_constraint['fun'](x),
-                'stopout_constraint': stopout_constraint['fun'](x)
+                'stopout_constraint': stopout_constraint['fun'](x),
+                'success': print_with_flag
             }).append(pd.Series(index=futures.index, data=x))]
+            with pd.ExcelWriter('Runtime/runs/paths.xlsx', engine='xlsxwriter') as writer:
+                pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
         return []
 
+    xt = previous_weights.values
     if 'frozen_weights' in futures.columns:
         res=futures[['frozen_weights']].rename({'frozen_weights':'x'}).to_numpy()
     else:
@@ -434,25 +448,22 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
         # - previous weights
         #x0=equity*np.array(E_intCarry)/sum(E_intCarry)
         #x1 = x0/np.max([1-margin_constraint['fun'](x0)/equity,1-stopout_constraint['fun'](x0)/equity])
-        x1=xt
-        callbackF(x1, progress_display,(True if 'verbose' in optional_params else False))
+        x1 = xt*0
+        if 'verbose' in optional_params:
+            callbackF(x1, progress_display,'initial')
 
         res = scipy.optimize.minimize(objective, x1, method='SLSQP', jac=objective_jac,
                                       constraints = [margin_constraint,stopout_constraint], # ,loss_tolerance_constraint
                                       bounds = bounds,
-                                      callback=lambda x:callbackF(x,progress_display,(True if 'verbose' in optional_params else False)),
+                                      callback= (lambda x:callbackF(x,progress_display,'interim')) if 'verbose' in optional_params else None,
                                       options = {'ftol': 1e-2, 'disp': False, 'finite_diff_rel_step' : finite_diff_rel_step, 'maxiter': 20*len(x1)})
-        if not res['success']:
+        if (not res['success']) and not res['message'] == 'Iteration limit reached':
+            # cheeky ignore that exception:
+            # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
             logging.error(res['message'])
-            if (True if 'verbose' in optional_params else False):
-                with pd.ExcelWriter('paths.xlsx', engine='xlsxwriter') as writer:
-                    pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
-            if not res['message'] == 'Iteration limit reached':
-                # cheeky ignore that exception:
-                # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
-                raise Exception(res['message'])
+            raise Exception(res['message'])
 
-    callbackF(res['x'], progress_display,(True if 'verbose' in optional_params else False))
+    callbackF(res['x'], progress_display,res['message'])
 
     def summarize():
         summary=pd.DataFrame()
@@ -463,8 +474,8 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
         summary['RealizedCarry'] = xt*(intCarry+intUSDborrow)
-        summary['excessIM'] = excess_margin.call(res['x'])['IM']
-        summary['excessMM'] = excess_margin.call(res['x'])['MM']
+        summary['excessIM'] = summary.apply(lambda f:excess_margin.shockedEstimate(res['x'])['IM'].loc[[f.name.split('-PERP')[0]+'/USD',f.name.split('-PERP')[0]+'/USD:USD']].sum(),axis=1)
+        summary['excessMM'] = summary.apply(lambda f:excess_margin.shockedEstimate(res['x'])['MM'].loc[[f.name.split('-PERP')[0]+'/USD',f.name.split('-PERP')[0]+'/USD:USD']].sum(),axis=1)
 
         weight_move=summary['optimalWeight']-previous_weights
         summary['transactionCost']=weight_move*futures['buy_slippage']
@@ -477,8 +488,8 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
         summary.loc['USD', 'RealizedCarry'] = np.min([0,equity-previous_weights.sum()])* intUSDborrow
-        summary.loc['USD', 'excessIM'] = excess_margin.call(res['x'])['totalIM']-sum(excess_margin.call(res['x'])['IM'])
-        summary.loc['USD', 'excessMM'] = excess_margin.call(res['x'])['totalMM']-sum(excess_margin.call(res['x'])['MM'])
+        summary.loc['USD', 'excessIM'] = excess_margin.shockedEstimate(res['x'])['totalIM']-summary['excessIM'].sum()
+        summary.loc['USD', 'excessMM'] = excess_margin.shockedEstimate(res['x'])['totalMM']-summary['excessMM'].sum()
         summary.loc['USD', 'transactionCost'] = 0
 
         summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark'].mean()
@@ -495,10 +506,8 @@ def cash_carry_optimizer(exchange, futures,excess_margin,
         summary.loc['total', 'transactionCost'] = summary['transactionCost'].sum()
         summary.columns.names=['field']
 
-        if (True if 'verbose' in optional_params else False):
-            with pd.ExcelWriter('paths.xlsx', engine='xlsxwriter') as writer:
-                summary.to_excel(writer, sheet_name='futureinfo')
-                pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
+        with pd.ExcelWriter('Runtime/runs/paths.xlsx', engine='xlsxwriter') as writer:
+            summary.to_excel(writer, sheet_name='futureinfo')
 
         return summary
     return summarize()
