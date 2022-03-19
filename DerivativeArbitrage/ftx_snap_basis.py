@@ -294,8 +294,8 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
         futures['future_bid'] = -slippage_override
     else: ## rubble calc:
         trading_fees = await exchange.fetch_trading_fees()
-        fees=(0.6*0.00015-0.0001+2*0.00006) if (params['fee_mode']=='hr') \
-            else (trading_fees['taker']+trading_fees['maker']*0) #maker fees 0 with 26 FTT staked
+        fees = futures['new_symbol'].apply(lambda f: (0.6*0.00015-0.0001+2*0.00006) if (params['fee_mode']=='hr') \
+            else (trading_fees[f]['taker']+trading_fees[f]['maker']*0)) #maker fees 0 with 26 FTT staked
         ### relative semi-spreads incl fees, and speed
         if slippage_orderbook_depth==0:
             futures['spot_ask'] = fees+futures.apply(lambda f: 0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler

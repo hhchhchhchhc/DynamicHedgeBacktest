@@ -26,16 +26,16 @@ class MarginCalculator:
     @staticmethod
     def add_pending_orders(exchange,spot_weight,future_weight):
         '''add orders as if done'''
-        for order in exchange.orders:
-            if order['status'] == 'open':
-                symbol = order['symbol']
-                if exchange.markets[symbol]['spot']:
-                    coin = exchange.markets[symbol]['base']
-                    if coin not in spot_weight: spot_weight[coin] = {'weight': 0, 'mark': exchange.mid(symbol)}
-                    spot_weight[coin]['weight'] += order['amount'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
-                else:
-                    if symbol not in future_weight: future_weight[symbol] = {'weight': 0, 'mark': exchange.mid(symbol)}
-                    future_weight[symbol]['weight'] += order['amount'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+        for order in exchange.orders_lifecycle:
+            symbol = order['symbol']
+            remaining = sum([order[key] for key in order if 'amount' in key])
+            if exchange.markets[symbol]['spot']:
+                coin = exchange.markets[symbol]['base']
+                if coin not in spot_weight: spot_weight[coin] = {'weight': 0, 'mark': exchange.mid(symbol)}
+                spot_weight[coin]['weight'] += remaining * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+            else:
+                if symbol not in future_weight: future_weight[symbol] = {'weight': 0, 'mark': exchange.mid(symbol)}
+                future_weight[symbol]['weight'] += remaining * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
         return (spot_weight,future_weight)
     
     def futureMargins(self, weights):
@@ -440,7 +440,7 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
     result['optimalCoin'] = result['optimalUSD'] / result['spot_price']
     result['currentUSD'] = result['currentCoin'] * result['spot_price']
     result['minProvideSize'] = result['name'].apply(lambda f: float(exchange.market(f)['info']['minProvideSize']))
-    result['diffCoin']= result.apply(lambda f: int((f['optimalCoin']-f['currentCoin'])/f['minProvideSize'])*f['minProvideSize'],axis=1)
+    result['diffCoin']= result.apply(lambda f: float(exchange.amount_to_precision(exchange.market(f['name'])['symbol'],f['optimalCoin']-f['currentCoin'])),axis=1)
     result['diffUSD'] = result['diffCoin']*result['spot_price']
 
     result = result[np.abs(result['diffCoin'])>0]

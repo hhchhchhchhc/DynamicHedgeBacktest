@@ -216,6 +216,7 @@ async def open_exchange(exchange_name,subaccount,config={}):
     else: print('what exchange?')
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     await exchange.load_markets()
+    await exchange.load_fees()
     return exchange
 
 import collections
@@ -284,18 +285,19 @@ def log_reader(prefix='latest',dirname='Runtime/logs'):
     with open(f'{path}_events.json', 'r') as file:
         d = json.load(file)
         events=pd.DataFrame(d)
+    with open(f'{path}_risk_reconciliations.json', 'r') as file:
+        d = json.load(file)
+        risk = pd.DataFrame(d)
     with open(f'{path}_request.json', 'r') as file:
         d = json.load(file)
         request=pd.DataFrame(d)
     history = from_parquet(f'{path}_minutely.parquet')
 
     with pd.ExcelWriter(f'{dirname}/latest_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
-        order_events = events[events['lifecycle_status']!='remote_risk']
-        if not order_events.empty:
-            order_events.sort_values(by='in_flight_timestamp',ascending=True).to_excel(writer, sheet_name='order_lifecycle')
-        risk_events = events[events['lifecycle_status']=='remote_risk']
-        if not risk_events.empty:
-            risk_events.sort_values(by='timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
+        if not events.empty:
+            events.sort_values(by='in_flight_timestamp',ascending=True).to_excel(writer, sheet_name='order_lifecycle')
+        if not risk.empty:
+            risk.sort_values(by='timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
         request.to_excel(writer, sheet_name='request')
         history.to_excel(writer, sheet_name='history')
 
