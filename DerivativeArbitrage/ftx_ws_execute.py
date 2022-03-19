@@ -12,7 +12,7 @@ from ftx_portfolio import diff_portoflio,MarginCalculator
 from ftx_history import fetch_trades_history
 from ftx_ftx import fetch_latencyStats,fetch_futures
 
-max_nb_coins = 20  # TODO: sharding needed
+max_nb_coins = 50  # TODO: sharding needed
 entry_tolerance = 0.5 # green light if basket better than median
 edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(10) # stop on 10min stdev
@@ -24,10 +24,11 @@ edit_price_tolerance=np.sqrt(10/60)#price on 10s std
 class myFtx(ccxtpro.ftx):
     def __init__(self, config={}):
         super().__init__(config=config)
-        self.lock = threading.Lock()
+        #self.lock = threading.Lock()
         self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
 
-        self.orders_lifecyle = []
+        self.orders_lifecycle = dict()
+        self.risk_reconciliations = []
         self.limit = myFtx.LimitBreached()
 
         self.exec_parameters = {}
@@ -40,11 +41,10 @@ class myFtx(ccxtpro.ftx):
         self.margin_calculator = None
         self.calculated_IM = None
 
-        limit = self.safe_integer(self.options, 'ordersLimit', 1000)
-        self.orders = ArrayCacheBySymbolById(limit)
-        limit = self.safe_integer(self.options, 'tradesLimit', 1000)
-        self.myTrades = ArrayCacheBySymbolById(limit)
-        self.orders_in_flight = dict() # list of dict by coin. Effectively a lock during order creation
+        #limit = self.safe_integer(self.options, 'ordersLimit', 1000)
+        #self.orders = ArrayCacheBySymbolById(limit)
+        #limit = self.safe_integer(self.options, 'tradesLimit', 1000)
+        #self.myTrades = ArrayCacheBySymbolById(limit)
         self.latest_order_reconcile_timestamp = 0
         self.latest_fill_reconcile_timestamp = 0
 
@@ -84,16 +84,41 @@ class myFtx(ccxtpro.ftx):
                     raise e
         return wrapper_loop
 
-    def filter_orders(self,key_value_dict):
-        if self.orders:
-            return [order for order in self.orders if all(order[key]==value for key,value in key_value_dict.items() if key in order)]
-            #return [order for order in self.orders_lifecyle if all(order[key] == value for key, value in key_value_dict.items() if key in order)]
-        else:
-            return []
+    def synchronized(wrapped):
+        lock = threading.RLock()
+
+        @functools.wraps(wrapped)
+        def _wrapper(*args, **kwargs):
+            with lock:
+                return wrapped(*args, **kwargs)
+
+        return _wrapper
+
+    def find_clientID_from_fill(self,fill):
+        '''find order by id, even if still in flight
+        all layers events must carry id if known !! '''
+        try:
+            found = next(clientID for clientID, events in self.orders_lifecycle.items() if
+                         any('id' in event and event['id'] == fill['order'] for event in events))
+        except StopIteration as e:# could still be in flight --> lookup
+            try:
+                found = next(clientID for clientID,events in self.orders_lifecycle.items() if
+                     any(event['price'] == fill['price']
+                     and event['amount'] == fill['amount']
+                     and event['symbol'] == fill['symbol']
+                     #and x['type'] == fill['type'] # sometimes None in fill
+                     and event['side'] == fill['side'] for event in events))
+            except StopIteration as e:
+                raise Exception("fill {} not found".format(fill['symbol']))
+        return found
 
     def mid(self,symbol):
         data = self.tickers[symbol] if symbol in self.tickers else self.markets[symbol]['info']
         return 0.5*(float(data['bid'])+float(data['ask']))
+
+    def amount_to_precision(self, symbol, amount):
+        market = self.market(symbol)
+        return self.decimal_to_precision(amount, ccxt.ROUND, market['precision']['amount'], self.precisionMode, self.paddingMode)
 
     def build_logging(self):
         '''3 handlers: >=debug, ==info and >=warning'''
@@ -137,27 +162,63 @@ class myFtx(ccxtpro.ftx):
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- OMS             -----------------------------------------
     # --------------------------------------------------------------------------------------------
+    # orders_lifecycle is a dictionary of blockchains, one per order intended.
+    # each block has a lifecyle_state in ['pending_new','sent','pending_cancel','acknowledged','partial_fill','canceled','rejected','filled']
+    # lifecycle_xxx do:
+    # 1) resolve clientID
+    # 2) validate block, notably maintaining orders_pending_new (which is orders_lifecycle[x][-1]['lifecycle_state']=='pending_new')
+    # 3) build a new block from messages received
+    # 4) mines it to the blockchain
+    #
+    all_states = set(['pending_new','sent','pending_cancel','pending_replace','acknowledged','partial_fill'])
+    open_states = set(['pending_new','sent','pending_cancel','pending_replace','acknowledged','partial_fill'])
+    editable_states = set(['acknowledged','partial_fill'])
+    cancelable_states = set(['sent','acknowledged','partial_fill'])
+    # --------------------------------------------------------------------------------------------
 
-    def resolve_in_flight(self,clientOrderId):
-        symbol = clientOrderId.split('_')[1]
-        coin = self.markets[symbol]['base']
-        if (coin in self.orders_in_flight) and clientOrderId in self.orders_in_flight[coin]:
-            self.orders_in_flight[coin].remove(clientOrderId)
-            self.logger.info('order {} resolved. {} coins in flight'.format(
-                clientOrderId,
-                len([in_flight for in_flight in self.orders_in_flight.values() if in_flight != []])))
+    def pending_new_histories(self, coin):
+        symbols = [symbol
+                   for symbol in self.exec_parameters[coin].keys()
+                   if symbol in self.markets]
+        return [{clientID:data}
+                for clientID,data in self.orders_lifecycle.items()
+                if data[0]['symbol'] in symbols
+                and data[-1]['lifecycle_state'] == 'pending_new']
 
-    def lifecycle_in_flight(self, order_event):
-        ## generic info
+    def open_order_histories(self,symbol):
+        '''returns blockchain which current state open_order_histories not filled or cancelled'''
+        try:
+            return [data
+                for data in self.orders_lifecycle.values()
+                if data[0]['symbol'] == symbol
+                and data[-1]['lifecycle_state'] in self.open_states]
+        except:
+            pass
+
+    def lifecycle_pending_new(self, order_event):
+        '''self.orders_lifecycle = {clientId:[{key:data}]}'''
+        #1) resolve clientID
+        clientOrderId = order_event['clientOrderId']
+        
+        #2) validate block
+        pass
+        
+        #3) make new block
+        
+        ## order details
         symbol = order_event['symbol']
         coin = self.markets[symbol]['base']
-        self.orders_in_flight[coin] = (self.orders_in_flight[coin] if coin in self.orders_in_flight else []) + [order_event['clientOrderId']]
 
-        event_record = order_event | {'lifecycle_status':'in_flight'}
-
+        nowtime = order_event['timestamp'] - self.exec_parameters['timestamp']
+        eventID = clientOrderId + '_' + str(nowtime)
+        current = {'eventID': eventID,
+                   'lifecycle_state': 'pending_new',
+                   #'timestamp': nowtime, already in order_event 
+                   'id': None} | order_event
+        
         ## risk details
         risk_data = self.risk_state[coin]
-        event_record |= {'risk_timestamp':risk_data[symbol]['delta_timestamp']-self.exec_parameters['timestamp'],
+        current |= {'risk_timestamp':risk_data[symbol]['delta_timestamp']-self.exec_parameters['timestamp'],
                        'delta':risk_data[symbol]['delta'],
                        'netDelta': risk_data['netDelta'],
                        'pv(wrong timestamp)':self.pv,
@@ -171,126 +232,169 @@ class myFtx(ccxtpro.ftx):
         else:
             mkt_data = self.markets[symbol]['info']|{'bidVolume':0,'askVolume':0}#TODO: should have all risk group
             timestamp = self.exec_parameters['timestamp']
-        event_record |= {'mkt_timestamp': timestamp - self.exec_parameters['timestamp']}\
+        current |= {'mkt_timestamp': timestamp - self.exec_parameters['timestamp']}\
                         | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
 
-        self.orders_lifecyle += [event_record]
+        #4) mine genesis block
+        self.orders_lifecycle[clientOrderId] = [current]
 
     def lifecycle_sent(self, order_event):
-        try:
-            found = next(x for x in self.orders_lifecyle if 'clientOrderId' in x and x['clientOrderId'] == order_event['clientOrderId'])
-        except StopIteration as e:
-            raise Exception("order {} not found".format(order_event['clientOrderId']))
+        # 1) resolve clientID
+        clientOrderId = order_event['clientOrderId']
 
-        found['lifecycle_status'] = 'sent'
-        found |= {'sent_timestamp': self.milliseconds() - self.exec_parameters['timestamp']} \
-                 |{key: order_event[key] for key in ['id', 'status']}
+        # 2) validate block
+        past = self.orders_lifecycle[clientOrderId][-1]
+        if past['lifecycle_state'] not in ['pending_new','acknowledged','partial_fill']:
+            self.logger.warning('order {} was {}'.format(past['clientOrderId'],past['lifecycle_state']))
+            return
+
+        # 3) new block
+        nowtime = int(self.milliseconds() - self.exec_parameters['timestamp'])
+        eventID = clientOrderId + '_' + str(nowtime)
+        current = {'eventID':eventID,
+                   'lifecycle_state':'sent',
+                   'timestamp': nowtime,
+                   'id': order_event['id'],
+                   'remaining': order_event['remaining'] if order_event['side'] =='buy' else -order_event['remaining']}
 
         if order_event['status'] == 'closed':
-            self.resolve_in_flight(order_event['clientOrderId'])
-            found['lifecycle_status'] = 'rejected'
+            current['lifecycle_state'] = 'rejected'
 
-    def lifecycle_ackowledgment(self,order_event):
-        try:
-            found = next(x for x in self.orders_lifecyle if 'clientOrderId' in x and x['clientOrderId'] == order_event['clientOrderId'])
-        except StopIteration as e:
-            raise Exception("order {} not found".format(order_event['clientOrderId']))
+        #4) mine
+        self.orders_lifecycle[clientOrderId] += [current]
 
-        found['lifecycle_status'] = 'acknowledged'
-        found |= {'acknowledge_timestamp':self.milliseconds()-self.exec_parameters['timestamp']}
+    def lifecycle_pending_cancel(self, clientOrderId, result):
+        # 1) resolve clientID
+        clientOrderId = clientOrderId
 
-        self.resolve_in_flight(order_event['clientOrderId'])
+        # 2) validate block
+        past = self.orders_lifecycle[clientOrderId][-1]
+        if past['lifecycle_state'] not in self.open_states:
+            self.logger.warning('order {} re-canceled'.format(past['clientOrderId']))
+            return
 
-        if 'reconciled' in order_event: found |= {'reconciled':order_event['reconciled']}
+        # 3) new block
+        nowtime = int(self.milliseconds() - self.exec_parameters['timestamp'])
+        eventID = clientOrderId + '_' + str(nowtime)
+        current = result | {'eventID': eventID,
+                   'lifecycle_state': 'pending_cancel',
+                   'timestamp': nowtime}
 
-    def lifecycle_fill(self,fill):
-        try:
-            found = next(x for x in self.orders_lifecyle if 'id' in x and x['id'] == fill['order'])
-        except StopIteration as e:# could still be in flight --> lookup
-            try:
-                self.reconcile_orders()
-                try:
-                    found = next(x for x in self.orders_lifecyle if 'id' in x and x['id'] == id)
-                except StopIteration as e:
-                    try:
-                        found = next(x for x in self.orders_lifecyle
-                             if x['price'] == fill['price']
-                             and x['amount'] == fill['amount']
-                             and x['symbol'] == fill['symbol']
-                             #and x['type'] == fill['type'] # sometimes None in fill
-                             and x['side'] == fill['side'])
-                    except StopIteration as e:
-                        raise Exception("fill {} not found".format(fill['symbol']))
-            except Exception as e:
-                raise Exception("fill {} not found".format(fill['symbol']))
+        # 4) mine
+        self.orders_lifecycle[clientOrderId] += [current]
 
-        fill_count = str(len([key for key in fill.keys() if 'fill_timestamp' in key]))
-        found |= {'fill_timestamp_' + fill_count: fill['timestamp'] - self.exec_parameters['timestamp'],
-                  'price_' + fill_count: fill['price'],
-                  'amount_' + fill_count: -fill['amount']}
+    def lifecycle_ackowledgment(self,order_event,trigger):
+        # 1) resolve clientID
+        clientOrderId = order_event['clientOrderId']
+
+        # 2) validate block...is this needed?
+        past = self.orders_lifecycle[clientOrderId][-1]
+        if past['lifecycle_state'] in (self.open_states - set(['acknowledged','partial_fill'])):
+            self.logger.warning('order {} re-ackowledged'.format(clientOrderId))
+            return
+
+        # 3) new block
+        nowtime = int(self.milliseconds() - self.exec_parameters['timestamp'])
+        eventID = clientOrderId + '_' + str(nowtime)
+        current = {'eventID': eventID,
+                   'lifecycle_state': 'pending_cancel',
+                   'sent_timestamp': nowtime,
+                   'id': order_event['id'],
+                   'trigger': trigger}
+
+        if order_event['status'] in ['new', 'open', 'triggered']:
+            current['lifecycle_state'] = 'acknowledged'
+        elif order_event['status'] in ['closed']:
+            #TODO: not obviously rejected
+            current['lifecycle_state'] = 'filled' if order_event['remaining'] == 0 else 'rejected'
+        elif order_event['status'] in ['canceled']:
+            current['lifecycle_state'] = 'canceled'
+        else:
+            raise Exception('unknown status{}'.format(order_event['status']))
+
+        # 4) mine
+        self.orders_lifecycle[clientOrderId] += [current]
+
+    def lifecycle_fill(self,fill,trigger):
+        # 1) resolve clientID
+        clientOrderId = self.find_clientID_from_fill(fill)
+
+        # 2) validate block
+        past = self.orders_lifecycle[clientOrderId][-1]
+        if past['lifecycle_state'] not in self.open_states:
+            self.logger.warning('order {} re-filled'.format(past['clientOrderId']))
+            return
+
+        # 3) new block
+        nowtime = fill['timestamp'] - self.exec_parameters['timestamp']
+        eventID = clientOrderId + '_' + str(nowtime)
+        fill.pop('id') # would conflict with fill['order']
+        current = past
+        for key,data in {'eventID': eventID,
+                   'timestamp': nowtime,
+                   'trigger': trigger,
+                   'remaining': past['remaining']-fill['amount']}.items():
+            current[key] = data
+        assert (past['remaining']-current['remaining'] == fill['amount'])
 
         symbol = fill['symbol']
         coin = self.markets[symbol]['base']
-        if np.abs(sum(found[key] for key in found if 'amount' in key)) < self.exec_parameters[coin][symbol]['sizeIncrement']/2:
-            found['lifecycle_status'] = 'filled'
-            prices = np.array([found[key] for key in found if 'price_' in key])
-            amounts = np.array([found[key] for key in found if 'amount_' in key])
-            found |= {'avgPrice': np.dot(prices,amounts)/sum(amounts)}
-            self.resolve_in_flight(found['clientOrderId'])
+        if current['remaining'] < self.exec_parameters[coin][symbol]['sizeIncrement']/2:
+            current['lifecycle_state'] = 'filled'
+            prices = np.array([event['price'] for event in self.orders_lifecycle[clientOrderId] if 'fill_timestamp' in event])
+            amounts = np.array([event['amount'] for event in self.orders_lifecycle[clientOrderId] if 'fill_timestamp' in event])
+            current |= {'avgPrice': np.dot(prices,amounts)/sum(amounts)}
+        else:
+            current['lifecycle_state'] = 'partial_fill'
 
-        if 'reconciled' in fill: found |= {'reconciled': fill['reconciled']}
+        # 4) mine
+        self.orders_lifecycle[clientOrderId] += [current]
 
-    def lifecycle_cancel(self,clientOrderId, dubious=False):
-        try:
-            found = next(x for x in self.orders_lifecyle if 'clientOrderId' in x and x['clientOrderId'] == clientOrderId)
-        except StopIteration as e:
-            raise Exception("order {} not found for cancellation".format(clientOrderId))
-
-        found['lifecycle_status'] = 'cancelled'
-        found |= {'cancel_timestamp': self.milliseconds() - self.exec_parameters['timestamp'],'dubious':dubious}
-        self.resolve_in_flight(clientOrderId)
-
+    #@synchronized
     async def lifecycle_to_json(self,filename = 'Runtime/logs/latest_events.json'):
-        if True:
-        #with self.lock:
-            async with aiofiles.open(filename,mode='w') as file:
-                await file.write(json.dumps(self.orders_lifecyle, cls=NpEncoder))
-            shutil.copy2(filename, 'Runtime/logs/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_events.json')
+        async with aiofiles.open(filename,mode='w') as file:
+            await file.write(json.dumps(self.orders_lifecycle, cls=NpEncoder))
+        shutil.copy2(filename, 'Runtime/logs/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_events.json')
 
+    #@synchronized
+    async def risk_reconciliation_to_json(self,filename = 'Runtime/logs/latest_risk_reconciliations.json'):
+        async with aiofiles.open(filename,mode='w') as file:
+            await file.write(json.dumps(self.risk_reconciliations, cls=NpEncoder))
+        shutil.copy2(filename, 'Runtime/logs/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_risk_reconciliations.json')
+
+    #@synchronized
     async def reconcile_fills(self):
         '''fetch fills, to recover missed messages'''
-        if True:
-
-#        with self.lock:
-            self.latest_fill_reconcile_timestamp = self.milliseconds()
-            fetched_fills = await self.fetch_my_trades(since=max(self.exec_parameters['timestamp'],self.latest_fill_reconcile_timestamp-1000), limit=1000)
-            for fill in fetched_fills:
-                if fill['id'] not in [x['id'] for x in self.myTrades]:
-                    self.myTrades.append(fill)
-                    self.lifecycle_fill(fill|{'reconciled':'True'})
-
-        # outside lock otherwise it would be locked
+        self.latest_fill_reconcile_timestamp = self.milliseconds()
+        fetched_fills = await self.fetch_my_trades(since=max(self.exec_parameters['timestamp'],self.latest_fill_reconcile_timestamp-1000), limit=1000)
+        for fill in fetched_fills:
+            self.myTrades.append(fill)
+            self.lifecycle_fill(fill,trigger='reconciled')
+        # hopefully using another lock instance
         await self.lifecycle_to_json()
 
+    # @synchronized
     async def reconcile_orders(self):
-        '''fetch orders, recover missed messages and discard other in_flight'''
-        if True:
+        '''fetch orders, recover missed messages and discard other pending_new'''
+        fetched_orders = await self.fetch_orders(since=max(self.exec_parameters['timestamp'],self.latest_order_reconcile_timestamp)-1000, limit=1000)
+        self.latest_order_reconcile_timestamp = self.milliseconds()
 
-#        with self.lock:
-            self.latest_order_reconcile_timestamp = self.milliseconds()
-            fetched_orders = await self.fetch_orders(since=max(self.exec_parameters['timestamp'],self.latest_order_reconcile_timestamp-1000), limit=1000)
+        # forcefully acknowledge
+        for order in fetched_orders:
+            #self.orders.append(order)
+            past = self.orders_lifecycle[order['clientOrderId']][-1]
+            current = {'trigger':'reconciled'}
+            if order['status'] == 'open' and (past['lifecycle_state'] not in ['acknowledged']):
+                self.lifecycle_ackowledgment(order,trigger='reconciled')
+            elif order['status'] == 'closed' and order['remaining'] == 0 and past['lifecycle_state'] not in ['filled']:
+                current['lifecycle_state'] = 'filled'
+                current['trigger'] = 'reconciled'
+            elif ((order['status'] == 'canceled') or (order['status'] == 'closed' and order['remaining'] != 0)) and past['lifecycle_state'] not in ['canceled','rejected']:
+                self.lifecycle_cancel(order['clientOrderId'],trigger='reconciled')
+            else:
+                pass
 
-            # forcefully ackowledge
-            for order in fetched_orders:
-                self.orders.append(order)
-                self.lifecycle_ackowledgment(order | {'reconciled': 'True'})
-
-            # the rest is dubious (~ cancelled)
-            for lifecycle in self.orders_lifecyle:
-                if lifecycle['lifecycle_status'] in ['in_flight','sent']:
-                    self.lifecycle_cancel(lifecycle['clientOrderId'],dubious=True)
-
-        # outside lock otherwise it would be locked
+        # hopefully using another lock instance
         await self.lifecycle_to_json()
 
     # ---------------------------------------------------------------------------------------------
@@ -477,9 +581,9 @@ class myFtx(ccxtpro.ftx):
 
         # log risk
         if True:
-            self.orders_lifecyle += [{'lifecycle_status': 'remote_risk', 'symbol':symbol_, 'timestamp':self.milliseconds()}
-             for coin_,coin_data in self.risk_state.items()
-             for symbol_ in coin_data.keys() if symbol_ in self.markets]
+            self.risk_reconciliations += [{'lifecycle_state': 'remote_risk', 'symbol':symbol_, 'timestamp':self.milliseconds()}
+                                      for coin_,coin_data in self.risk_state.items()
+                                      for symbol_ in coin_data.keys() if symbol_ in self.markets]
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- WS loops             -----------------------------------------
@@ -547,54 +651,58 @@ class myFtx(ccxtpro.ftx):
         orders = await self.watch_orders()
 
     def handle_order(self, client, message):
-        '''maintains orders, in_flight, event_records'''
+        '''maintains orders, pending_new, event_records'''
         super().handle_order(client, message)
         data = self.safe_value(message, 'data')
         order = self.parse_order(data)
         assert order['clientOrderId']
 
-        self.lifecycle_ackowledgment(order)
+        self.lifecycle_ackowledgment(order) # status new, triggered, open or canceled
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- order placement -----------------------------------------
     # --------------------------------------------------------------------------------------------
 
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
-        '''if ackowledged, place order. otherwise just reconcile'''
+        '''if ackowledged, place order. otherwise just reconcile
+        orders_pending_new is blocking'''
         coin = self.markets[symbol]['base']
-        if coin in self.orders_in_flight and self.orders_in_flight[coin]!=[]:
-            self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
+        if self.pending_new_histories(coin):#TODO: rather incorporate orders_pending_new in risk, rather than block
+            self.logger.info('orders {} still in flight. holding off {}'.format(
+                [order.keys() for order in self.pending_new_histories(coin)],
+                params['clientOrderId']))
             await self.reconcile_orders()
         else:
-            # set in_flight -> send rest -> if success, leave in_flight and give id. Pls note it may have been caught by handle_order by then.
-            try:
-                self.lifecycle_in_flight({'clientOrderId': params['clientOrderId'],
+            # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
+            self.lifecycle_pending_new({'clientOrderId': params['clientOrderId'],
                                       'symbol': symbol,
                                       'type': type,
                                       'side': side,
                                       'amount': amount,
+                                      'remaining': amount if side =='buy' else -amount,
                                       'price': price,
-                                      'in_flight_timestamp': int(params['clientOrderId'].split('_')[2])})
-            except:
-                pass
+                                      'timestamp': int(float(params['clientOrderId'].split('_')[2]))})
             order = await super().create_order(symbol, type, side, amount, price, params)
-            self.lifecycle_sent({'clientOrderId': params['clientOrderId'],'id':order['id'],'status':order['status']})
+            self.lifecycle_sent(order)
 
-    async def cancel_order(self, id, symbol=None, params={'dubious':False}):
-        '''if ackowledged, place order. otherwise just reconcile'''
+    async def cancel_order(self, symbol, params):
+        '''set in flight, send cancel, set as pending cancel, set as cancelled or insist'''
         coin = self.markets[symbol]['base']
-        if coin in self.orders_in_flight and self.orders_in_flight[coin]!=[]:
-            self.logger.info('orders {} still in flight. holding off {}'.format(self.orders_in_flight[coin],params['clientOrderId']))
-            await self.reconcile_orders()
-            assert (params['clientOrderId'] not in self.orders_in_flight[coin])
-        else:
-            await super().cancel_order(id, symbol) # pass without 'clientOrderId'
-            self.lifecycle_cancel(params['clientOrderId'],dubious=params['dubious'] if 'dubious' in params else False)
+        self.pending_new_histories[coin] = (self.pending_new_histories[coin] if coin in self.pending_new_histories else []) + [params['clientOrderId']]
+
+        result = await super().cancel_order(None, symbol,params)
+
+        if result == "Order queued for cancellation":
+            self.lifecycle_pending_cancel(params['clientOrderId'], result)
+        else: # could be in flight, or unknown
+            self.logger.warning('cancel for {} fails with {}'.format(params['clientOrderId'],result))
+            await asyncio.sleep(.1)
+            await self.cancel_order(symbol, params)
 
     async def peg_or_stopout(self,symbol,size,orderbook_depth,edit_trigger_depth,edit_price_depth,stop_depth=None):
         '''creates of edit orders, pegging to orderbook
         size in coin, already filtered
-        skips if any in_flight, cancels duplicates, add any cancellations to event_records
+        skips if any pending_new, cancels duplicates, add any cancellations to event_records
         extensive exception handling
         '''
         coin = self.markets[symbol]['base']
@@ -614,35 +722,49 @@ class myFtx(ccxtpro.ftx):
         edit_price = float(self.price_to_precision(symbol,opposite_side - (1 if size>0 else -1)*max(priceIncrement*1.1,edit_price_depth)))
 
         try:
-            orders = self.filter_orders({'symbol':symbol, 'status':'open', 'lifecycle_status':'ackowledged'})
-            if len(orders) > 1:
-                for order in orders[1:]:
-                    await self.cancel_order(order['id'],symbol=symbol,params={'clientOrderId':order['clientOrderId'],'dubious':True})
-                    self.logger.warning('cancelled duplicate {} order {}'.format(symbol,order['id']))
+            # look for open orders on the symbol. if dupes, remove latest.
+            event_histories = self.open_order_histories(symbol)
+            if len(event_histories) > 1:
+                first_pending_new = np.argmin(np.array([data[0]['timestamp'] for data in event_histories]))
+                for i,order in event_histories.enumerate():
+                    if i == first_pending_new: continue
+                    await self.cancel_order(symbol,params={'clientOrderId':order['clientOrderId'],'trigger':'duplicates'})
+                    self.logger.warning('canceled duplicate {} order {}'.format(symbol,order['clientOrderId']))
+                order = event_histories[first_pending_new][-1]
 
-            if len(orders)==0:
-                clientOrderId = f'new_{symbol}_{str(self.milliseconds())}'
+            # if none, create genesis
+            if len(event_histories)==0:
+                clientOrderId = 'new_{}_{}'.format(symbol,str(self.milliseconds()-self.exec_parameters['timestamp']))
                 order = await self.create_order(symbol, 'limit', 'buy' if size>0 else 'sell', np.abs(size), price=edit_price,
                                                 params={'postOnly': True, 'clientOrderId':clientOrderId})
+            # if only one, stopout or peg or wait
             else:
-                order = orders[0]
-                order_distance = (1 if order['side']=='buy' else -1)*(opposite_side-order['price'])
+                order = event_histories[-1]
+                if set('side','price','remaining','clientOrderId').issubset(set(order.keys())):
+                    order_distance = (1 if order['side']=='buy' else -1)*(opposite_side-order['price'])
                 # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
+
                 if stop_depth \
+                        and order['lifecycle_state'] in self.cancelable_states\
                         and order_distance>stop_trigger \
                         and order['remaining']>sizeIncrement:
 
-                    clientMktOrderId = f'stop_{symbol}_{str(self.milliseconds())}'
-                    await safe_gather([self.create_order(symbol, 'market', 'buy' if size>0 else 'sell',order['remaining'],params={'clientOrderId':clientMktOrderId}),
-                                                    self.cancel_order(order['id'],symbol=symbol,params={'clientOrderId':order['clientOrderId'],'dubious':False})],semaphore=self.rest_semaphor)
-                # chase
-                if (order_distance>edit_trigger) \
+                    await self.cancel_order(symbol=symbol, params={'clientOrderId': order['clientOrderId'], 'trigger': False})
+                    clientMktOrderId = 'stop_{}_{}'.format(symbol,str(self.milliseconds() - self.exec_parameters['timestamp']))
+                    order = await self.create_order(symbol, 'market', 'buy' if size>0 else 'sell',order['remaining'],
+                                            params={'clientOrderId':clientMktOrderId})
+                # peg limit order
+                elif (order_distance>edit_trigger) \
+                        and order['lifecycle_state'] in self.editable_states \
                         and (np.abs(edit_price-order['price'])>=priceIncrement) \
                         and (order['remaining']>sizeIncrement):
-                    await self.cancel_order(order['id'], symbol=symbol, params={'clientOrderId': order['clientOrderId'],'dubious':False})
-                    clientOrderId = f'chase_{symbol}_{str(self.milliseconds())}'
-                    await self.create_order(symbol, 'limit', 'buy' if size > 0 else 'sell', np.abs(size),price=edit_price,
-                                                    params={'postOnly': True, 'clientOrderId': clientOrderId})
+                    await self.cancel_order(symbol=symbol, params={'clientOrderId': order['clientOrderId'],'trigger':False})
+                    clientOrderId = 'chase_{}_{}'.format(symbol,str(self.milliseconds()-self.exec_parameters['timestamp']))
+                    order = await self.create_order(symbol, 'limit', 'buy' if size > 0 else 'sell', np.abs(size),price=edit_price,
+                                            params={'postOnly': True, 'clientOrderId': clientOrderId})
+                #wait
+                else:
+                    pass
 
         ### see error_hierarchy in DerivativeArbitrage/venv/Lib/site-packages/ccxt/base/errors.py
         except ccxt.InsufficientFunds as e: # is ExchangeError
@@ -663,7 +785,7 @@ class myFtx(ccxtpro.ftx):
                 self.logger.warning(str(e) + str(order))
             else:
                 self.logger.warning(str(e), exc_info=True)
-        except ccxt.DDoSProtection as e:
+        except ccxt.NetworkError as e:
             self.logger.warning(str(e))
         except Exception as e:
             self.logger.exception('{} {} {} at {} raised {}'.format('buy' if size > 0 else 'sell', np.abs(size), symbol, price, e))
@@ -677,7 +799,7 @@ class myFtx(ccxtpro.ftx):
     async def order_master(self,symbol):
         '''on each top of book update, update market_state and send orders
         tunes aggressiveness according to risk.
-        populates event_records, maintains in_flight'''
+        populates event_records, maintains pending_new'''
         coin = self.markets[symbol]['base']
 
         # watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...
@@ -716,7 +838,7 @@ class myFtx(ccxtpro.ftx):
         size = params['target'] - delta
         # size < slice_size and margin_headroom
         size = np.sign(size)*float(self.amount_to_precision(symbol, min([np.abs(size), params['slice_size']])))
-        if (np.abs(size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
+        if (np.abs(size) < self.exec_parameters[coin][symbol]['sizeIncrement']/2):
             self.logger.info(f'{symbol} done')
             raise myFtx.DoneDeal(symbol)
         # if not enough margin, hold it# TODO: this may be slow, and depends on orders anyway
@@ -728,7 +850,7 @@ class myFtx(ccxtpro.ftx):
         # if increases risk, go passive
         if np.abs(netDelta+size)-np.abs(netDelta)>0:
             if self.exec_parameters[coin]['entry_level'] is None: # for a purely risk reducing exercise
-                self.logger.info(f'dont do {symbol}, would increses risk')
+                self.logger.info(f'dont do {symbol}, would increase risk')
                 raise myFtx.DoneDeal(symbol)
             # set limit at target quantile
             #current_basket_price = sum(self.mid(symbol)*self.exec_parameters[coin][symbol]['diff']
@@ -815,7 +937,6 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             elif argv[0]=='unwind':
                 future_weights = pd.DataFrame(columns=['name','optimalWeight'])
                 target_portfolio = await diff_portoflio(exchange, future_weights)
-                target_portfolio['optimalCoin'] = target_portfolio.apply(lambda s: s['minProvideSize'] if exchange.market(s['name'])['type']=='spot' else 0,axis=1)
                 if target_portfolio.empty: return
 
                 await exchange.build_state(target_portfolio,
@@ -856,7 +977,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
 def ftx_ws_spread_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['unwind'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     logging.info(f'running {argv}')
