@@ -26,17 +26,35 @@ class MarginCalculator:
     @staticmethod
     def add_pending_orders(exchange,spot_weight,future_weight):
         '''add orders as if done'''
-        for order in exchange.orders_lifecycle:
+        for open_order_history in exchange.open_order_histories():
+            order = open_order_history[-1]
+            if 'symbol' in order:
+                pass
             symbol = order['symbol']
-            remaining = sum([order[key] for key in order if 'amount' in key])
             if exchange.markets[symbol]['spot']:
                 coin = exchange.markets[symbol]['base']
                 if coin not in spot_weight: spot_weight[coin] = {'weight': 0, 'mark': exchange.mid(symbol)}
-                spot_weight[coin]['weight'] += remaining * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+                spot_weight[coin]['weight'] += order['remaining'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
             else:
                 if symbol not in future_weight: future_weight[symbol] = {'weight': 0, 'mark': exchange.mid(symbol)}
-                future_weight[symbol]['weight'] += remaining * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+                future_weight[symbol]['weight'] += order['remaining'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
         return (spot_weight,future_weight)
+
+    @staticmethod
+    def risk_bounds_from_open_orders(exchange):
+        '''bounds for delta and netDelta'''
+        # trades_by_symbol = [order[-1] for open_order_history in exchange.open_order_histories()]
+        #     order = open_order_history[-1]
+        #     symbol = order['symbol']
+        #     if exchange.markets[symbol]['spot']:
+        #         coin = exchange.markets[symbol]['base']
+        #         if coin not in spot_weight: spot_weight[coin] = {'weight': 0, 'mark': exchange.mid(symbol)}
+        #         spot_weight[coin]['weight'] += remaining * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+        #     else:
+        #         if symbol not in future_weight: future_weight[symbol] = {'weight': 0, 'mark': exchange.mid(symbol)}
+        #         future_weight[symbol]['weight'] += remaining * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+        # return (spot_weight,future_weight)
+        return
     
     def futureMargins(self, weights):
         '''weights = {symbol: 'weight, 'mark'''
@@ -403,7 +421,6 @@ async def live_risk(exchange,futures):
 # diff is in coin
 async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
     future_weights = future_weights[future_weights['name'].isin(['USD','total'])==False]
-    future_weights = future_weights[(np.abs(future_weights['optimalWeight'])>1)]
     future_weights['optimalUSD'] = -future_weights['optimalWeight']
 
     cash_weights = future_weights.copy()

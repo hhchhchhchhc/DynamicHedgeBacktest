@@ -284,20 +284,23 @@ def log_reader(prefix='latest',dirname='Runtime/logs'):
     path = f'{dirname}/{prefix}'
     with open(f'{path}_events.json', 'r') as file:
         d = json.load(file)
-        events=pd.DataFrame(d)
+        events = {clientId: pd.DataFrame(data) for clientId, data in d.items()}
     with open(f'{path}_risk_reconciliations.json', 'r') as file:
         d = json.load(file)
         risk = pd.DataFrame(d)
     with open(f'{path}_request.json', 'r') as file:
         d = json.load(file)
-        request=pd.DataFrame(d)
+        request = pd.DataFrame(d)
     history = from_parquet(f'{path}_minutely.parquet')
 
     with pd.ExcelWriter(f'{dirname}/latest_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
-        if not events.empty:
-            events.sort_values(by='in_flight_timestamp',ascending=True).to_excel(writer, sheet_name='order_lifecycle')
+        pd.concat([data[['symbol','clientOrderId', 'timestamp', 'lifecycle_state']] for data in events.values()], axis=1).to_excel(writer,sheet_name='summary')
+        i = 0
+        for clientId,data in events.items():
+            data.sort_values(by='timestamp',ascending=True).to_excel(writer, sheet_name=str(i))
+            i+1
         if not risk.empty:
-            risk.sort_values(by='timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
+            risk.sort_values(by='delta_timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
         request.to_excel(writer, sheet_name='request')
         history.to_excel(writer, sheet_name='history')
 

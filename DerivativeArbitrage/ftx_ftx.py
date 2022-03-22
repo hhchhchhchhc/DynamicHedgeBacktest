@@ -117,7 +117,7 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
     if len(exchange.safe_value(response, 'result', []))==0: return pd.DataFrame()
     result = pd.DataFrame(exchange.safe_value(response, 'result', [])).astype({'coin':str,'time':str,'size':float,'rate':float})
     result['time']=result['time'].apply(lambda t:dateutil.parser.isoparse(t).timestamp()*1000)
-    result['rate']*=24*365.25*(1+500 * exchange.loaded_fees['trading'][coin+'/USD']['taker'])
+    result['rate']*=24*365.25*(1+500 * exchange.loaded_fees['trading'][(coin if coin!='USD' else 'BTC') +'/USD']['taker'])
     result['size']*=1 # borrow size is an open interest
     original = result
 
