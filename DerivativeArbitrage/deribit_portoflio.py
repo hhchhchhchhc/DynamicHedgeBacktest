@@ -53,9 +53,9 @@ vega_slippage = 0.0
 
 class Instrument:
     '''everything is BTC margined so beware confusions:
-    self.notional is in USD (except for cash), self.mark always BTC.
-    +ve Delta still means long BTC, though.
-    we don't support USDC perp'''
+    self.notional is in USD
+    self.mark and all greeks are in BTC
+    +ve Delta still means long BTC, though, and is in USD'''
     def __init__(self,mark):
         self.mark = mark
     def process_margin_call(self, market):
@@ -66,7 +66,6 @@ class Instrument:
     def pv(self, market):
         raise NotImplementedError
     def delta(self, market):
-        '''for 1% up in BTCUSD'''
         raise NotImplementedError
     def cash_flow(self, market):
         raise NotImplementedError
@@ -88,14 +87,14 @@ class InversePerpetual(Instrument):
         '''accrues every millisecond.
         8h Funding Rate = Maximum (0.05%, Premium Rate) + Minimum (-0.05%, Premium Rate)
         TODO: doesn't handle intra period changes'''
-        return - market['fundingRate'] * (market['t'] - market['prev_t'])/3600/8
+        return - market['fundingRate'] * (market['t'] - market['prev_t'])/3600/8 / market['spot']
     def margin_value(self, market):
         '''TODO: approx, in fact it's converted at spot not fwd'''
-        return -6e-3 * market['spot']
+        return -6e-3
 
 class Option(Instrument):
     '''a BTCUSD call(size in btc, strike in BTCUSD) is a USDBTC put(strike*size in USD,1/strike in USDTBC)
-    notional in USD, strike in BTC, maturity datetime - > sec, callput = C or P '''
+    notional in USD, strike in BTC, maturity in sec, callput = C or P '''
 
     def __init__(self, strike_BTCUSD, maturity, call_put,market):
         self.strike = 1 / strike_BTCUSD
@@ -149,22 +148,16 @@ class Portfolio():
             result += self.cash
         return result
 
-    def add(self, instrument, notional_USD, price_BTC, market=None):
+    def add(self, instrument, notional_USD, price_BTC):
         position = next(iter(x for x in self.positions if x.instrument == instrument), 'new_position')
         if position == 'new_position':
-            # mark it
-            if instrument.mark is None:
-                if market:
-                    instrument.mark = instrument.pv(market)
-                else:
-                    raise Exception("need a market to open a new position without preexisting mark")
             # add it
             position = Position(instrument,notional_USD)
             self.positions += [position]
         else:
             position.notional += notional_USD
-        # pay slippage
-        self.cash -= notional_USD * (price_BTC - instrument.mark)
+        # pay premium. will be mopped up by next margin call
+        self.cash -= notional_USD * price_BTC
 
     def delta_hedge(self, hedge_instrument, market):
         portfolio_delta = self.apply('delta',market)
@@ -173,7 +166,7 @@ class Portfolio():
 
         self.add(hedge_instrument,
                  hedge_notional,
-                 hedge_instrument.mark + delta_hedge_slippage/market['spot'])
+                 delta_hedge_slippage/market['spot'])
 
     def process_cash_flows(self, market):
         '''cash_flows before margin calls !!'''
@@ -233,8 +226,8 @@ if __name__ == "__main__":
                   notional_USD= -mkt_0['fwd'],
                   price_BTC= genesis_put.mark - vega_slippage * genesis_put.vega(mkt_0))
 
-    # run backtest
-    greek_list = ['pv','delta','gamma','vega']
+    ## run backtest
+    greek_list = ['pv','delta']#,'gamma','vega']
     display = pd.DataFrame()
     for _,mkt in history.tail(-1).iterrows():
         portoflio.process_cash_flows(mkt)
@@ -243,7 +236,8 @@ if __name__ == "__main__":
                              pd.Series({greek: portoflio.apply(greek=greek,market=mkt)
                                         for greek in greek_list}),
                              pd.Series({greek+'_'+str(position.instrument.__class__)+'_'+str(i): position.apply(greek,mkt)
-                                        for greek in greek_list for (i,position) in enumerate(portoflio.positions)})])
+                                        for greek in greek_list for (i,position) in enumerate(portoflio.positions)}
+                                       |{'cash':portoflio.cash})])
         new_data.name = pd.to_datetime(mkt['t'], unit='s')
         display = pd.concat([display,new_data],axis=1)
 
