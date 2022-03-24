@@ -1,16 +1,23 @@
+#!/usr/bin/env python3
+import logging
+
 import pandas as pd
 import os
 import sys
 import pyarrow as pa
 import pyarrow.parquet as pq
 import ccxt
-import numpy as np
 from datetime import datetime,timezone,timedelta,date
 import dateutil
 import dateutil.parser
 
 from ftx_utilities import from_parquet, to_parquet, calc_basis
-history_start = datetime(2022, 2, 1)
+history_start = datetime(2021, 4, 1)
+
+###### this file is syncronous ###############
+###### this file is syncronous ###############
+###### this file is syncronous ###############
+###### this file is syncronous ###############
 
 def open_exchange(exchange_name,subaccount,config={}):
     if exchange_name == 'deribit':
@@ -25,7 +32,7 @@ def open_exchange(exchange_name,subaccount,config={}):
     exchange.load_fees()
     return exchange
 
-def get_history(derivative, start_or_nb_hours, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
+def get_history(derivative, start = 'cache', end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
         dirname = 'Runtime/Deribit_Mktdata_database'):
     ''' all rates annualized, all volumes daily in usd'''
     data = pd.concat(
@@ -37,8 +44,15 @@ def get_history(derivative, start_or_nb_hours, end = datetime.now(tz=None).repla
              for f in derivative['base_currency'].unique()]
         , join='outer', axis=1)
 
-    start = end - timedelta(hours=start_or_nb_hours) if isinstance(start_or_nb_hours,int) else start_or_nb_hours
-    return data[~data.index.duplicated()].sort_index()[start:end]
+    if start == 'cache':
+        return data[~data.index.duplicated()].sort_index()
+    elif isinstance(start,int):
+        start = end - timedelta(hours=start)
+        return data[~data.index.duplicated()].sort_index()[start:end]
+    elif isinstance(start,datetime):
+        return data[~data.index.duplicated()].sort_index()[start:end]
+    else:
+        raise Exception('invalid start mode')
 
 def build_history(derivative,exchange,
         end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
@@ -82,8 +96,7 @@ def funding_history(future,exchange,
     f = int(max_funding_data * resolution)
     start_times = [s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
-    #funding = exchange.publicGetGetFundingRateHistory(params={'start_timestamp':s, 'end_timestamp':e,'instrument_name':future['instrument_name']})
-
+    logging.info(f'calling {sys._getframe(1).f_code.co_name} {len(start_times)} times')
     funding = [exchange.publicGetGetFundingRateHistory(params={'start_timestamp':start_time*1000, 'end_timestamp':(start_time+f)*1000,'instrument_name':future['instrument_name']})['result']
              for start_time in start_times]
     funding = [y for x in funding for y in x]
@@ -116,6 +129,7 @@ def rate_history(future,exchange,
     f = int(max_mark_data * resolution)
     start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f < e]
 
+    logging.info(f'calling {sys._getframe(1).f_code.co_name} {len(start_times)} times')
     ## TODO: index does NOT work. No obvious endpoint
     mark_indexes = [
         exchange.fetch_ohlcv(future['symbol'], timeframe=timeframe, limit=999999999999999999, params=params) # volume is for max_mark_data*resolution
@@ -188,6 +202,7 @@ def spot_history(symbol, exchange,
     f = int(max_mark_data * resolution)
     start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
+    logging.info(f'calling {sys._getframe(1).f_code.co_name} {len(start_times)} times')
     spot_lists = [
         exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit = 99999999, params={'start_timestamp':start_time*1000, 'end_timestamp':(start_time+f-int(resolution))*1000})
                                 for start_time in start_times]
@@ -221,6 +236,7 @@ def vol_index_history(currency, exchange,
     f = int(max_mark_data * resolution)
     start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
 
+    logging.info(f'calling {sys._getframe(1).f_code.co_name} {len(start_times)} times')
     spot_lists = [
         exchange.publicGetGetVolatilityIndexData(params={'currency':currency,'resolution':resolution,
                                                       'start_timestamp':start_time*1000, 'end_timestamp':(start_time+f-int(resolution))*1000})['result']['data']
@@ -242,7 +258,7 @@ def vol_index_history(currency, exchange,
 
 def deribit_history_main_wrapper(*argv):
     exchange = open_exchange('deribit','')
-    currencies = ['BTC','ETH']
+    currencies = argv[1]
     markets = {currency:exchange.fetch_tickers(params={'currency':currency,'kind':'future','expired':True})
                for currency in currencies}
     markets = {currency:
@@ -257,8 +273,13 @@ def deribit_history_main_wrapper(*argv):
 
     # volume screening
     if argv[0] == 'build':
-        build_history(markets['BTC'], exchange)
-    hy_history = get_history(markets['BTC'], 24*int(argv[3]))
+        [build_history(markets[currency], exchange) for currency in argv[1]]
+
+    if argv[3] == 'cache':
+        hy_history = [get_history(markets[currency],'cache') for currency in argv[1]]
+    else:
+        hy_history = [get_history(markets[currency], 24 * int(argv[3])) for currency in argv[1]]
+
     return hy_history
 
 def deribit_history_main(*argv):
@@ -266,13 +287,13 @@ def deribit_history_main(*argv):
     if len(argv) < 1:
         argv.extend(['build'])
     if len(argv) < 2:
-        argv.extend(['wide']) # universe name, or list of currencies, or 'all'
+        argv.extend([['BTC']]) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
         argv.extend(['deribit']) # exchange_name
     if len(argv) < 4:
-        argv.extend([7])# nb days
+        argv.extend([5000])# nb days
 
     return deribit_history_main_wrapper(*argv)
 
 if __name__ == "__main__":
-    deribit_history_main(*sys.argv[1:])
+    history = deribit_history_main(*sys.argv[1:])
