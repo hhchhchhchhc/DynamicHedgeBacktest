@@ -53,18 +53,16 @@ vega_slippage = 0.0
 
 class Instrument:
     '''everything is BTC margined so beware confusions:
-    self.notional is in USD (except for cash), self.mtm always BTC.
+    self.notional is in USD (except for cash), self.mark always BTC.
     +ve Delta still means long BTC, though.
     we don't support USDC perp'''
+    def __init__(self,mark):
+        self.mark = mark
+    def process_margin_call(self, market):
+        previous_mark = self.mark
+        self.mark = self.pv(market)
+        return self.mark - previous_mark
 
-    def __init__(self, notional):
-        self.notional = notional
-        self.mtm = 0
-
-    def process_cash_flows(self, market):
-        previous_mtm = self.mtm
-        self.mtm = self.pv(market)
-        return self.mtm - previous_mtm
     def pv(self, market):
         raise NotImplementedError
     def delta(self, market):
@@ -75,129 +73,133 @@ class Instrument:
     def margin_value(self, market):
         raise NotImplementedError
 
-
-class Cash(Instrument):
-    '''BTC cash'''
-
-    def __init__(self, notional_BTC):
-        self.notional = notional_BTC
-        self.mtm = notional_BTC
-
-    def pv(self,market):
-        return self.notional
-    def delta(self,market):
-        return 0
-    def cash_flow(self,market):
-        return self.notional * market['borrow'] * (market['t'] - market['prev_t'])/3600/8
-    def margin_value(self,market):
-        return self.notional
-
-
 class InversePerpetual(Instrument):
     '''a long perpetual (size in USD, strike in BTCUSD) is a short USDBTC(notional in USD, 1/strike in USDBTC
     what we implement is more like a fwd..'''
-
-    def __init__(self, notional_USD, strike_BTCUSD):
-        self.notional = notional_USD
+    def __init__(self, strike_BTCUSD, market):
         self.strike = 1 / strike_BTCUSD
-        self.mtm = 0
+        self.mark = self.pv(market)
 
     def pv(self, market):
-        return self.notional * (self.strike - 1 / market['fwd'])
+        return market['df'] * (self.strike - 1 / market['fwd'])
     def delta(self, market):
-        return self.notional
-    def cash_flow(self, market):
+        return market['df']
+    def process_cash_flow(self, market):
         '''accrues every millisecond.
         8h Funding Rate = Maximum (0.05%, Premium Rate) + Minimum (-0.05%, Premium Rate)
         TODO: doesn't handle intra period changes'''
-        return - self.notional * market['fundingRate'] * (market['t'] - market['prev_t'])/3600/8
+        return - market['fundingRate'] * (market['t'] - market['prev_t'])/3600/8
     def margin_value(self, market):
         '''TODO: approx, in fact it's converted at spot not fwd'''
-        return -6e-3 * market['fwd'] * self.notional
+        return -6e-3 * market['spot']
 
 class Option(Instrument):
     '''a BTCUSD call(size in btc, strike in BTCUSD) is a USDBTC put(strike*size in USD,1/strike in USDTBC)
     notional in USD, strike in BTC, maturity datetime - > sec, callput = C or P '''
 
-    def __init__(self, notional_USD, strike_BTCUSD, maturity, call_put):
-        self.notional = notional_USD
+    def __init__(self, strike_BTCUSD, maturity, call_put,market):
         self.strike = 1 / strike_BTCUSD
         self.maturity = maturity
         self.call_put = 'P' if call_put == 'C' else 'C'
-        self.mtm = 0 # temporary
+        self.mark = self.pv(market)
 
     def pv(self, market):
-        return self.notional * black_scholes.pv(1 / market['fwd'], self.strike, market['vol'],
+        return market['df'] * black_scholes.pv(1 / market['fwd'], self.strike, market['vol'],
                                                 (self.maturity - market['t']) / 3600 / 24 / 365.25, self.call_put) if self.maturity > market['t'] else 0
     def delta(self, market):
-        return self.notional * black_scholes.delta(1 / market['fwd'], self.strike, market['vol'],
+        return market['df'] * black_scholes.delta(1 / market['fwd'], self.strike, market['vol'],
                                                    (self.maturity - market['t']) / 3600 / 24 / 365.25, self.call_put) if self.maturity > market['t'] else 0
     def gamma(self, market):
-        return self.notional * black_scholes.gamma(1 / market['fwd'], self.strike, market['vol'],
+        return market['df'] * black_scholes.gamma(1 / market['fwd'], self.strike, market['vol'],
                                                    (self.maturity - market['t']) / 3600 / 24 / 365.25) if self.maturity > market['t'] else 0
     def vega(self, market):
-        return self.notional * black_scholes.vega(1 / market['fwd'], self.strike, market['vol'],
+        return market['df'] * black_scholes.vega(1 / market['fwd'], self.strike, market['vol'],
                                                   (self.maturity - market['t']) / 3600 / 24 / 365.25) if self.maturity > market['t'] else 0
-    def cash_flow(self, market):
+    def theta(self, market):
+        return market['df'] * black_scholes.theta(1 / market['fwd'], self.strike, market['vol'],
+                                                  (self.maturity - market['t']) / 3600 / 24 / 365.25) if self.maturity > market['t'] else 0
+
+    def process_cash_flow(self, market):
         '''cash settled in BTC'''
         if market['prev_t'] < self.maturity and market['t'] >= self.maturity:
-            return max(0,(1 if self.call_put == 'C' else -1)*(1 / market['fwd'] - self.strike))
+            cash_flow = max(0,(1 if self.call_put == 'C' else -1)*(1 / market['fwd'] - self.strike))
+            self.mark = 0
+            return cash_flow
         else:
             return 0
     def margin_value(self, market):
-        return - (self.notional * max(0.15 - (1 / market['fwd'] - self.strike) * (1 if self.call_put == 'C' else -1),
-                                      0.1) + self.mtm) if self.maturity > market['t'] else 0
+        return - (max(0.15 - (1 / market['fwd'] - self.strike) * (1 if self.call_put == 'C' else -1),
+                                      0.1) + self.mark) if self.maturity > market['t'] else 0
 
-class Portfolio(Instrument):
+class Position:
+    def __init__(self,instrument,notional_USD):
+        self.instrument = instrument
+        self.notional = notional_USD
+    def apply(self, greek, market):
+        return self.notional * getattr(self.instrument, greek)(market) if hasattr(self.instrument,greek) else 0
+
+class Portfolio():
     def __init__(self,notional_BTC):
-        self.instruments = [Cash(notional_BTC)]
-        self.notional = 1  # scaler, usually stays 1
-        self.mtm = 1
+        self.cash = notional_BTC
+        self.positions = []
 
-    def greek(self, greek, market):
-        return self.notional * sum([getattr(instrument, greek)(market) for instrument in self.instruments if hasattr(instrument,greek)])
+    def apply(self, greek, market):
+        result = sum([position.apply(greek,market) for position in self.positions])
+        if greek == 'pv':
+            result += self.cash
+        return result
 
-    def add(self, instrument, price_BTC, mtm):
-        assert not isinstance(instrument, Cash)
-        instrument.notional /= self.notional
-        instrument.mtm = mtm
-        self.instruments += [instrument]
-        self.instruments[0].notional -= price_BTC / self.notional
+    def add(self, instrument, notional_USD, price_BTC, market=None):
+        position = next(iter(x for x in self.positions if x.instrument == instrument), 'new_position')
+        if position == 'new_position':
+            # mark it
+            if instrument.mark is None:
+                if market:
+                    instrument.mark = instrument.pv(market)
+                else:
+                    raise Exception("need a market to open a new position without preexisting mark")
+            # add it
+            position = Position(instrument,notional_USD)
+            self.positions += [position]
+        else:
+            position.notional += notional_USD
+        # pay slippage
+        self.cash -= notional_USD * (price_BTC - instrument.mark)
 
     def delta_hedge(self, hedge_instrument, market):
-        portfolio_delta = self.greek('delta',market)
+        portfolio_delta = self.apply('delta',market)
         hedge_instrument_delta = hedge_instrument.delta(market)
-        if hedge_instrument in self.instruments:
-            hedge_instrument.notional -= portfolio_delta / hedge_instrument_delta / self.notional
-            self.instruments[0].notional -= portfolio_delta / hedge_instrument_delta * delta_hedge_slippage
-        else:
-            hedge_instrument.notional = -portfolio_delta / hedge_instrument_delta / self.notional
-            self.add(hedge_instrument,0,-delta_hedge_slippage)
+        hedge_notional = -portfolio_delta / hedge_instrument_delta
+
+        self.add(hedge_instrument,
+                 hedge_notional,
+                 hedge_instrument.mark + delta_hedge_slippage/market['spot'])
 
     def process_cash_flows(self, market):
-        '''uses instruments.mtm and not self.mtm. Still maintains it though'''
-        margin_call = self.notional * sum(
-            [getattr(instrument, 'process_cash_flows')(market) for instrument in self.instruments])
-        self.mtm = self.notional * sum(instrument.mtm for instrument in self.instruments)
-
-        cash_instrument = self.instruments[0]
-        cash_instrument.notional += margin_call / self.notional
-        cash_instrument.notional += self.greek('cash_flow',market)
-
-        return 0
+        '''cash_flows before margin calls !!'''
+        cash_flows = sum([position.notional * getattr(position.instrument, 'process_cash_flow')(market) 
+                          for position in self.positions])
+        margin_call = sum([position.notional * getattr(position.instrument, 'process_margin_call')(market) 
+                           for position in self.positions])
+        self.cash += cash_flows + margin_call
 
 if __name__ == "__main__":
+
+    ## get history
     history = deribit_history_main('just use',['BTC'],'deribit','cache')[0]
+
+    # 1mFwd
     tenor_columns = history.filter(like='rate/T').columns
     mark_columns = history.filter(like='mark/c').columns
     mark_columns = [r for r in mark_columns if 'PERPETUAL' not in r]
-
-    history.reset_index(inplace=True)
     history['1mFwd'] = history.apply(lambda t: scipy.interpolate.interp1d(
         x=np.array([t[tenor] for tenor in tenor_columns if not pd.isna(t[tenor])]),
         y=np.array([t[rate] for rate in mark_columns if not pd.isna(t[rate])]),
         kind='linear', fill_value='extrapolate')(1/12), axis=1)
-    history.rename(columns={'index':'t',
+
+    ## format history
+    history.reset_index(inplace=True)
+    history.rename(columns={'index':'t',#TODO: more consistent with /o
                             '1mFwd':'fwd',
                             'BTC/volindex/c':'vol',
                             'BTC-PERPETUAL/indexes/c':'spot',
@@ -206,36 +208,46 @@ if __name__ == "__main__":
     history['prev_t'] = history['t'].shift(1)
     history['vol'] = history['vol']/100
     history['borrow'] = 0
+    history['df'] = 1
     history.ffill(limit=2,inplace=True)
 
+    ## new portfolio
     portoflio = Portfolio(notional_BTC=1)
 
+    # at time 0 sell a straddle
     mkt_0 = history.iloc[0]
-    genesis_call = Option(notional_USD=-mkt_0['fwd'],
-                         strike_BTCUSD=mkt_0['fwd'],
-                         maturity=mkt_0['t'] + 3600 * 24 * 30,
-                         call_put='C')
-    portoflio.add(genesis_call,
-                  price_BTC= genesis_call.pv(mkt_0),
-                  mtm= genesis_call.pv(mkt_0) - vega_slippage * genesis_call.vega(mkt_0))
-    genesis_put = Option(notional_USD=-mkt_0['fwd'],
-                         strike_BTCUSD=mkt_0['fwd'],
-                         maturity=mkt_0['t'] + 3600 * 24 * 30,
-                         call_put='P')
-    portoflio.add(genesis_put,
-                  price_BTC= genesis_put.pv(mkt_0),
-                  mtm= genesis_put.pv(mkt_0) - vega_slippage * genesis_call.vega(mkt_0))
-    future_hedge = InversePerpetual(notional_USD=1,strike_BTCUSD=mkt_0['fwd'])
+    hedge_instrument = InversePerpetual(strike_BTCUSD=mkt_0['fwd'],market=mkt_0)
+    genesis_call = Option(strike_BTCUSD=mkt_0['fwd'],
+                          maturity=mkt_0['t'] + 3600 * 24 * 30,
+                          call_put='C',
+                          market=mkt_0)
+    portoflio.add(instrument= genesis_call,
+                  notional_USD= -mkt_0['fwd'],
+                  price_BTC= genesis_call.mark - vega_slippage * genesis_call.vega(mkt_0))
 
+    genesis_put = Option(strike_BTCUSD=mkt_0['fwd'],
+                         maturity=mkt_0['t'] + 3600 * 24 * 30,
+                         call_put='P',
+                         market=mkt_0)
+    portoflio.add(instrument= genesis_put,
+                  notional_USD= -mkt_0['fwd'],
+                  price_BTC= genesis_put.mark - vega_slippage * genesis_put.vega(mkt_0))
+
+    # run backtest
+    greek_list = ['pv','delta','gamma','vega']
     display = pd.DataFrame()
     for _,mkt in history.tail(-1).iterrows():
-        new_data = pd.concat([mkt[['prev_t','t','spot','fwd','vol','fundingRate','borrow']],
-                             pd.Series({greek: portoflio.greek(greek=greek,market=mkt) for greek in ['pv','delta']}),
-                             pd.Series({instrument.__class__: instrument.notional for instrument in portoflio.instruments})])
+        portoflio.process_cash_flows(mkt)
+
+        new_data = pd.concat([mkt[['prev_t','t','spot','fwd','vol','fundingRate','borrow','df']],
+                             pd.Series({greek: portoflio.apply(greek=greek,market=mkt)
+                                        for greek in greek_list}),
+                             pd.Series({greek+'_'+str(position.instrument.__class__)+'_'+str(i): position.apply(greek,mkt)
+                                        for greek in greek_list for (i,position) in enumerate(portoflio.positions)})])
         new_data.name = pd.to_datetime(mkt['t'], unit='s')
         display = pd.concat([display,new_data],axis=1)
-        portoflio.process_cash_flows(mkt)
-        portoflio.delta_hedge(future_hedge,mkt)
+
+        portoflio.delta_hedge(hedge_instrument,mkt)
 
     display.T.to_excel('Runtime/runs/deribit.xlsx')
 
