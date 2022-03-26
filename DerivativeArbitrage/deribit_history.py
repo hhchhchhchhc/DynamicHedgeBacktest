@@ -12,7 +12,10 @@ import dateutil
 import dateutil.parser
 
 from ftx_utilities import from_parquet, to_parquet, calc_basis
-history_start = datetime(2021, 4, 1)
+funding_start = datetime(2019, 4, 30)
+perp_start = datetime(2018, 8, 14)
+volindex_start = datetime(2021, 3, 24)
+history_start = max([funding_start,perp_start,volindex_start])
 
 ###### this file is syncronous ###############
 ###### this file is syncronous ###############
@@ -259,11 +262,11 @@ def vol_index_history(currency, exchange,
 def deribit_history_main_wrapper(*argv):
     exchange = open_exchange('deribit','')
     currencies = argv[1]
-    markets = {currency:exchange.fetch_tickers(params={'currency':currency,'kind':'future','expired':True})
+    markets = {currency:exchange.fetch_tickers(params={'currency':currency,'future':'perpetual','expired':True})
                for currency in currencies}
     markets = {currency:
                    {symbol:data|data['info']
-                    for symbol,data in currency_data.items()}
+                    for symbol,data in currency_data.items() if 'PERP' in data['info']['instrument_name']}
                for currency, currency_data in markets.items()}
     markets = {currency:pd.DataFrame(markets[currency]).T
                for currency in currencies}
@@ -271,7 +274,6 @@ def deribit_history_main_wrapper(*argv):
         market['type'] = market['symbol'].apply(lambda f: exchange.market(f)['type'])
         market['expiryTime'] = market['symbol'].apply(lambda f: dateutil.parser.isoparse(exchange.market(f)['expiryDatetime']).replace(tzinfo=None))
 
-    # volume screening
     if argv[0] == 'build':
         [build_history(markets[currency], exchange) for currency in argv[1]]
 

@@ -80,7 +80,7 @@ class InverseFuture(Instrument):
         self.strike = 1 / strike_BTCUSD
         self.maturity = maturity
         self.mark = self.pv(market)
-        self.symbol = 'BTC-' + str(pd.to_datetime(maturity, unit='s'))
+        self.symbol = 'BTC-1m'# + str(pd.to_datetime(maturity, unit='s'))
 
     def pv(self, market):
         '''for a 1% move'''
@@ -144,7 +144,7 @@ class Option(Instrument):
             self.call_put = 'S'
         else: raise Exception("unknown option type")
         self.mark = self.pv(market)
-        self.symbol = 'BTC_' + call_put + '_' + str(pd.to_datetime(maturity, unit='s')) + '_' + str(int(strike_BTCUSD))
+        self.symbol = 'BTC-' + call_put + '-1m'# + str(pd.to_datetime(maturity, unit='s')) + '+' + str(int(strike_BTCUSD))
 
     def pv(self, market):
         T = (self.maturity - market['t'])
@@ -269,20 +269,24 @@ class Portfolio():
 
 def display_current(portfolio,market,prev_market):
     predictor = {'pv':lambda greek: greek - portfolio.apply(greek='pv', market=prev_market),# this is actual pnl in fact
-                 'delta':lambda greek: greek*(market['fwd']/prev_market['fwd'])*100,
-                 'gamma':lambda greek: greek*(market['fwd']/prev_market['fwd'])**2 *100*100,
-                 'vega':lambda greek: greek*(market['vol']/prev_market['vol'])*10,
+                 'delta':lambda greek: greek*(market['fwd']/prev_market['fwd']-1)*100,
+                 'gamma':lambda greek: greek*(market['fwd']/prev_market['fwd']-1)**2 *100*100,
+                 'vega':lambda greek: greek*(market['vol']/prev_market['vol']-1)*10,
                  'theta':lambda greek: greek*(market['t']-prev_market['t'])/3600}
 
-    display_market = market[['prev_t', 't', 'spot', 'fwd', 'dF/F', 'vol', 'fundingRate', 'borrow', 'r']]
-    total_greeks = pd.Series({(greek,'total'): portfolio.apply(greek=greek, market=market)
+    display_market = pd.Series({('mkt',data,'total'):market[data] for data in ['prev_t', 't', 'spot', 'fwd', 'dF/F', 'vol', 'fundingRate', 'borrow', 'r']})
+    total_greeks = pd.Series(
+        {('risk',greek,'total'): portfolio.apply(greek=greek, market=market)
                    for greek in predictor.keys()})
-    greeks_per_instrument = pd.Series({(greek,position.instrument.symbol): position.apply(greek, market)
+    greeks_per_instrument = pd.Series(
+        {('risk',greek,position.instrument.symbol): position.apply(greek, market)
                    for greek in predictor.keys() for (i, position) in enumerate(portoflio.positions)}
-                  | {('pv','cash'): portoflio.cash})
-    total_predict = pd.Series({(greek,'total'): predictor(portfolio.apply(greek=greek, market=market))
+                  | {('risk','pv','cash'): portoflio.cash})
+    total_predict = pd.Series(
+        {('predict',greek,'total'): predictor(portfolio.apply(greek=greek, market=market))
                    for greek,predictor in predictor.items()})
-    predict_per_instrument = pd.Series({(greek,position.instrument.symbol): predictor(position.apply(greek, market))
+    predict_per_instrument = pd.Series(
+        {('predict',greek,position.instrument.symbol): predictor(position.apply(greek, market))
                    for greek,predictor in predictor.items() for (i, position) in enumerate(portoflio.positions)})
 
     new_data = pd.concat([display_market,total_greeks,total_predict,greeks_per_instrument,predict_per_instrument],axis=0)
@@ -295,13 +299,15 @@ if __name__ == "__main__":
     history = deribit_history_main('just use',['BTC'],'deribit','cache')[0]
 
     # 1mFwd
-    tenor_columns = history.filter(like='rate/T').columns
-    mark_columns = history.filter(like='mark/c').columns
-    mark_columns = [r for r in mark_columns if 'PERPETUAL' not in r]
-    history['1mFwd'] = history.apply(lambda t: scipy.interpolate.interp1d(
-        x=np.array([t[tenor] for tenor in tenor_columns if not pd.isna(t[tenor])]),
-        y=np.array([t[rate] for rate in mark_columns if not pd.isna(t[rate])]),
-        kind='linear', fill_value='extrapolate')(1/12), axis=1)
+    if False: # not enough history unless we fetch all expired futures
+        tenor_columns = history.filter(like='rate/T').columns
+        mark_columns = history.filter(like='mark/c').columns
+        mark_columns = [r for r in mark_columns if 'PERPETUAL' not in r]
+        history['1mFwd'] = history.apply(lambda t: scipy.interpolate.interp1d(
+            x=np.array([t[tenor] for tenor in tenor_columns if not pd.isna(t[tenor])]),
+            y=np.array([t[rate] for rate in mark_columns if not pd.isna(t[rate])]),
+            kind='linear', fill_value='extrapolate')(1/12), axis=1)
+    history['1mFwd'] = history['BTC-PERPETUAL/mark/c']
 
     ## format history
     history.reset_index(inplace=True)
@@ -334,16 +340,17 @@ if __name__ == "__main__":
                         market= prev_mkt)
 
     ## run backtest
-    display = pd.DataFrame()
+    series = []
     for _,market in history.iterrows():
         portoflio.process_cash_flows(market)
         portoflio.gamma_target(portoflio.apply('gamma',market),market,hedge_instrument='atm',hedge_mode='replace')
         portoflio.delta_hedge(hedge_instrument,market)
         
-        display = display.join(display_current(portoflio,market,prev_mkt).T,how='outer')
+        series += [display_current(portoflio,market,prev_mkt)]
         prev_mkt = market
 
-    display.T.to_excel('Runtime/runs/deribit.xlsx')
+    display = pd.concat(series,axis=1)
+    display.sort_index(axis=0,level=0).T.to_excel('Runtime/runs/deribit.xlsx')
 
 if False:
     btc = pd.read_csv("C:/Users/david/pyCharmProjects/SystematicCeFi/DerivativeArbitrage/Runtime/Deribit_Mktdata_database/deribit_options_chain_2019-07-01_BTC.csv")
