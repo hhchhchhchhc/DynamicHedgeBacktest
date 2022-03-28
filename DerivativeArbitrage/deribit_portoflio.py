@@ -4,6 +4,7 @@ from deribit_history import *
 import numpy as np
 import scipy
 import math
+import copy
 
 class black_scholes:
     @staticmethod
@@ -47,14 +48,14 @@ class black_scholes:
     @staticmethod
     def vega(S, K, V, T, cp):
         '''for a 10% move'''
-        vega = (S * math.sqrt(T) * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T))) / 100
+        vega = (S * math.sqrt(T) * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T)))
         return vega * V * 0.1 * (1 if cp != 'S' else 2)
 
     @staticmethod
     def theta(S, K, V, T, cp):
         '''for 1h'''
-        theta = -((S * V * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T))) / (2 * math.sqrt(T))) / 24/365.25
-        return theta * (1 if cp != 'S' else 2)
+        theta = -((S * V * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T))) / (2 * math.sqrt(T)))
+        return theta / 24/365.25 * (1 if cp != 'S' else 2)
 
 slippage = {'delta':0, # 1 means 1%
             'gamma':0, # 1 means 1%
@@ -65,17 +66,20 @@ slippage = {'delta':0, # 1 means 1%
 class Instrument:
     '''everything is coin margined so beware confusions:
     self.notional is in USD
-    self.mark and all greeks are in coin
+    self.prev_mark and all greeks are in coin
     +ve Delta still means long coin, though, and is in USD'''
+    def __init__(self,market):
+        self.prev_t = market['t']
+        self.prev_mark = self.pv(market)
     def process_margin_call(self, market):
-        previous_mark = self.mark
-        self.mark = self.pv(market)
-        return self.mark - previous_mark
+        previous_mark = self.prev_mark
+        self.prev_mark = self.pv(market)
+        return self.prev_mark - previous_mark
 
 class Cash(Instrument):
-    def __init__(self,currency):
-        self.mark = 1
+    def __init__(self,currency,market):
         self.symbol = currency
+        super().__init__(market)
     def pv(self, market):
         return 1
     def process_cash_flow(self, market):
@@ -88,8 +92,8 @@ class InverseFuture(Instrument):
     def __init__(self, underlying, strike_coinUSD, maturity, market):
         self.strike = 1 / strike_coinUSD
         self.maturity = maturity
-        self.mark = self.pv(market)
         self.symbol = underlying+'-1m'# + str(pd.to_datetime(maturity, unit='s'))
+        super().__init__(market)
 
     def pv(self, market):
         T = (self.maturity - market['t'])
@@ -106,9 +110,9 @@ class InverseFuture(Instrument):
         return - market['r'] * df / 24/365.25
     def process_cash_flow(self, market):
         '''cash settled in coin'''
-        if market['prev_t'] < self.maturity and market['t'] >= self.maturity:
+        if self.prev_t < self.maturity and market['t'] >= self.maturity:
             cash_flow = (1 / market['fwd'] - self.strike)
-            self.mark = 0
+            self.prev_mark = 0
             return cash_flow
         else:
             return 0
@@ -122,19 +126,19 @@ class InversePerpetual(Instrument):
     greeks_available = ['delta']
     def __init__(self, underlying, strike_coinUSD, market):
         self.strike = 1 / strike_coinUSD
-        self.mark = self.pv(market)
         self.symbol = underlying+'-PERPETUAL'
+        super().__init__(market)
 
     def pv(self, market):
         return (self.strike - 1 / market['fwd'])
     def delta(self, market):
-        '''for a 1% move'''
+        '''for a -1% move of 1/f'''
         return 0.01 / market['fwd']
     def process_cash_flow(self, market):
         '''accrues every millisecond.
         8h Funding Rate = Maximum (0.05%, Premium Rate) + Minimum (-0.05%, Premium Rate)
         TODO: doesn't handle intra period changes'''
-        return - market['fundingRate'] * (market['t'] - market['prev_t'])/3600/8 / market['spot']
+        return - market['fundingRate'] * (market['t'] - self.prev_t)/3600/24/365.25 / market['spot']
     def margin_value(self, market):
         '''TODO: approx, in fact it's converted at spot not fwd'''
         return -6e-3 / market['spot']
@@ -152,9 +156,10 @@ class Option(Instrument):
             self.call_put = 'C'
         elif call_put == 'S':
             self.call_put = 'S'
-        else: raise Exception("unknown option type")
-        self.mark = self.pv(market)
+        else:
+            raise Exception("unknown option type")
         self.symbol = underlying+'-' + call_put + '-1m'# + str(pd.to_datetime(maturity, unit='s')) + '+' + str(int(strike_coinUSD))
+        super().__init__(market)
 
     def pv(self, market):
         T = (self.maturity - market['t'])
@@ -185,15 +190,15 @@ class Option(Instrument):
 
     def process_cash_flow(self, market):
         '''cash settled in coin'''
-        if market['prev_t'] < self.maturity and market['t'] >= self.maturity:
+        if self.prev_t < self.maturity and market['t'] >= self.maturity:
             cash_flow = max(0,(1 if self.call_put == 'C' else -1)*(1 / market['fwd'] - self.strike))
-            self.mark = 0
+            self.prev_mark = 0
             return cash_flow
         else:
             return 0
     def margin_value(self, market):
         return - (max(0.15 - (1 / market['fwd'] - self.strike) * (1 if self.call_put == 'C' else -1),
-                                      0.1) + self.mark) if self.maturity > market['t'] else 0
+                                      0.1) + self.prev_mark) if self.maturity > market['t'] else 0
 
 class Position:
     def __init__(self,instrument,notional_USD):
@@ -203,8 +208,8 @@ class Position:
         return self.notional * getattr(self.instrument, greek)(market) if hasattr(self.instrument,greek) else 0
         
 class Portfolio():
-    def __init__(self,currency, notional_coin):
-        self.positions = [Position(Cash(currency),notional_coin)]
+    def __init__(self,currency, notional_coin,market):
+        self.positions = [Position(Cash(currency,market),notional_coin)]
 
     def apply(self, greek, market):
         result = sum([position.apply(greek,market) for position in self.positions])
@@ -276,18 +281,18 @@ class Portfolio():
                            for position in self.positions])
         self.positions[0].notional += cash_flows + margin_call
 
-        for position in self.positions:
+        for position in self.positions[1:]:
             if hasattr(position.instrument, 'maturity') and market['t'] > position.instrument.maturity:
                 self.positions.remove(position)
 
 def display_current(portfolio,prev_portfolio, market,prev_market):
-    predictors = {'pv':lambda greek: portfolio.apply(greek='pv', market=market) - portfolio.apply(greek='pv', market=prev_market),
-                 'delta':lambda greek: greek*(prev_market['fwd']/market['fwd']-1)*100,
-                 'gamma':lambda greek: 0.5 * greek*(prev_market['fwd']/market['fwd']-1)**2 *100*100,
-                 'vega':lambda greek: greek*(market['vol']/prev_market['vol']-1)*10,
-                 'theta':lambda greek: greek*(market['t']-prev_market['t'])/3600}
+    predictors = {'pv':lambda x: x.apply(greek='pv', market=market) - x.apply(greek='pv', market=prev_market),
+                  'delta':lambda x: x.apply(greek='delta', market=prev_market)*(prev_market['fwd']/market['fwd']-1)*100,
+                  'gamma':lambda x: 0.5 * x.apply(greek='gamma', market=prev_market)*(prev_market['fwd']/market['fwd']-1)**2 *100*100,
+                  'vega':lambda x: x.apply(greek='vega', market=prev_market)*(market['vol']/prev_market['vol']-1)*10,
+                  'theta':lambda x: x.apply(greek='theta', market=prev_market)*(market['t']-prev_market['t'])/3600}
 
-    display_market = pd.Series({('mkt',data,'total'):market[data] for data in ['prev_t', 't', 'spot', 'fwd', 'dF/F', 'vol', 'fundingRate', 'borrow', 'r']})
+    display_market = pd.Series({('mkt',data,'total'):market[data] for data in ['t', 'spot', 'fwd', 'vol', 'fundingRate', 'borrow', 'r']})
     total_greeks = pd.Series(
         {('risk',greek,'total'):
              portfolio.apply(greek=greek, market=market)
@@ -298,17 +303,34 @@ def display_current(portfolio,prev_portfolio, market,prev_market):
          for greek in predictors.keys() for position in portfolio.positions})
     total_predict = pd.Series(
         {('predict',greek,'total'):
-             predictor(portfolio.apply(greek=greek, market=market))
+             predictor(portfolio)
          for greek,predictor in predictors.items()}
         |{('predict', 'new_deal', 'total'):
               portfolio.apply(greek='pv',market=market) - prev_portfolio.apply(greek='pv', market=market)})
+
+    common_instruments = [(p0,p1) for p0 in prev_portfolio.positions for p1 in portfolio.positions
+                          if p1.instrument.symbol == p0.instrument.symbol]
+    new_instruments = [p1 for p1 in portfolio.positions
+                       if all(p0.instrument.symbol != p1.instrument.symbol for p0 in prev_portfolio.positions)]
+    removed_instruments = [p0 for p0 in prev_portfolio.positions
+                       if all(p0.instrument.symbol != p1.instrument.symbol for p1 in portfolio.positions)]
+
     predict_per_instrument = pd.Series(
         {('predict',greek,position.instrument.symbol):
-             predictor(position.apply(greek, market))
-         for greek,predictor in predictors.items() for position in portfolio.positions}
-        |{('predict', 'new_deal', position.instrument.symbol):
-              portfolio.apply(greek='pv',market=market) - prev_portfolio.apply(greek='pv', market=market)
-          for position in portfolio.positions})
+             predictor(position)
+         for greek,predictor in predictors.items() for position in prev_portfolio.positions}
+        ## common_instruments
+        |{('predict', 'new_deal', p0.instrument.symbol):
+              p1.apply(greek='pv', market=market) - p0.apply(greek='pv', market=market)
+          for p0,p1 in common_instruments}
+        ## new_instruments
+        |{('predict', 'new_deal', p1.instrument.symbol):
+              p1.apply(greek='pv', market=market)
+          for p1 in new_instruments}
+        ## removed_instruments
+        | {('predict', 'new_deal', p0.instrument.symbol):
+               - p0.apply(greek='pv', market=market)
+           for p0 in removed_instruments})
 
     new_data = pd.concat([display_market,total_greeks,total_predict,greeks_per_instrument,predict_per_instrument],axis=0)
     new_data.name = pd.to_datetime(market['t'], unit='s')
@@ -341,9 +363,7 @@ if __name__ == "__main__":
                             currency+'/volindex/c':'vol',
                             currency+'-PERPETUAL/indexes/c':'spot',
                             currency+'-PERPETUAL/rate/funding':'fundingRate'},inplace=True)
-    history['dF/F'] = history['fwd'].apply(lambda f:np.log(f)).diff()
     history['t'] = history['t'].apply(lambda t:t.timestamp())
-    history['prev_t'] = history['t'].shift(1)
     history['vol'] = history['vol']/100
     history['borrow'] = 0
     history['r'] = history['borrow']
@@ -353,21 +373,17 @@ if __name__ == "__main__":
     prev_mkt = history.iloc[0]
 
     ## new portfolio
-    portfolio = Portfolio(currency,notional_coin=1)
+    portfolio = Portfolio(currency,notional_coin=1,market=prev_mkt)
     hedge_instrument = InversePerpetual(underlying=currency,
                                         strike_coinUSD=prev_mkt['fwd'],
                                         market=prev_mkt)
-    portfolio.new_trade(instrument= hedge_instrument,
-                        notional_USD= -prev_mkt['fwd'],
-                        price_coin= 'slippage',
-                        market= prev_mkt)
     straddle = Option(underlying=currency,
                       strike_coinUSD=prev_mkt['fwd'],
                       maturity=prev_mkt['t'] + 3600 * 24 * 30,
                       call_put='S',
                       market=prev_mkt)
     portfolio.new_trade(instrument= straddle,
-                        notional_USD= -prev_mkt['fwd']*0,
+                        notional_USD= -prev_mkt['fwd'],
                         price_coin= 'slippage',
                         market= prev_mkt)
     target_gamma = portfolio.apply('gamma',prev_mkt)
@@ -375,16 +391,17 @@ if __name__ == "__main__":
 
     ## run backtest
     series = []
-    for _,market in history.iterrows():
+    for _,market in history.head(10).iterrows():
         portfolio.process_cash_flows(market)
         #portfolio.gamma_target(target_gamma,market,hedge_instrument='atm',hedge_mode='replace')
-        #portfolio.delta_hedge(hedge_instrument,market)
+        portfolio.delta_hedge(hedge_instrument,market)
         
         series += [display_current(portfolio,prev_portfolio,market,prev_mkt)]
         prev_mkt = market
-        prev_portfolio = portfolio
+        prev_portfolio = copy.deepcopy(portfolio)
 
     display = pd.concat(series,axis=1)
+    display.loc[('predict',slice(None),slice(None))] = display.loc[('predict',slice(None),slice(None))].cumsum(axis=1)
     display.sort_index(axis=0,level=0).T.to_excel('Runtime/runs/deribit.xlsx')
     display.sort_index(axis=0, level=0).to_pickle('Runtime/runs/deribit.pickle')
 
