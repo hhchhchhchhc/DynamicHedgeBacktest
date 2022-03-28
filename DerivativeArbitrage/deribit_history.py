@@ -91,6 +91,7 @@ def funding_history(future,exchange,
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                     dirname=''):
     '''annualized funding for perps'''
+    future_id = exchange.market(future['symbol'])['id']
     max_funding_data = 500  # in hour. limit is 500 :(
     resolution = int(exchange.describe()['timeframes']['1h'])*60
 
@@ -105,12 +106,13 @@ def funding_history(future,exchange,
     funding = [y for x in funding for y in x]
 
     if len(funding)==0:
-        return pd.DataFrame(columns=[exchange.market(future['symbol'])['id'] + '/rate/funding'])
+        return pd.DataFrame(columns=[future_id + '/rate/funding'])
 
     data = pd.DataFrame(funding)
     data['time']=data['timestamp'].astype(dtype='int64')
-    data[exchange.market(future['symbol'])['id'] + '/rate/funding'] = data['interest_1h'].astype(float) *365.25*24
-    data=data[['time',exchange.market(future['symbol'])['id'] + '/rate/funding']].set_index('time')
+    data[future_id + '/rate/funding'] = data['interest_1h'].astype(float) *365.25*24
+    data[future_id + '/indexes/c'] = data['index_price'].astype(float)
+    data=data[['time',future_id + '/rate/funding',future_id + '/indexes/c']].set_index('time')
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
@@ -124,6 +126,10 @@ def rate_history(future,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                  timeframe='1h',
                  dirname=''):
+    ## index is in funding......
+    parquet_name = dirname + '/' + future['instrument_name'] + '_funding.parquet'
+    indexes = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+
     max_mark_data = 700
     resolution = int(exchange.describe()['timeframes'][timeframe])*60
 
@@ -134,32 +140,23 @@ def rate_history(future,exchange,
 
     logging.info(f'calling {sys._getframe(1).f_code.co_name} {len(start_times)} times')
     ## TODO: index does NOT work. No obvious endpoint
-    mark_indexes = [
-        exchange.fetch_ohlcv(future['symbol'], timeframe=timeframe, limit=999999999999999999, params=params) # volume is for max_mark_data*resolution
-            for start_time in start_times
-                for params in [{'start_timestamp':start_time*1000, 'end_timestamp':(start_time+f-int(resolution))*1000},
-                               {'start_timestamp':start_time*1000, 'end_timestamp':(start_time+f-int(resolution))*1000,'price':'index'}]]
-    mark = [y for x in mark_indexes[::2] for y in x]
-    indexes = [y for x in mark_indexes[1::2] for y in x]
+    mark = [
+        exchange.fetch_ohlcv(future['symbol'], timeframe=timeframe, limit=999999999999999999,
+                             params={'start_timestamp':start_time*1000, 'end_timestamp':(start_time+f-int(resolution))*1000}) # volume is for max_mark_data*resolution
+            for start_time in start_times]
+    mark = [y for x in mark for y in x]
 
-    if ((len(indexes) == 0) | (len(mark) == 0)):
+    if (len(mark) == 0):
         return pd.DataFrame(columns=
                          [exchange.market(future['symbol'])['id'] + '/mark/' + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
-                        +[exchange.market(future['symbol'])['id'] + '/indexes/'  + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
                         +[exchange.market(future['symbol'])['id'] + '/rate/' + c for c in ['T','c','h','l']])
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
-    ###### indexes
-    indexes = pd.DataFrame([dict(zip(column_names,row)) for row in indexes], dtype=float).astype(dtype={'t': 'int64'}).set_index('t')
-    indexes['volume'] = indexes['volume']* 24 * 3600 / int(resolution)
-
     ###### marks
-    mark = pd.DataFrame([dict(zip(column_names,row)) for row in mark]).astype(dtype={'t': 'int64'}).set_index('t')
-    mark['volume']=mark['volume']*24*3600/int(resolution)
+    data = pd.DataFrame([dict(zip(column_names,row)) for row in mark]).astype(dtype={'t': 'int64'}).set_index('t')
+    data['volume']=data['volume']*24*3600/int(resolution)
 
-    mark.columns = ['mark/' + column for column in mark.columns]
-    indexes.columns = ['indexes/' + column for column in indexes.columns]
-    data = mark.join(indexes, how='inner')
+    data.columns = ['mark/' + column for column in data.columns]
 
     ########## rates from index to mark
     if future['type'] == 'future':
@@ -168,18 +165,10 @@ def rate_history(future,exchange,
 
         data['rate/c'] = data.apply(
             lambda y: calc_basis(y['mark/c'],
-                                 indexes.loc[y.name, 'indexes/c'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
-        data['rate/h'] = data.apply(
-            lambda y: calc_basis(y['mark/h'], indexes.loc[y.name, 'indexes/h'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
-        data['rate/l'] = data.apply(
-            lambda y: calc_basis(y['mark/l'], indexes.loc[y.name, 'indexes/l'], future['expiryTime'],
+                                 indexes.loc[y.name, future['instrument_name']+'/indexes/c'], future['expiryTime'],
                                  datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
     elif future['type'] == 'swap': ### 1h funding = (mark/spot-1)/24
-        data['rate/c'] = (mark['mark/c'] / indexes['indexes/c'] - 1)*365.25
-        data['rate/h'] = (mark['mark/h'] / indexes['indexes/h'] - 1)*365.25
-        data['rate/l'] = (mark['mark/l'] / indexes['indexes/l'] - 1)*365.25
+        data['rate/c'] = (data['mark/c'] / indexes[future['instrument_name']+'/indexes/c'] - 1)*365.25
     else:
         print('what is ' + future['symbol'] + ' ?')
         return
