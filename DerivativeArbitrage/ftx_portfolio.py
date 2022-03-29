@@ -27,17 +27,16 @@ class MarginCalculator:
     def add_pending_orders(exchange,spot_weight,future_weight):
         '''add orders as if done'''
         for open_order_history in exchange.open_order_histories():
-            order = open_order_history[-1]
-            if 'symbol' in order:
-                pass
-            symbol = order['symbol']
+            clientOrderId = open_order_history[-1]['clientOrderId']
+            symbol = exchange.latest_value(clientOrderId,'symbol')
+            amount = exchange.latest_value(clientOrderId, 'remaining')* (1 if exchange.latest_value(clientOrderId, 'side') == 'buy' else -1)
             if exchange.markets[symbol]['spot']:
                 coin = exchange.markets[symbol]['base']
                 if coin not in spot_weight: spot_weight[coin] = {'weight': 0, 'mark': exchange.mid(symbol)}
-                spot_weight[coin]['weight'] += order['remaining'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+                spot_weight[coin]['weight'] += amount * exchange.mid(symbol)
             else:
                 if symbol not in future_weight: future_weight[symbol] = {'weight': 0, 'mark': exchange.mid(symbol)}
-                future_weight[symbol]['weight'] += order['remaining'] * (1 if order['side'] == 'buy' else -1)*exchange.mid(symbol)
+                future_weight[symbol]['weight'] += amount * exchange.mid(symbol)
         return (spot_weight,future_weight)
 
     @staticmethod
@@ -866,7 +865,7 @@ def ftx_portoflio_main(*argv):
     if len(argv) < 3:
         argv.extend(['ftx', 'debug'])
     print(f'running {argv}')
-    if argv[0] == 'fromOptimal':
+    if argv[0] == 'fromoptimal':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
         diff=diff.append(pd.Series({'coin': 'total', 'name': 'total'}).append(diff.sum(numeric_only=True)),ignore_index=True)
         print(diff.loc[diff['diffUSD'].apply(np.abs)>1,['coin','name','currentUSD','optimalUSD','diffUSD']].round(decimals=0))

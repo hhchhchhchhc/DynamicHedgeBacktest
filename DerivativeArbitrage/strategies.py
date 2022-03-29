@@ -1,6 +1,7 @@
 from ftx_snap_basis import *
 from ftx_portfolio import *
 from ftx_ftx import *
+import inspect
 
 run_i = 0
 
@@ -69,6 +70,10 @@ async def perp_vs_cash(
         exclusion_list,
         backtest_start = None,# None means live-only
         backtest_end = None):
+
+    frame = inspect.currentframe()
+    args, _, _, values = inspect.getargvalues(frame)
+    print(f'running {[(i, values[i]) for i in args]} ')
 
     markets = await exchange.fetch_markets()
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
@@ -199,10 +204,9 @@ async def perp_vs_cash(
 
         shutil.copy2(filename,'Runtime/ApprovedRuns/current_weights.xlsx')
 
-        display=optimized[['optimalWeight','ExpectedCarry','transactionCost']]
-        display['absWeight']=display['optimalWeight'].apply(abs)
-        display.loc['total','absWeight']=display.drop(index='total')['absWeight'].sum()
-        display=display.sort_values(by='absWeight',ascending=True)
+        display = optimized[['optimalWeight','ExpectedCarry','transactionCost']]
+        totals = display.loc[['USD','total']]
+        display = display.drop(index=['USD','total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
         #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
         print(display)
 
@@ -273,7 +277,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['sysperp'])
+        argv.extend(['depth'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -307,6 +311,7 @@ def strategies_main(*argv):
         with pd.ExcelWriter('Runtime/runs/depth.xlsx', engine='xlsxwriter') as writer:
             for res,equity in zip(results,equities):
                 res.to_excel(writer,sheet_name=str(equity))
+        print(pd.concat({res.loc['total','optimalWeight']:res[['optimalWeight','ExpectedCarry']]/res.loc['total','optimalWeight'] for res in results},axis=1))
     elif argv[0] == 'backtest':
         for equity in [[1000000]]:
             for concentration_limit in [[1]]:

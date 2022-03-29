@@ -1,6 +1,6 @@
 from strategies import *
 from ftx_portfolio import *
-import matplotlib.pyplot as plt
+from ftx_ws_execute import *
 import dataframe_image as dfi
 
 #!/usr/bin/env python
@@ -62,59 +62,31 @@ def echo(update, context):
                               'message':[update.effective_message['text']]})
             log.to_excel("Runtime/chathistory.xlsx")
 
-        if update.effective_message.chat['first_name'] in whitelist:
-            if split_message[0]=='risk':
-                risk = ftx_portoflio_main(*split_message)
-                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-                risk.to_excel(filename)
-                with open(filename, "rb") as file:
-                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-            elif split_message[0]=='plex':
-                plex = ftx_portoflio_main(*split_message)
-                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-                plex.to_excel(filename)
-                with open(filename, "rb") as file:
-                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-            elif split_message[0] == 'fromOptimal':
-                data = ftx_portoflio_main(*split_message)
-                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-                data.to_excel(filename)
-                with open(filename, "rb") as file:
-                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-            elif split_message[0]=='sysperp':
-                data = strategies_main(*split_message)
-                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-                data.to_excel(filename)
-                with open(filename, "rb") as file:
-                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-            elif split_message[0]=='execute':
-                data = ftx_rest_spread_main(*split_message)
-                filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-                data.to_excel(filename)
-                with open(filename, "rb") as file:
-                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-
-        if split_message[0]=='hist':
-            argv=['build']+split_message[1:]
+        if split_message[0] == 'hist':
+            argv = ['build']+split_message[1:]
             data = ftx_history_main(*argv)
-            filename="Runtime/temporary_parquets/telegram_file.xlsx"
-            data.to_excel(filename)
-            with open(filename, "rb") as file:
-                update.message.bot.sendDocument(update.message['chat']['id'],document=file)
-        elif split_message[0]=='basis':
+        elif split_message[0] == 'basis':
             type='future' if len(split_message)<2 else str(split_message[1])
             depth=1000 if len(split_message)<3 else int(split_message[2])
             exchange_name = 'ftx' if len(split_message) < 4 else split_message[3]
-            update.message.reply_text('ok so basis for ' + type + ' for size ' + str(depth))
-
-            data=enricher_wrapper(exchange_name,type,depth)
-
-            filename = "Runtime/temporary_parquets/telegram_file.xlsx"
-            data.sort_values('intCarry',key=np.abs,ascending=False).to_excel(filename)
-            with open(filename, "rb") as file:
-                update.message.bot.sendDocument(update.message['chat']['id'],document=file)
+            data = enricher_wrapper(exchange_name,type,depth)
+        elif update.effective_message.chat['first_name'] in whitelist:
+            if split_message[0] in ['risk','plex','fromoptimal']:
+                data = ftx_portoflio_main(*split_message)
+            elif split_message[0] == 'sysperp':
+                data = strategies_main(*split_message)
+            elif split_message[0] == 'execute':
+                data = ftx_ws_spread_main(*split_message)
+            else:
+                raise Exception('unknown command, type /help')
         else:
-            update.message.reply_text('unknown command, type /help')
+            raise Exception('unknown command, type /help')
+
+        filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+        data.to_excel(filename)
+        with open(filename, "rb") as file:
+            update.message.bot.sendDocument(update.message['chat']['id'], document=file)
+
     except Exception as e:
         update.message.reply_text(str(e))
 

@@ -54,14 +54,14 @@ async def mkt_at_size(exchange, symbol, side, target_depth=10000.):
     if target_depth==0:
         return (order_book[side][0][0],mid)
 
-    mktdepth['px']=(mktdepth[0]*mktdepth[1]).cumsum()/mktdepth[1].cumsum()
-    mktdepth['size']=(mktdepth[0]*mktdepth[1]).cumsum()
+    mktdepth['px'] = (mktdepth[0]*mktdepth[1]).cumsum()/mktdepth[1].cumsum()
+    mktdepth['size'] = (mktdepth[0]*mktdepth[1]).cumsum()
 
-    interpolator=mktdepth.set_index('size')['px']
-    interpolator[float(target_depth)]=np.NaN
+    interpolator = mktdepth.set_index('size')['px']
+    interpolator[float(target_depth)] = np.NaN
     interpolator.interpolate(method='index',inplace=True)
 
-    return {'mid':mid,'side':interpolator[target_depth],'slippage':interpolator[target_depth]/mid-1.0}
+    return {'mid':mid,'side':interpolator[target_depth],'slippage':interpolator[target_depth]/mid-1.0,'symbol':symbol}
 
 async def mkt_speed(exchange, symbol, target_depth=10000):
     # side='bids' or 'asks'
