@@ -1,45 +1,34 @@
-import requests
+import csv,sys
+import requests,asyncio
 import pandas as pd
-import sys
-
-import asyncio
-import csv
+from datetime import *
 from tardis_client import TardisClient, Channel
 from tardis_dev import datasets, get_exchange_details
-from datetime import datetime, timezone
-import logging
-import json
 
-def get_data_feeds(exchange = 'deribit'):
+def get_data_feeds(start, end, exchange = 'deribit'):
     exchange_details = get_exchange_details(exchange)
 
-    # iterate over and download all data for every symbol
-    for symbol in exchange_details["datasets"]["symbols"]:
-        # alternatively specify datatypes explicitly ['trades', 'incremental_book_L2', 'quotes'] etc
-        # see available options https://docs.tardis.dev/downloadable-csv-files#data-types
-        data_types = ['options_chain']#symbol["dataTypes"]
-        symbol_id = symbol["id"]
-        from_date = symbol["availableSince"]
-        to_date = symbol["availableTo"]
+    datasets.download(
+        exchange=exchange,
+        data_types=['derivative_ticker'],
+        from_date=str(start),
+        to_date=str(end),
+        symbols=['PERPETUALS','FUTURES'],
+        api_key="TD.5sHAB2mPdsHYylP6.Y9KLWdd3XIeOpgv.7KnfWYukxDDuyFu.WUi-a3IvCvWnavo.iekVlRGaldwInlo.QJSZ",
+        # path where CSV data will be downloaded into
+        download_dir="Runtime/Tardis"
+    )
 
-        # skip groupped symbols
-        if symbol_id in ['PERPETUALS', 'SPOT', 'FUTURES']:
-            continue
-
-        print(f"Downloading {exchange} {data_types} for {symbol_id} from {from_date} to {to_date}")
-
-        # each CSV dataset format is documented at https://docs.tardis.dev/downloadable-csv-files#data-types
-        # see https://docs.tardis.dev/downloadable-csv-files#download-via-client-libraries for full options docs
-        datasets.download(
-            exchange=exchange,
-            data_types=data_types,
-            from_date=str(datetime(year=2022,month=3,day=20,tzinfo=timezone.utc)),
-            to_date=str(datetime(year=2022,month=3,day=21,tzinfo=timezone.utc)),
-            symbols=[symbol_id],
-            api_key="TD.5sHAB2mPdsHYylP6.Y9KLWdd3XIeOpgv.7KnfWYukxDDuyFu.WUi-a3IvCvWnavo.iekVlRGaldwInlo.QJSZ",
-            # path where CSV data will be downloaded into
-            download_dir="Runtime/Tardis"
-        )
+    datasets.download(
+        exchange=exchange,
+        data_types=['options_chain'],
+        from_date=str(start),
+        to_date=str(end),
+        symbols=['OPTIONS'],
+        api_key="TD.5sHAB2mPdsHYylP6.Y9KLWdd3XIeOpgv.7KnfWYukxDDuyFu.WUi-a3IvCvWnavo.iekVlRGaldwInlo.QJSZ",
+        # path where CSV data will be downloaded into
+        download_dir="Runtime/Tardis"
+    )
 
 async def save_historical_deribit_index_data_to_csv():
     tardis_client = TardisClient()
@@ -66,7 +55,9 @@ def tardis_main(*argv):
         argv.extend(['rest'])
 
     if argv[0] == 'rest':
-        return get_data_feeds()
+        days = [datetime(year=2022,month=3,day=1),datetime(year=2022,month=3,day=1)]
+        #return asyncio.gather(*[get_data_feeds(start,end) for start,end in list(zip(days[:-1],days[1:]))])
+        return get_data_feeds(days[0],days[1])
     elif argv[0] == 'ws':
         return asyncio.run(save_historical_deribit_index_data_to_csv())
     else:
