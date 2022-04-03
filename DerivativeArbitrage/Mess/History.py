@@ -1,9 +1,7 @@
-import numpy as np
-import pandas as pd
-
-from ftx_snap_basis import *
-from ftx_utilities import *
 from ftx_ftx import *
+from ftx_snap_basis import *
+from utilities import *
+
 
 ### History holds times series (fetched or read).
 class RawHistory:
@@ -293,7 +291,7 @@ class ModelledAssets:
             futures['bid_rate_slippage'] = slippage_override
             futures['ask_rate_slippage'] = slippage_override
         else:
-            fees=(exchange.fetch_trading_fees()['taker']+exchange.fetch_trading_fees()['maker']*0)#maker fees 0 with 26 FTT staked
+            fees=(exchange.fetch_trading_fees()['takerFee']+exchange.fetch_trading_fees()['makerFee']*0)#maker fees 0 with 26 FTT staked
             ### relative semi-spreads incl fees, and speed
             if slippage_orderbook_depth == 0.0:
                 futures['spot_ask'] = fees + futures.apply(lambda f: 0.5 * (

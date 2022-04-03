@@ -1,11 +1,4 @@
-# -*- coding: utf-8 -*-
-import os.path
-
-import pandas as pd
-
-from ftx_utilities import *
 from ftx_ftx import *
-from ftx_history import spot_history
 
 class MarginCalculator:
     '''low level class to compute margins
@@ -111,10 +104,12 @@ class MarginCalculator:
     def actual(self,account_information):
         self.actual_futures_IM = {position['future']:float(position['collateralUsed'])
                                   for position in account_information['positions'] if float(position['netSize'])!=0}
-        self.actual_IM = float(account_information['totalPositionSize']) * (
-                    float(account_information['openMarginFraction']) - float(account_information['initialMarginRequirement']))
-        self.actual_MM = float(account_information['totalPositionSize']) * (
-                    float(account_information['openMarginFraction']) - float(account_information['maintenanceMarginRequirement']))
+        totalPositionSize = float(account_information['totalPositionSize']) if float(account_information['totalPositionSize'])>0 else 0.0
+        openMarginFraction = float(account_information['openMarginFraction']) if account_information['openMarginFraction'] else 0.0
+        self.actual_IM = float(totalPositionSize) * (
+                    float(openMarginFraction) - float(account_information['initialMarginRequirement']))
+        self.actual_MM = float(totalPositionSize) * (
+                    float(openMarginFraction) - float(account_information['maintenanceMarginRequirement']))
 
     def margins_from_exchange(self,exchange):
         '''not used, as would need all risks not only self.risk_state'''
@@ -861,9 +856,9 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['risk'])
+        argv.extend(['plex'])
     if len(argv) < 3:
-        argv.extend(['ftx', 'debug'])
+        argv.extend(['ftx', 'SysPerp'])
     print(f'running {argv}')
     if argv[0] == 'fromoptimal':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))

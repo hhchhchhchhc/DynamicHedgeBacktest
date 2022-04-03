@@ -9,19 +9,22 @@ class myExchange(ccxtpro.some_exchange):
         # called by ccxt in the background upon message receipt. syncronous.
     async def watch_state(self):
         # that waits for data and returns it when it comes. Once.
-    async def async_react_to_state(self):
-        await logic2(self,_data)
+    async def async_react_to_state(self,i):
+        print(i)
+        await asyncio.sleep(i/10)
     def sync_react_to_state(self):
-        logic3(self, _data)
+        pass
     async def loop_watch_state(self):
+        i=0
         while True:
             try:
-                data=self.watch_state()
+                i=i+1
+                data = await self.async_react_to_state()
                 # handle_xxx is called by ccxt in the background upon message receipt
                 self.react_to_state(data)
-            except NonCriticalError as e:
-                # for instance connection error
-                continue
+            # except NonCriticalError as e:
+            #     # for instance connection error
+            #     continue
             except Exception as e:
                 break
             finally:

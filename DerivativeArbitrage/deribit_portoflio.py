@@ -1,10 +1,11 @@
-import pandas as pd
+import copy
+import math
 
-from deribit_history import *
 import numpy as np
 import scipy
-import math
-import copy
+
+from deribit_history import *
+
 
 class black_scholes:
     @staticmethod
@@ -135,6 +136,8 @@ class InversePerpetual(Instrument):
     def margin_value(self, market):
         '''TODO: approx, in fact it's converted at spot not fwd'''
         return -6e-3 / market['spot']
+
+
 
 class Option(Instrument):
     '''a coinUSD call(size in coin, strike in coinUSD) is a USDcoin put(strike*size in USD,1/strike in USDTBC)
@@ -336,12 +339,16 @@ def display_current(portfolio,prev_portfolio, market,prev_market):
     new_data.name = pd.to_datetime(market['t'], unit='s')
     return new_data.sort_index(axis=0,level=[0,1,2])
 
-if __name__ == "__main__":
-    if len(sys.argv)<2:
-        currency = 'BTC'
-    else:
-        currency = sys.argv[1]
+def strategies_main(*argv):
+    argv = list(argv)
+    if len(argv) == 0:
+        argv.extend(['BTC'])
+    if len(argv) < 2:
+        argv.extend([0.9])
+    print(f'running {argv}')
 
+    currency = argv[0]
+    volfactor = argv[1]
     ## get history
     history = deribit_history_main('just use',[currency],'deribit','cache')[0]
 
@@ -364,7 +371,7 @@ if __name__ == "__main__":
                             currency+'-PERPETUAL/indexes/c':'spot',
                             currency+'-PERPETUAL/rate/funding':'fundingRate'},inplace=True)
     history['t'] = history['t'].apply(lambda t:t.timestamp())
-    history['vol'] = history['vol']/100
+    history['vol'] = history['vol']/100*volfactor
     history['borrow'] = 0
     history['r'] = history['borrow']
     history.ffill(limit=2,inplace=True)
@@ -391,7 +398,7 @@ if __name__ == "__main__":
 
     ## run backtest
     series = []
-    for i,market in history.iterrows():
+    for run_i,market in history.iterrows():
         portfolio.positions = prev_portfolio.process_settlements(market, prev_mkt)
         portfolio.gamma_target(target_gamma,market,hedge_instrument='atm',hedge_mode='replace')
         portfolio.delta_hedge(hedge_instrument,market)
@@ -400,19 +407,16 @@ if __name__ == "__main__":
         prev_mkt = market
         prev_portfolio = copy.deepcopy(portfolio)
 
-        if i%1000==0:
-            print(i)
+        if run_i%1000==0:
+            print('{} at {}'.format(run_i,datetime.now()))
 
     display = pd.concat(series,axis=1)
-    #display.loc[(['predict','actual'],slice(None),slice(None))] = display.loc[(['predict','actual'],slice(None),slice(None))].cumsum(axis=1)
-    display.T.to_excel('Runtime/runs/deribit.xlsx')
-    display.to_pickle('Runtime/runs/deribit.pickle')
+    display.loc[(['predict','actual'],slice(None),slice(None))] = display.loc[(['predict','actual'],slice(None),slice(None))].cumsum(axis=1)
 
-if False:
-    coin = pd.read_csv("C:/Users/david/pyCharmProjects/SystematicCeFi/DerivativeArbitrage/Runtime/Deribit_Mktdata_database/deribit_options_chain_2019-07-01_coin.csv")
-    coin['expiry'] = coin['expiration'].apply(lambda t: pd.to_datetime(int(t), unit='us'))
-    coin['timestamp'] = coin['timestamp'].apply(lambda t: pd.to_datetime(int(t), unit='us'))
-    coin['dist_2_fwd'] = coin.apply(lambda f: np.abs(np.log(f['underlying_price']/f['strike_price'])),axis=1)
-    smiles = coin.groupby(by=['expiry', 'timestamp'])[['timestamp','delta','mark_iv']]
-    #.sort_values(by='strike_price',
-                                                             #key=lambda f: np.abs(f['underlying_price'] / f['strike']))[-1]
+    filename = 'Runtime/runs/run_'+str(int(volfactor*100))+'_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")
+    with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter') as writer:
+        display.T.to_excel(writer,sheet_name=str(volfactor))
+    display.to_pickle(filename+'.pickle')
+
+if __name__ == "__main__":
+    strategies_main(*sys.argv[1:])

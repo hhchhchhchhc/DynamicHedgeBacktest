@@ -1,6 +1,5 @@
 from ftx_snap_basis import *
 from ftx_portfolio import *
-from ftx_ftx import *
 import inspect
 
 run_i = 0
@@ -277,7 +276,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['depth'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')

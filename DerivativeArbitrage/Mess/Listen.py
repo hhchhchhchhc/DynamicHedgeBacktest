@@ -1,11 +1,9 @@
-import time
-import sys
 import logging
+import logging
+
+import ccxtpro
 import pandas as pd
 
-import ftx_utilities
-import ccxtpro
-import asyncio
 
 def main(*argv,**kwargs):
     async_exchanges = [getattr(ccxtpro.ccxt, id)() for id in ccxtpro.ccxt.exchanges]

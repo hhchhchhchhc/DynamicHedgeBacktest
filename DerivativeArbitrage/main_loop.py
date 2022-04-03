@@ -1,9 +1,9 @@
-from ftx_utilities import *
-from ftx_portfolio import ftx_portoflio_main
-from strategies import strategies_main
-from ftx_ws_execute import ftx_ws_spread_main
 from time import sleep
-from datetime import *
+
+from ftx_portfolio import ftx_portoflio_main
+from ftx_ws_execute import ftx_ws_spread_main
+from strategies import strategies_main
+from utilities import *
 
 launchtime_minutes = [datetime.now().minute]
 throttle_minutes = 1

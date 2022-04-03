@@ -1,34 +1,25 @@
 #!/usr/bin/env python3
-import logging
-import os
-import sys
-import asyncio
-import functools
-import aiofiles
-import platform
+import sys,os,platform,shutil
+import functools,logging
+
+import asyncio,aiofiles,threading
 if platform.system()=='Windows':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-import warnings
-import shutil
-import json
-from typing import Tuple
-import ccxtpro as ccxt
-#import ccxt
+
+from datetime import *
+import dateutil
 import numpy as np
 import pandas as pd
+import scipy
+import json
 import pickle
 import pyarrow as pa
 import pyarrow.parquet as pq
-import xlsxwriter
-import boto3
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
-import plotly.express as px
 
-from datetime import datetime,timezone,timedelta,date
-import dateutil
-import itertools
+import ccxt.async_support as ccxt
 
 safe_gather_limit = 50
 
@@ -192,7 +183,7 @@ async def open_exchange(exchange_name,subaccount,config={}):
             'password': 'etvoilacestencoreokex'
         }|config)
         if subaccount != 'convexity':
-            warnings.warn('subaccount override: convexity')
+            logging.warning('subaccount override: convexity')
             exchange.headers = {'FTX-SUBACCOUNT': 'convexity'}
     elif exchange_name == 'huobi':
         exchange = ccxt.huobi(config={
@@ -278,31 +269,6 @@ class NpEncoder(json.JSONEncoder):
             return bool(obj)
         if isinstance(obj, pd.core.generic.NDFrame):
             return obj.to_json()
+        if isinstance(obj, collections.deque):
+            return None
         return super(NpEncoder, self).default(obj)
-
-def log_reader(prefix='latest',dirname='Runtime/logs'):
-    path = f'{dirname}/{prefix}'
-    with open(f'{path}_events.json', 'r') as file:
-        d = json.load(file)
-        events = {clientId: pd.DataFrame(data) for clientId, data in d.items()}
-    with open(f'{path}_risk_reconciliations.json', 'r') as file:
-        d = json.load(file)
-        risk = pd.DataFrame(d)
-    with open(f'{path}_request.json', 'r') as file:
-        d = json.load(file)
-        request = pd.DataFrame(d)
-    history = from_parquet(f'{path}_minutely.parquet')
-
-    with pd.ExcelWriter(f'{dirname}/latest_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
-        pd.concat([data[['symbol','clientOrderId', 'timestamp', 'lifecycle_state']] for data in events.values()], axis=1).to_excel(writer,sheet_name='summary')
-        i = 0
-        for clientId,data in events.items():
-            data.sort_values(by='timestamp',ascending=True).to_excel(writer, sheet_name=str(i))
-            i+1
-        if not risk.empty:
-            risk.sort_values(by='delta_timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
-        request.to_excel(writer, sheet_name='request')
-        history.to_excel(writer, sheet_name='history')
-
-if __name__ == "__main__":
-    log_reader(*sys.argv[1:])

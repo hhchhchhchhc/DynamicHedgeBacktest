@@ -1,7 +1,9 @@
-import time
 import ccxtpro
-import asyncio
-from ftx_utilities import *
+from utilities import *
+import ccxtpro
+
+from utilities import *
+
 
 class myFtx(ccxtpro.ftx):
     def __init__(self,symbol: str,depth: float,config={}):

@@ -1,13 +1,13 @@
-import sys
-import ccxtpro
 import asyncio
+import functools
+import logging
+import sys
 
+import ccxtpro
 import pandas as pd
 
-from ftx_utilities import secret,apiKey
-import functools
+from utilities import secret, apiKey
 
-import logging
 logging.basicConfig(level=logging.INFO)
 
 def loop_try(func):

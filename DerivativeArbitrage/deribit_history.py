@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
-import logging
+from utilities import *
+import ccxt as ccxt # needs to be reassigned from ccxtpro
 
-import pandas as pd
-import os
-import sys
-import pyarrow as pa
-import pyarrow.parquet as pq
-import ccxt
-from datetime import datetime,timezone,timedelta,date
-import dateutil
-import dateutil.parser
-
-from ftx_utilities import from_parquet, to_parquet, calc_basis
 funding_start = datetime(2019, 4, 30)
 perp_start = datetime(2018, 8, 14)
 volindex_start = datetime(2021, 3, 24)

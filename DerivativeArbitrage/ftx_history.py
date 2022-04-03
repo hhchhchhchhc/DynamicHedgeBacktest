@@ -1,11 +1,5 @@
-import asyncio
-import datetime
-
-import dateutil.parser
-import pandas as pd
-
-from ftx_utilities import *
 from ftx_ftx import *
+
 history_start = datetime(2020, 11, 26)
 
 # all rates annualized, all volumes daily in usd
@@ -331,7 +325,7 @@ async def ftx_history_main_wrapper(*argv):
 def ftx_history_main(*argv):
     argv=list(argv)
     if len(argv) < 1:
-        argv.extend(['get'])
+        argv.extend(['build'])
     if len(argv) < 2:
         argv.extend(['wide']) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
