@@ -1,4 +1,6 @@
-import boto3, os
+import boto3
+import os
+
 
 # https://betterprogramming.pub/cron-job-patterns-in-aws-126fbf54a276
 def lambda_handler(event, context):
@@ -21,10 +23,12 @@ def lambda_handler(event, context):
 
 def s3_download_file(local_filename, bucket_name, remote_filename):
     print("DOWNLOAD FILE FROM S3: s3://" + bucket_name + '/' + remote_filename + ' -> ' + local_filename)
-    s3_cl = boto3.client('s3', endpoint_url=os.getenv('BOTO3_S3_ENDPOINT_URL'))
+    s3_cl = boto3.client('s3',
+                         aws_access_key_id='AKIA4ZDFLFOU3GOSSVI4',
+                         aws_secret_access_key='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',
+                         endpoint_url=os.getenv('BOTO3_S3_ENDPOINT_URL'))
     with open(local_filename, 'wb') as f:
         s3_cl.download_fileobj(bucket_name, remote_filename, f)
-
 
 def s3_upload_file(local_filename, bucket_name, remote_filename):
     print("UPLOAD FILE TO S3: " + local_filename + ' -> ' + 's3://' + bucket_name + '/' + remote_filename)
