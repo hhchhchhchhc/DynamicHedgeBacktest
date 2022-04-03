@@ -73,6 +73,35 @@ async def build_history(futures,exchange,
 
     #os.system("aws s3 sync Runtime/Mktdata_database/ s3://hourlyftx/Mktdata_database")
 
+async def correct_history(futures,exchange,hy_history,dirname = 'Runtime/Mktdata_database'):
+    '''for now, increments local files and then uploads to s3'''
+
+    coroutines = []
+    for _, f in futures[futures['type'] == 'perpetual'].iterrows():
+        parquet_name = dirname + '/' + f.name + '_funding.parquet'
+        coroutines.append(async_to_parquet(hy_history[[exchange.market(f['symbol'])['id'] + '/rate/funding']],parquet_name))
+
+    for _, f in futures.iterrows():
+        parquet_name = dirname + '/' + f.name + '_futures.parquet'
+        future_id = exchange.market(f['symbol'])['id']
+        column_names = [future_id + '/mark/' + field for field in ['o', 'h', 'l', 'c', 'volume']]
+        column_names += [future_id + '/indexes/' + field for field in ['o', 'h', 'l', 'c', 'volume']]
+        column_names += [future_id + '/rate/' + field for field in ['h', 'l', 'c'] + (['T'] if f['type']=='future' else [])]
+        coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
+
+    for f in futures['underlying'].unique():
+        parquet_name = dirname + '/' + f + '_price.parquet'
+        column_names = [f + '/price/' + field for field in ['o', 'h', 'l', 'c', 'volume']]
+        coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
+
+    for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
+        parquet_name = dirname + '/' + f + '_borrow.parquet'
+        column_names = [f + '/rate/' + field for field in ['borrow','size']]
+        coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
+
+    # run all coroutines
+    await safe_gather(coroutines)
+
 ### only perps, only borrow and funding, only hourly
 async def borrow_history(coin,exchange,
                  end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
@@ -249,6 +278,7 @@ async def rate_history(future,exchange,
             lambda y: calc_basis(y['mark/l'], indexes.loc[y.name, 'indexes/l'], future['expiryTime'],
                                  datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
     elif future['type'] == 'perpetual': ### 1h funding = (mark/spot-1)/24
+        data['rate/T'] = None
         data['rate/c'] = (mark['mark/c'] / indexes['indexes/c'] - 1)*365.25
         data['rate/h'] = (mark['mark/h'] / indexes['indexes/h'] - 1)*365.25
         data['rate/l'] = (mark['mark/l'] / indexes['indexes/l'] - 1)*365.25
@@ -318,6 +348,12 @@ async def ftx_history_main_wrapper(*argv):
     # volume screening
     if argv[0] == 'build':
         await build_history(futures, exchange)
+    if argv[0] == 'correct':
+        hy_history = await get_history(futures, history_start)
+        end = datetime.now()-timedelta(days=int(argv[3]))
+        await correct_history(futures,exchange,hy_history[:end])
+        await build_history(futures, exchange)
+
     hy_history = await get_history(futures, 24*int(argv[3]))
     await exchange.close()
     return hy_history
@@ -325,7 +361,7 @@ async def ftx_history_main_wrapper(*argv):
 def ftx_history_main(*argv):
     argv=list(argv)
     if len(argv) < 1:
-        argv.extend(['build'])
+        argv.extend(['correct'])
     if len(argv) < 2:
         argv.extend(['wide']) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
