@@ -5,14 +5,15 @@ python-dateutil
 ccxt>=1.72.68
 #ccxtpro @ git+https://github.com/kroitor/ccxt.pro.git#subdirectory=python
 cufflinks
-#shutil
 #pickle
-XlsxWriter
+#XlsxWriter
 openpyxl
 boto3
 scipy
 matplotlib
 websockets
 python-telegram-bot
-dataframe-image
-prometheus-client
+#dataframe-image
+#prometheus-client
+aiofiles==0.4.0
+ikp3db
