@@ -6,8 +6,8 @@ ccxt>=1.72.68
 #ccxtpro @ git+https://github.com/kroitor/ccxt.pro.git#subdirectory=python
 cufflinks
 #pickle
-#XlsxWriter
-openpyxl
+XlsxWriter
+#openpyxl
 boto3
 scipy
 matplotlib
