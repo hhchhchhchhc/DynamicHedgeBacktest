@@ -1,10 +1,7 @@
-import dateutil.parser
-import scipy.optimize
 finite_diff_rel_step = 1e-4
 
 from ftx_portfolio import BasisMarginCalculator
 from ftx_history import *
-from ftx_ftx import *
 
 def market_capacity(futures, hy_history, universe_filter_window=[]):
     if len(universe_filter_window) == 0:
@@ -73,7 +70,7 @@ async def enricher(exchange,futures,holding_period,equity,
         futures['spotMargin'] == 'OTC', 'underlying'].apply(lambda f: otc_file.loc[f, 'size'])
 
     # transaction costs
-    costs=await fetch_rate_slippage(futures, exchange, holding_period,
+    costs = await fetch_rate_slippage(futures, exchange, holding_period,
                                     slippage_override, slippage_orderbook_depth, slippage_scaler,
                                     params)
     futures = futures.join(costs, how = 'outer')
@@ -110,10 +107,11 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
             & (futures['tokenizedEquity'] != True)]
 
         filtered = futures[~futures['underlying'].isin(EXCLUSION_LIST)]
+        type = ['future','perpetual'] if type == 'all' else [type]
         enriched = await enricher(exchange, filtered, timedelta(weeks=1), equity=1.0,
                                   slippage_override=-999, slippage_orderbook_depth=depth,
                                   slippage_scaler=1.0,
-                                  params={'override_slippage': False, 'type_allowed': [type], 'fee_mode': 'retail'})
+                                  params={'override_slippage': False, 'type_allowed': type, 'fee_mode': 'retail'})
         await build_history(futures, exchange)
         hy_history = await get_history(enriched,start_or_nb_hours=48)
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
@@ -125,7 +123,7 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short,
                                      E_intUSDborrow, E_intBorrow)
 
-        data = market_capacity(updated,hy_history).sort_values(by=lambda f: np.abs(f['E_intCarry']),ascending=False)
+        data = market_capacity(updated,hy_history).sort_values(by='E_intCarry',key=np.abs,ascending=False)
 
         await exchange.close()
         return data
@@ -306,6 +304,7 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
             else (trading_fees[f]['taker']+trading_fees[f]['maker']*0))
         spot_fees = futures.set_index('underlying').apply(lambda f: (0.6 * 0.00015 - 0.0001 + 2 * 0.00006) if (params['fee_mode'] == 'hr') \
             else (trading_fees[f.name + '/USD']['taker'] + trading_fees[f.name + '/USD']['maker'] * 0),axis=1)
+        spot_fees = spot_fees[~spot_fees.index.duplicated()]
         spot_fees.index = [x+'/USD' for x in spot_fees.index]
         fees = futures_fees.append(spot_fees)
 
@@ -318,18 +317,21 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
             futures['future_bid'] = -futures['future_ask']
             #futures['speed']=0##*futures['future_ask'] ### just 0
         else:
-            futures['spot_ask'] = [x['slippage'] * slippage_scaler + fees[x['symbol']] for x in await safe_gather(
+            futures['spot_ask'] = await safe_gather(
                 [mkt_at_size(exchange, f, 'asks', slippage_orderbook_depth) for
-                  f in futures['spot_ticker'].values])]
-            futures['spot_bid'] = [x['slippage'] * slippage_scaler - fees[x['symbol']] for x in await safe_gather(
-                [mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth) for
-                  x in futures['spot_ticker'].values])]
-            futures['future_ask'] = [x['slippage'] * slippage_scaler + fees[x['symbol']] for x in await safe_gather(
-                [mkt_at_size(exchange, x, 'asks', slippage_orderbook_depth) for
-                  x in futures['symbol'].values])]
-            futures['future_bid'] = [x['slippage'] * slippage_scaler - fees[x['symbol']] for x in await safe_gather(
-                [mkt_at_size(exchange, x, 'bids', slippage_orderbook_depth) for
-                  x in futures['symbol'].values])]
+                  f in futures['spot_ticker'].values])
+            futures['spot_bid'] = await safe_gather(
+                [mkt_at_size(exchange, f, 'bids', slippage_orderbook_depth) for
+                  f in futures['spot_ticker'].values])
+            futures['future_ask'] = await safe_gather(
+                [mkt_at_size(exchange, f, 'asks', slippage_orderbook_depth) for
+                 f in futures['symbol'].values])
+            futures['future_bid'] = await safe_gather(
+                [mkt_at_size(exchange, f, 'bids', slippage_orderbook_depth) for
+                 f in futures['symbol'].values])
+
+            futures[['spot_ask','spot_bid','future_ask','future_bid']] = futures[['spot_ask','spot_bid','future_ask','future_bid']].applymap(lambda x:
+                        x['slippage'] * slippage_scaler + fees[x['symbol']])
 
     #### rate slippage assuming perps are rolled every perp_holding_period
     #### use both bid and ask for robustness, but don't x2 for entry+exit
