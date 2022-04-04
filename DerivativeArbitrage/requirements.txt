@@ -7,7 +7,7 @@ ccxt>=1.72.68
 cufflinks
 #pickle
 XlsxWriter
-#openpyxl
+openpyxl
 boto3
 scipy
 matplotlib
