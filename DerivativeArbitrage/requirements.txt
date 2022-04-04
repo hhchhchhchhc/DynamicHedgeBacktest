@@ -3,7 +3,7 @@ pandas
 pyarrow
 python-dateutil
 ccxt>=1.72.68
-#ccxtpro @ git+https://github.com/kroitor/ccxt.pro.git#subdirectory=python
+ccxtpro @ git+https://github.com/kroitor/ccxt.pro.git#subdirectory=python
 cufflinks
 #pickle
 XlsxWriter
