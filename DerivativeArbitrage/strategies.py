@@ -111,7 +111,7 @@ async def perp_vs_cash(
     if backtest_start and backtest_end:
         point_in_time = backtest_start + signal_horizon + holding_period
     else:
-        point_in_time = now_time.replace(minute=0, second=0, microsecond=0)
+        point_in_time = now_time.replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)
         backtest_start = point_in_time
         backtest_end = point_in_time
 
@@ -164,7 +164,7 @@ async def perp_vs_cash(
                                          concentration_limit=concentration_limit,
                                          mktshare_limit=mktshare_limit,
                                          equity=equity,
-                                         optional_params=['verbose'] + (['cost_blind']
+                                         optional_params=(['verbose'] if __debug__ else []) + (['cost_blind']
                                          if (point_in_time == backtest_start)&(backtest_start != backtest_end)
                                          else [])) # ignore costs on first time of a backtest
         # need to assign RealizedCarry to previous_time
@@ -288,8 +288,8 @@ def strategies_main(*argv):
             mktshare_limit=[MKTSHARE_LIMIT],
             minimum_carry=[MINIMUM_CARRY],
             exclusion_list=EXCLUSION_LIST,
-            signal_horizon=[argv[1]],
-            holding_period=[argv[2]],
+            signal_horizon=[argv[2]],
+            holding_period=[argv[1]],
             slippage_override=[SLIPPAGE_OVERRIDE],
             backtest_start=None,backtest_end=None))
     elif argv[0] == 'depth':
