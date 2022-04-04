@@ -1,7 +1,7 @@
 from strategies import *
 from ftx_portfolio import *
 from ftx_ws_execute import *
-import dataframe_image as dfi
+#import dataframe_image as dfi
 
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-

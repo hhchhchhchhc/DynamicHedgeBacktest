@@ -416,7 +416,7 @@ class myFtx(ccxtpro.ftx):
         # reconcile often rereads filled trades, skip then.
         if order_event['id'] in [block['fillId'] for block in self.orders_lifecycle[clientOrderId] if 'fillId' in block]:
             assert order_event['trigger'] == 'reconciled',"order_event['trigger'] == 'reconciled'"
-            return
+            #return
 
         # 3) new block
         if not isinstance(order_event['timestamp'], tuple):
@@ -489,7 +489,7 @@ class myFtx(ccxtpro.ftx):
         fetched_fills = await self.fetch_my_trades(since=max(self.exec_parameters['timestamp'],self.latest_fill_reconcile_timestamp-1000), limit=1000)
         for fill in fetched_fills:
             fill['trigger'] = 'reconciled'
-            fill['clientOrderId'] = fill['info']['clientOrderId']
+            fill['clientOrderId'] = self.find_clientID_from_fill(fill)
             self.lifecycle_fill(fill)
         # hopefully using another lock instance
         await self.lifecycle_to_json()
@@ -598,6 +598,7 @@ class myFtx(ccxtpro.ftx):
                      all(data['volume'] * time_budget > np.abs(data['diff']) for data in coin_data.values())
                      and any(np.abs(data['diff']) >= max(diff_threshold/data['spot_price'], float(self.markets[symbol]['info']['minProvideSize'])) for symbol, data in coin_data.items())}
         if data_dict =={}:
+            self.exec_parameters = {'timestamp': end.timestamp() * 1000}
             raise myFtx.DoneDeal('nothing to do')
 
         def basket_vwap_quantile(series_list,diff_list,quantile):
@@ -1077,7 +1078,8 @@ class myFtx(ccxtpro.ftx):
                 await asyncio.sleep(.1)
                 return await self.cancel_order(clientOrderId, trigger+'+')
 
-    async def close_dust(self):             
+    async def close_dust(self):
+        '''leaves slightly positive cash for ease of convert'''
         risks = await safe_gather([self.fetch_positions(),self.fetch_balance()],semaphore=self.rest_semaphor)
         positions = risks[0]
         balances = risks[1]
@@ -1085,11 +1087,11 @@ class myFtx(ccxtpro.ftx):
         futures_dust = [position for position in positions
                         if float(position['info']['size'])!=0
                         and np.abs(float(position['info']['size']))<2*float(self.markets[position['symbol']]['info']['minProvideSize'])]
-        for coro in [super().create_order(position['symbol'],
-                                          'market',
-                                          'buy' if position['side']=='short' else 'sell',
-                                          position['info']['size'],
-                                          params={'clientOrderId':'dust_'+position['symbol']+'/USD'+int(self.exec_parameters['timestamp'])})
+        for coro in [super(myFtx,self).create_order(symbol=position['symbol'],
+                                          type='market',
+                                          side='buy' if position['side']=='short' else 'sell',
+                                          amount=float(position['info']['size']),
+                                          params={'clientOrderId':'dust_'+position['symbol']+'/USD'+str(int(self.exec_parameters['timestamp']))})
                      for position in futures_dust]:
             await coro
             await asyncio.sleep(.2)
@@ -1098,7 +1100,7 @@ class myFtx(ccxtpro.ftx):
                      if coin in set(self.currencies) - set(['USD'])
                      and balance['total']<0
                      and float(balance['total'])+float(self.markets[coin+'/USD']['info']['sizeIncrement'])>0}
-        for coro in [super().create_order(coin+'/USD','market','buy',size,params={'clientOrderId':'dust_'+coin+'/USD_'+int(self.exec_parameters['timestamp'])})
+        for coro in [super(myFtx,self).create_order(coin+'/USD','market','buy',size,params={'clientOrderId':'dust_'+coin+'/USD_'+str(int(self.exec_parameters['timestamp']))})
                      for coin,size in shorts_dust.items()]:
             await coro
             await asyncio.sleep(.2)

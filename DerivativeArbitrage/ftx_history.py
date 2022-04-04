@@ -361,7 +361,7 @@ async def ftx_history_main_wrapper(*argv):
 def ftx_history_main(*argv):
     argv=list(argv)
     if len(argv) < 1:
-        argv.extend(['correct'])
+        argv.extend(['build'])
     if len(argv) < 2:
         argv.extend(['wide']) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
