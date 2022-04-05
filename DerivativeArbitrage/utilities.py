@@ -13,8 +13,7 @@ import pandas as pd
 import scipy
 import json
 import pickle
-import pyarrow as pa
-import pyarrow.parquet as pq
+import pyarrow,pyarrow.parquet,s3fs
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
@@ -93,20 +92,39 @@ def pickleit(object,filename,mode="ab+"):############ timestamp and append to pi
         file.close()
     return
 
+async def async_read_csv(*args,**kwargs):
+    coro = async_wrap(pd.read_csv)
+    return await coro(*args,**kwargs)
+
+def to_csv(*args,**kwargs):
+    return args[0].to_csv(*args[1:],**kwargs)
+async def async_to_csv(*args,**kwargs):
+    coro = async_wrap(to_csv)
+    return await coro(*args,**kwargs)
+
 def to_parquet(df,filename,mode="w"):
     if mode == 'a' and os.path.isfile(filename):
         previous = from_parquet(filename)
         df = pd.concat([previous,df],axis=0)
         df = df[~df.index.duplicated()].sort_index()
-    pq_df = pa.Table.from_pandas(df)
-    pq.write_table(pq_df, filename)
+    pq_df = pyarrow.Table.from_pandas(df)
+    pyarrow.parquet.write_table(pq_df, filename)
     return None
 async def async_to_parquet(df,filename,mode="w"):
     coro = async_wrap(to_parquet)
     return await coro(df,filename,mode)
 
+def from_parquets_s3(filenames,columns=None):
+    '''columns = list of columns. All if None
+    filename = list'''
+    kwargs = {'columns':columns} if columns else dict()
+    return pyarrow.parquet.ParquetDataset(filenames,filesystem=s3fs.S3FileSystem()).read_pandas(**kwargs).to_pandas()
+async def async_from_parquet_s3(filename,columns=None):
+    coro = async_wrap(from_parquets_s3)
+    return await coro(filename,columns)
+
 def from_parquet(filename):
-    return pq.read_table(filename).to_pandas()
+    return pyarrow.parquet.read_table(filename).to_pandas()
 async def async_from_parquet(filename):
     coro = async_wrap(from_parquet)
     return await coro(filename)
