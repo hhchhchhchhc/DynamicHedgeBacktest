@@ -26,7 +26,7 @@ def open_exchange(exchange_name,subaccount,config={}):
     return exchange
 
 def get_history(derivative, start = 'cache', end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
-        dirname = 'Runtime/Deribit_Mktdata_database'):
+        dirname = run_location+'Runtime/Deribit_Mktdata_database'):
     ''' all rates annualized, all volumes daily in usd'''
     data = pd.concat(
             [from_parquet(dirname+'/'+f+'_funding.parquet')
@@ -49,27 +49,27 @@ def get_history(derivative, start = 'cache', end = datetime.now(tz=None).replace
 
 def build_history(derivative,exchange,
         end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
-        dirname = 'Runtime/Deribit_Mktdata_database'):
+        dirname = run_location+'Runtime/Deribit_Mktdata_database'):
     '''for now, increments local files and then uploads to s3'''
 
     coroutines = []
     for _, f in derivative[derivative['type'] == 'swap'].iterrows():
         parquet_name = dirname + '/' + f['instrument_name'] + '_funding.parquet'
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        parquet = from_parquet(parquet_name) if s3_has_file(parquet_name) else None
         start = max(parquet.index)+timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(funding_history(f, exchange, start, end, dirname))
 
     for _, f in derivative.iterrows():
         parquet_name = dirname + '/' + f['instrument_name'] + '_derivative.parquet'
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        parquet = from_parquet(parquet_name) if s3_has_file(parquet_name) else None
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(rate_history(f, exchange, end, start, '1h', dirname))
 
     for f in derivative['base_currency'].unique():
         parquet_name = dirname + '/' + f + '_volIndex.parquet'
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        parquet = from_parquet(parquet_name) if s3_has_file(parquet_name) else None
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(vol_index_history(f, exchange, end, start , '1h', dirname))
@@ -118,7 +118,7 @@ def rate_history(future,exchange,
                  dirname=''):
     ## index is in funding......
     parquet_name = dirname + '/' + future['instrument_name'] + '_funding.parquet'
-    indexes = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+    indexes = from_parquet(parquet_name) if s3_has_file(parquet_name) else None
 
     max_mark_data = 700
     resolution = int(exchange.describe()['timeframes'][timeframe])*60

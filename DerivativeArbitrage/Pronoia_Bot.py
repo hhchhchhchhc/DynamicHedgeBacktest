@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 def start(update, context):
     """Send a message when the command /start is issued."""
     update.message.reply_text('coucou')
-    temp_dir = '/Runtime/temporary_parquets'
+    temp_dir = 's3://derivativearbitrage/Runtime/temporary_parquets'
     for file in os.listdir(temp_dir): os.remove(temp_dir + '/' + file)
 
 def help(update, context):
@@ -58,7 +58,7 @@ def echo(update, context):
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
                               'date':[str(update.effective_message['date'])],
                               'message':[update.effective_message['text']]})
-            log.to_excel("Runtime/chathistory.xlsx")
+            log.to_excel("s3://derivativearbitrage/Runtime/logs/chathistory.xlsx")
 
         if split_message[0] == 'hist':
             argv = ['build']+split_message[1:]
@@ -80,7 +80,7 @@ def echo(update, context):
         else:
             raise Exception('unknown command, type /help')
 
-        filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+        filename = "s3://derivativearbitrage/Runtime/temporary_parquets/telegram_file.xlsx"
         data.to_excel(filename)
         with open(filename, "rb") as file:
             update.message.bot.sendDocument(update.message['chat']['id'], document=file)

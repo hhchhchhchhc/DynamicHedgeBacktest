@@ -5,8 +5,8 @@ import inspect
 run_i = 0
 
 async def refresh_universe(exchange,universe_size):
-    filename = 'Runtime/configs/universe.xlsx'
-    if os.path.isfile(filename):
+    filename = run_location+'Runtime/configs/universe.xlsx'
+    if s3_has_file(filename):
         try:
             return pd.read_excel(filename,sheet_name=universe_size,index_col=0)
         except Exception as e:
@@ -128,7 +128,7 @@ async def perp_vs_cash(
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
         exchange, enriched, hy_history,
         holding_period,  # to convert slippage into rate
-        signal_horizon,filename='Runtime/runs/history.xlsx')  # historical window for expectations)
+        signal_horizon,filename=run_location+'Runtime/logs/strategies/history.xlsx')  # historical window for expectations)
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
                      minimum_carry=0) # do not remove futures using minimum_carry
@@ -176,14 +176,14 @@ async def perp_vs_cash(
 
         # increment
         trajectory = trajectory.append(optimized.reset_index().rename({'name': 'symbol'}), ignore_index=True)
-        trajectory.to_excel('Runtime/runs/temp_trajectory.xlsx')
+        trajectory.to_excel(run_location+'Runtime/logs/strategies/temp_trajectory.xlsx')
         previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
         previous_time = point_in_time
         point_in_time += holding_period
 
     # for live, just send last optimized
     if backtest_start==backtest_end:
-        filename = 'Runtime/ApprovedRuns/ftx_optimal_cash_carry_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
+        filename = run_location+'Runtime/ApprovedRuns/ftx_optimal_cash_carry_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             parameters = pd.Series({
                 'run_date':datetime.today(),
@@ -201,7 +201,7 @@ async def perp_vs_cash(
             parameters.to_excel(writer,sheet_name='parameters')
             updated.to_excel(writer, sheet_name='snapshot')
 
-        shutil.copy2(filename,'Runtime/ApprovedRuns/current_weights.xlsx')
+        shutil.copy2(filename,run_location+'Runtime/ApprovedRuns/current_weights.xlsx')
 
         display = optimized[['optimalWeight','ExpectedCarry','transactionCost']]
         totals = display.loc[['USD','total']]
@@ -219,7 +219,7 @@ async def perp_vs_cash(
         trajectory['holding_period'] = holding_period
 
         global run_i
-        filename = 'Runtime/runs/run_'+str(run_i)+'_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
+        filename = run_location+'Runtime/logs/strategies/run_'+str(run_i)+'_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
         run_i+=1
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             parameters = pd.Series({
