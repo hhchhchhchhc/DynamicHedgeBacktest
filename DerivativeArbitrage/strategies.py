@@ -121,7 +121,7 @@ async def perp_vs_cash(
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
     await build_history(enriched,exchange)
-    hy_history = await get_history(enriched, end=backtest_end, start_or_nb_hours=backtest_start-signal_horizon-holding_period)
+    hy_history = await get_history(enriched, end=backtest_end, start_or_nb_hours=backtest_start-signal_horizon-holding_period-timedelta(hours=1))
     enriched = market_capacity(enriched, hy_history)
 
     # ------- build derived data history
