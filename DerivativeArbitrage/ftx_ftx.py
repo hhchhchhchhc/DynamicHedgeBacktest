@@ -133,7 +133,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
     fetched = await exchange.fetch_markets()
     expired = await exchange.publicGetExpiredFutures(params) if includeExpired==True else []
     coin_details = await fetch_coin_details(exchange)
-    otc_file = pd.read_excel(run_location+'Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
+    otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
 
     #### for IM calc
     account_leverage = (await exchange.privateGetAccount())['result']

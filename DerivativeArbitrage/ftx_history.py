@@ -4,7 +4,7 @@ history_start = datetime(2020, 11, 26)
 
 # all rates annualized, all volumes daily in usd
 async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
-        dirname = run_location+'Runtime/Mktdata_database'):
+        dirname = 'Runtime/Mktdata_database'):
     data = pd.concat(await safe_gather((
             [async_from_parquet(dirname+'/'+f+'_funding.parquet')
              for f in futures[futures['type'] == 'perpetual'].index] +
@@ -25,36 +25,34 @@ async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).re
 
 async def build_history(futures,exchange,
         end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
-        dirname = run_location+'Runtime/Mktdata_database'):
+        dirname = 'Runtime/Mktdata_database'):
     '''for now, increments local files and then uploads to s3'''
 
-    file_list = s3_list(bucket_name='derivativearbitrage', prefix_path=dirname)
     coroutines = []
-
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
         parquet_name = dirname + '/' + f.name + '_funding.parquet'
-        parquet = from_parquet(parquet_name) if parquet_name in file_list else None
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
         start = max(parquet.index)+timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(funding_history(f, exchange, start, end, dirname))
 
     for _, f in futures.iterrows():
         parquet_name = dirname + '/' + f.name + '_futures.parquet'
-        parquet = from_parquet(parquet_name) if parquet_name in file_list else None
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(rate_history(f, exchange, end, start, '1h', dirname))
 
     for f in futures['underlying'].unique():
         parquet_name = dirname + '/' + f + '_price.parquet'
-        parquet = from_parquet(parquet_name) if parquet_name in file_list else None
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(spot_history(f + '/USD', exchange, end, start , '1h', dirname))
 
     for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
         parquet_name = dirname + '/' + f + '_borrow.parquet'
-        parquet = from_parquet(parquet_name) if parquet_name in file_list else None
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(borrow_history(f, exchange, end, start, dirname))
@@ -63,7 +61,7 @@ async def build_history(futures,exchange,
     await safe_gather(coroutines)
 
     # static values for non spot Margin underlyings
-    otc_file = pd.read_excel(run_location+'Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
+    otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
     for f in list(futures.loc[futures['spotMargin'] == False, 'underlying'].unique()):
         spot_parquet = from_parquet(dirname + '/' + f + '_price.parquet')
         to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/borrow'],
@@ -75,7 +73,7 @@ async def build_history(futures,exchange,
 
     #os.system("aws s3 sync Runtime/Mktdata_database/ s3://hourlyftx/Mktdata_database")
 
-async def correct_history(futures,exchange,hy_history,dirname = run_location+'Runtime/Mktdata_database'):
+async def correct_history(futures,exchange,hy_history,dirname = 'Runtime/Mktdata_database'):
     '''for now, increments local files and then uploads to s3'''
 
     coroutines = []
@@ -335,7 +333,7 @@ async def ftx_history_main_wrapper(*argv):
     await exchange.load_markets()
 
     #argv[1] is either 'all', either a universe name, or a list of currencies
-    filename = run_location+'Runtime/configs/universe.xlsx'
+    filename = 'Runtime/configs/universe.xlsx'
     try:
         universe_list=pd.read_excel(filename,sheet_name='screening_params',index_col=0).columns
     except:

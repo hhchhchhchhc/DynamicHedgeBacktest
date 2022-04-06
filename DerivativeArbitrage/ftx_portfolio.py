@@ -19,7 +19,7 @@ class MarginCalculator:
     @staticmethod
     def add_pending_orders(exchange,spot_weight,future_weight):
         '''add orders as if done'''
-        for open_order_history in exchange.filter_order_histories(state_set=exchange.openStates):
+        for open_order_history in exchange.open_order_histories():
             clientOrderId = open_order_history[-1]['clientOrderId']
             symbol = exchange.latest_value(clientOrderId,'symbol')
             amount = exchange.latest_value(clientOrderId, 'remaining')* (1 if exchange.latest_value(clientOrderId, 'side') == 'buy' else -1)
@@ -460,7 +460,7 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
 async def diff_portoflio_wrapper(*argv):
     exchange= await open_exchange(*argv)
     await exchange.load_markets()
-    future_weights = pd.read_excel('s3://derivativearbitrage/Runtime/Approvedruns/current_weights.xlsx')
+    future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
     diff = await diff_portoflio(exchange,future_weights)
     await exchange.close()
     return diff
@@ -810,10 +810,10 @@ async def run_plex_wrapper(exchange_name='ftx',subaccount='debug'):
     await exchange.close()
     return plex
 
-async def run_plex(exchange,dirname='s3://derivativearbitrage/Runtime/RiskPnL/'):
+async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
 
     filename = dirname+'portfolio_history_'+exchange.describe()['id']+('_'+exchange.headers['FTX-SUBACCOUNT'] if 'FTX-SUBACCOUNT' in exchange.headers else '')+'.xlsx'
-    if not s3_has_file(filename):
+    if not os.path.isfile(filename):
         risk_history = pd.DataFrame()
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],

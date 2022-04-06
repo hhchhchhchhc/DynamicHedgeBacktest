@@ -6,9 +6,6 @@ import asyncio,aiofiles,threading
 if platform.system()=='Windows':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# run_location is either s3 bucket, or empty if local drive
-run_location = 's3://derivativearbitrage/'
-
 from datetime import *
 import dateutil
 import numpy as np
@@ -17,7 +14,6 @@ import scipy
 import json
 import pickle
 import pyarrow,pyarrow.parquet,s3fs
-import boto3
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
@@ -51,8 +47,7 @@ if not 'Runtime' in os.listdir('.'):
     os.chdir('../')
     if not 'Runtime' in os.listdir('.'):
         raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
-
-static_params=pd.read_excel(run_location+'Runtime/configs/static_params.xlsx',sheet_name='params',index_col='key')
+static_params=pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='params',index_col='key')
 NB_BLOWUPS = int(static_params.loc['NB_BLOWUPS','value'])#3)
 SHORT_BLOWUP = float(static_params.loc['SHORT_BLOWUP','value'])# = 0.3
 LONG_BLOWUP = float(static_params.loc['LONG_BLOWUP','value'])# = 0.15
@@ -91,24 +86,6 @@ def getUnderlyingType(coin_detail_item):
 
     return 'crypto'
 
-def s3_has_file(filename,bucket_name='derivativearbitrage'):
-    if 's3' in run_location:
-        prefix_path = '/'.join(filename.replace('s3://'+bucket_name+'/','').split('/')[:-1])+'/'
-        return filename in s3_list('derivativearbitrage', prefix_path)
-    else:
-        return os.path.isfile(filename)
-def s3_list(bucket_name='derivativearbitrage', prefix_path=''):
-    prefix_path = '/'.join(prefix_path.replace('s3://'+bucket_name+'/','').split('/'))+'/'
-    s3_cl = boto3.client('s3', region_name='ap-northeast-1')
-    keys = []
-    # paginated shite
-    paginator = s3_cl.get_paginator('list_objects_v2')
-    pages = paginator.paginate(Bucket=bucket_name,Prefix=prefix_path)
-    for page in pages:
-        for obj in page['Contents']:
-            keys.append(obj['Key'])
-    return keys
-
 def pickleit(object,filename,mode="ab+"):############ timestamp and append to pickle
     with open(filename,mode) as file:
         pickle.dump(object,file)
@@ -126,7 +103,7 @@ async def async_to_csv(*args,**kwargs):
     return await coro(*args,**kwargs)
 
 def to_parquet(df,filename,mode="w"):
-    if mode == 'a' and s3_has_file(filename):
+    if mode == 'a' and os.path.isfile(filename):
         previous = from_parquet(filename)
         df = pd.concat([previous,df],axis=0)
         df = df[~df.index.duplicated()].sort_index()
@@ -147,12 +124,7 @@ async def async_from_parquet_s3(filename,columns=None):
     return await coro(filename,columns)
 
 def from_parquet(filename):
-    try:
-        result = pyarrow.parquet.read_table(filename).to_pandas()
-    except Exception as e:
-        return None
-    else:
-        return result
+    return pyarrow.parquet.read_table(filename).to_pandas()
 async def async_from_parquet(filename):
     coro = async_wrap(from_parquet)
     return await coro(filename)
