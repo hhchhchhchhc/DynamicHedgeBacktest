@@ -19,7 +19,7 @@ class MarginCalculator:
     @staticmethod
     def add_pending_orders(exchange,spot_weight,future_weight):
         '''add orders as if done'''
-        for open_order_history in exchange.open_order_histories():
+        for open_order_history in exchange.filter_order_histories(state_set=exchange.openStates):
             clientOrderId = open_order_history[-1]['clientOrderId']
             symbol = exchange.latest_value(clientOrderId,'symbol')
             amount = exchange.latest_value(clientOrderId, 'remaining')* (1 if exchange.latest_value(clientOrderId, 'side') == 'buy' else -1)
@@ -856,7 +856,7 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['plex'])
+        argv.extend(['fromoptimal'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     print(f'running {argv}')

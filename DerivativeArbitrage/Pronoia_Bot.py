@@ -58,7 +58,7 @@ def echo(update, context):
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
                               'date':[str(update.effective_message['date'])],
                               'message':[update.effective_message['text']]})
-            log.to_excel("Runtime/chathistory.xlsx")
+            log.to_excel("Runtime/logs/Pronoia_Bot/chathistory.xlsx")
 
         if split_message[0] == 'hist':
             argv = ['build']+split_message[1:]

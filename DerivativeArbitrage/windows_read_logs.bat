@@ -4,4 +4,4 @@ start excel ".\Runtime\runs\deribit.xlsx
 
 
 ::python .\side_scripts.py ::"log_reader"
-::start excel ".\Runtime\logs\latest_exec.xlsx"
+::start excel ".\Runtime\logs\ftx_ws_execute\latest_exec.xlsx"

@@ -128,7 +128,7 @@ async def perp_vs_cash(
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
         exchange, enriched, hy_history,
         holding_period,  # to convert slippage into rate
-        signal_horizon,filename='Runtime/runs/history.xlsx')  # historical window for expectations)
+        signal_horizon,filename='Runtime/logs/strategies/history.xlsx')  # historical window for expectations)
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
                      minimum_carry=0) # do not remove futures using minimum_carry
@@ -176,7 +176,7 @@ async def perp_vs_cash(
 
         # increment
         trajectory = trajectory.append(optimized.reset_index().rename({'name': 'symbol'}), ignore_index=True)
-        trajectory.to_excel('Runtime/runs/temp_trajectory.xlsx')
+        trajectory.to_excel('Runtime/logs/strategies/temp_trajectory.xlsx')
         previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
         previous_time = point_in_time
         point_in_time += holding_period
@@ -219,7 +219,7 @@ async def perp_vs_cash(
         trajectory['holding_period'] = holding_period
 
         global run_i
-        filename = 'Runtime/runs/run_'+str(run_i)+'_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
+        filename = 'Runtime/logs/strategies/run_'+str(run_i)+'_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
         run_i+=1
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             parameters = pd.Series({
@@ -307,7 +307,7 @@ def strategies_main(*argv):
             holding_period=[argv[2]],
             slippage_override=[SLIPPAGE_OVERRIDE],
             backtest_start=None, backtest_end=None))
-        with pd.ExcelWriter('Runtime/runs/depth.xlsx', engine='xlsxwriter') as writer:
+        with pd.ExcelWriter('Runtime/logs/strategies/depth.xlsx', engine='xlsxwriter') as writer:
             for res,equity in zip(results,equities):
                 res.to_excel(writer,sheet_name=str(equity))
         print(pd.concat({res.loc['total','optimalWeight']:res[['optimalWeight','ExpectedCarry']]/res.loc['total','optimalWeight'] for res in results},axis=1))
