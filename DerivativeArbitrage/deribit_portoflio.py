@@ -71,6 +71,8 @@ class Instrument:
     +ve Delta still means long coin, though, and is in USD'''
     def __init__(self,market):
         self.symbol = None
+    def cash_flow(self, market, prev_market):
+        return {'drop_from_pv': 0, 'accrues': 0}
 
 class Cash(Instrument):
     def __init__(self,currency,market):
@@ -78,8 +80,6 @@ class Cash(Instrument):
         self.currency = currency
     def pv(self, market):
         return 1
-    def cash_flow(self, market,prev_market):
-        return {'drop_from_pv':0,'accrues':0}
 
 class InverseFuture(Instrument):
     '''a long perpetual (size in USD, strike in coinUSD) is a short USDcoin(notional in USD, 1/strike in USDcoin
@@ -239,10 +239,10 @@ class Portfolio():
         position.new_deal_pnl = new_deal_pnl
         self.positions[0].notional -= notional_USD * new_deal_pnl
 
-    def delta_hedge(self, hedge_instrument, market):
+    def delta_hedge(self, hedge_instrument, market, target = 0):
         portfolio_delta = self.apply('delta',market)
         hedge_instrument_delta = hedge_instrument.delta(market)
-        hedge_notional = -portfolio_delta / hedge_instrument_delta
+        hedge_notional = (target-portfolio_delta) / hedge_instrument_delta
 
         self.new_trade(hedge_instrument,
                        hedge_notional,
@@ -280,7 +280,6 @@ class Portfolio():
         '''apply to prev_portfolio !'''
         new_positions = copy.deepcopy(self.positions)
 
-        # settle cash_flows before margin calls
         cash_flows = sum([getattr(position, 'cash_flow')(market, prev_market)[mode]
                            for position in new_positions for mode in ['drop_from_pv','accrues']])
         margin_call = sum([getattr(position, 'process_margin_call')(market, prev_market)
@@ -318,17 +317,18 @@ def display_current(portfolio,prev_portfolio, market,prev_market):
 
     # 4: actual = prev_portfolio cash_flows + new deal + unexplained
     actual = pd.Series(
-        {('actual', 'unexplained', p0.instrument.symbol.split(':')[0]):
-             p0.apply('pv',market) - p0.apply('pv',prev_market)
-             - p0.cash_flow(market,prev_market)['drop_from_pv']
-             - predict[('predict',slice(None),p0.instrument.symbol.split(':')[0])].sum()
-         for p0 in prev_portfolio.positions[1:]}
+        {('actual', 'unexplained', p0.instrument.symbol.split(':')[0]): # the unexplained = dPV-predict, for old portoflio only
+             p0.apply('pv',market) - p0.apply('pv',prev_market) # dPV
+             - p0.cash_flow(market,prev_market)['drop_from_pv'] # we don't do it for cash so avoid double counting since PV above has cash_flows
+             - predict[('predict',slice(None),p0.instrument.symbol.split(':')[0])].sum() # - the predict
+         for p0 in prev_portfolio.positions[1:]} # ....only for old positions. New positions contribute to new_deal only.
         |{('actual', 'cash_flow', p0.instrument.symbol.split(':')[0]):
               p0.cash_flow(market,prev_market)['drop_from_pv']+p0.cash_flow(market,prev_market)['accrues']
           for p0 in prev_portfolio.positions[1:]}
         |{('actual', 'new_deal', p1.instrument.symbol.split(':')[0]):
-              p1.new_deal_pnl
+              p1.new_deal_pnl # new deals only contribute here.
           for p1 in portfolio.positions[1:]})
+    assert all(p0.new_deal_pnl for p0 in prev_portfolio.positions[1:]) # check new_deal accrues only once.
 
     # add totals and mkt
     new_data = pd.concat([greeks,predict,actual],axis=0).unstack(level=2)
@@ -387,7 +387,7 @@ def strategies_main(*argv):
     straddle = Option(underlying=currency,
                       strike_coinUSD=prev_mkt['fwd'],
                       maturity=prev_mkt['t'] + 3600 * 24 * 30,
-                      call_put='C',
+                      call_put='S',
                       market=prev_mkt)
     portfolio.new_trade(instrument= straddle,
                         notional_USD= -prev_mkt['fwd'],
@@ -413,7 +413,7 @@ def strategies_main(*argv):
     display = pd.concat(series,axis=1)
     display.loc[(['predict','actual'],slice(None),slice(None))] = display.loc[(['predict','actual'],slice(None),slice(None))].cumsum(axis=1)
 
-    filename = 'Runtime/runs/run_'+str(int(volfactor*100))+'_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")
+    filename = 'Runtime/runs/run_'+str(int(volfactor*100/target_gamma))+'_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh") # should be linear 1 to 1
     with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter') as writer:
         display.T.to_excel(writer,sheet_name=str(volfactor))
     display.to_pickle(filename+'.pickle')
