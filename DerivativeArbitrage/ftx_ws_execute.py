@@ -9,7 +9,7 @@ from ftx_portfolio import diff_portoflio, MarginCalculator
 from utilities import *
 import ccxtpro
 
-max_nb_coins = 1  # TODO: sharding needed
+max_nb_coins = 5  # TODO: sharding needed
 max_cache_size = 10000
 check_frequency = 60
 
@@ -528,10 +528,6 @@ class myFtx(ccxtpro.ftx):
 
         # remove fakes
         for clientOrderId,data in self.orders_lifecycle.items():
-            try:
-                data[-1]['timestamp']
-            except:
-                pass
             if data[-1]['lifecycle_state'] in myFtx.openStates \
                     and data[-1]['timestamp'] > self.latest_order_reconcile_timestamp - self.exec_parameters['timestamp'] \
                     and clientOrderId not in fetch_processed:
@@ -1063,18 +1059,21 @@ class myFtx(ccxtpro.ftx):
             status = await super().cancel_order(None,params={'clientOrderId':clientOrderId})
             self.lifecycle_cancel_sent({'clientOrderId':clientOrderId,
                                         'symbol':symbol,
+                                        'timestamp':self.milliseconds(),
                                         'status':status,
                                         'trigger':trigger})
             return True
         except ccxt.CancelPending as e:
             self.lifecycle_cancel_sent({'clientOrderId': clientOrderId,
                                         'symbol': symbol,
+                                        'timestamp': self.milliseconds(),
                                         'status': str(e),
                                         'trigger': trigger})
             return True
         except ccxt.InvalidOrder as e: # could be in flight, or unknown
             self.lifecycle_cancel_or_reject({'clientOrderId':clientOrderId,
                                              'status':str(e),
+                                             'timestamp':self.milliseconds(),
                                              'lifecycle_state':'canceled',
                                              'trigger':trigger})
             return False
