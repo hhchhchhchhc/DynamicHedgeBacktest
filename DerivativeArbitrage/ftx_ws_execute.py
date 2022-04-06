@@ -26,7 +26,7 @@ class CustomRLock(threading._PyRLock):
     def count(self):
         return self._count
 
-def log_reader(prefix='latest',dirname=run_location+'Runtime/logs/ftx_ws_execute'):
+def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
     path = f'{dirname}/{prefix}'
     with open(f'{path}_events.json', 'r') as file:
         d = json.load(file)
@@ -171,18 +171,18 @@ class myFtx(ccxtpro.ftx):
                 return logRecord.levelno <= self.__level
 
         # logs
-        handler_warning = logging.FileHandler(run_location+'Runtime/logs/ftx_ws_execute/warning.log', mode='w')
+        handler_warning = logging.FileHandler('Runtime/logs/ftx_ws_execute/warning.log', mode='w')
         handler_warning.setLevel(logging.WARNING)
         handler_warning.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         self.myLogger.addHandler(handler_warning)
 
-        handler_info = logging.FileHandler(run_location+'Runtime/logs/ftx_ws_execute/info.log', mode='w')
+        handler_info = logging.FileHandler('Runtime/logs/ftx_ws_execute/info.log', mode='w')
         handler_info.setLevel(logging.INFO)
         handler_info.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         handler_info.addFilter(MyFilter(logging.INFO))
         self.myLogger.addHandler(handler_info)
 
-        handler_debug = logging.FileHandler(run_location+'Runtime/logs/ftx_ws_execute/debug.log', mode='w')
+        handler_debug = logging.FileHandler('Runtime/logs/ftx_ws_execute/debug.log', mode='w')
         handler_debug.setLevel(logging.DEBUG)
         handler_debug.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         self.myLogger.addHandler(handler_debug)
@@ -466,21 +466,21 @@ class myFtx(ccxtpro.ftx):
         # 4) mine
         self.orders_lifecycle[clientOrderId] += [current]
 
-    async def lifecycle_to_json(self,filename = run_location+'Runtime/logs/ftx_ws_execute/latest_events.json'):
+    async def lifecycle_to_json(self,filename = 'Runtime/logs/ftx_ws_execute/latest_events.json'):
         '''asyncronous + has it's own lock'''
         lock = threading.Lock()
         with lock:
             async with aiofiles.open(filename,mode='w') as file:
                 await file.write(json.dumps(self.orders_lifecycle, cls=NpEncoder))
-            shutil.copy2(filename, run_location+'Runtime/logs/ftx_ws_execute/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_events.json')
+            shutil.copy2(filename, 'Runtime/logs/ftx_ws_execute/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_events.json')
 
-    async def risk_reconciliation_to_json(self,filename = run_location+'Runtime/logs/ftx_ws_execute/latest_risk_reconciliations.json'):
+    async def risk_reconciliation_to_json(self,filename = 'Runtime/logs/ftx_ws_execute/latest_risk_reconciliations.json'):
         '''asyncronous + has it's own lock'''
         lock = threading.Lock()
         with lock:
             async with aiofiles.open(filename,mode='w') as file:
                 await file.write(json.dumps(self.risk_reconciliations, cls=NpEncoder))
-            shutil.copy2(filename, run_location+'Runtime/logs/ftx_ws_execute/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_risk_reconciliations.json')
+            shutil.copy2(filename, 'Runtime/logs/ftx_ws_execute/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_risk_reconciliations.json')
 
     #@synchronized
     async def reconcile_fills(self):
@@ -659,16 +659,16 @@ class myFtx(ccxtpro.ftx):
         vwap_dataframe = pd.concat([data['vwap'].filter(like='vwap').fillna(method='ffill') for data in trades_history_list],axis=1,join='outer').fillna(method='bfill')
         vwap_dataframe=vwap_dataframe.apply(np.log).diff()
         size_dataframe = pd.concat([data['vwap'].filter(like='volume').fillna(method='ffill') for data in trades_history_list], axis=1, join='outer').fillna(method='bfill')
-        to_parquet(pd.concat([vwap_dataframe,size_dataframe], axis=1, join='outer'),run_location+'Runtime/logs/ftx_ws_execute/latest_minutely.parquet')
-        shutil.copy2(run_location+'Runtime/logs/ftx_ws_execute/latest_minutely.parquet',
-                     run_location+'Runtime/logs/ftx_ws_execute/' + datetime.fromtimestamp(self.exec_parameters['timestamp'] / 1000).strftime(
+        to_parquet(pd.concat([vwap_dataframe,size_dataframe], axis=1, join='outer'),'Runtime/logs/ftx_ws_execute/latest_minutely.parquet')
+        shutil.copy2('Runtime/logs/ftx_ws_execute/latest_minutely.parquet',
+                     'Runtime/logs/ftx_ws_execute/' + datetime.fromtimestamp(self.exec_parameters['timestamp'] / 1000).strftime(
                          "%Y-%m-%d-%Hh") + '_minutely.parquet')
 
-        with open(run_location+'Runtime/logs/ftx_ws_execute/latest_request.json', 'w') as file:
+        with open('Runtime/logs/ftx_ws_execute/latest_request.json', 'w') as file:
             json.dump({symbol:data
                         for coin,coin_data in self.exec_parameters.items() if coin in self.currencies
                         for symbol,data in coin_data.items() if symbol in self.markets}, file, cls=NpEncoder)
-        shutil.copy2(run_location+'Runtime/logs/ftx_ws_execute/latest_request.json',run_location+'Runtime/logs/ftx_ws_execute/' + datetime.fromtimestamp(self.exec_parameters['timestamp'] / 1000).strftime(
+        shutil.copy2('Runtime/logs/ftx_ws_execute/latest_request.json','Runtime/logs/ftx_ws_execute/' + datetime.fromtimestamp(self.exec_parameters['timestamp'] / 1000).strftime(
                          "%Y-%m-%d-%Hh") + '_request.json')
 
     def update_exec_parameters(self): # cut in 10):
@@ -1125,7 +1125,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             await exchange.load_markets()
 
             if argv[0]=='sysperp':
-                future_weights = pd.read_excel(run_location+'Runtime/ApprovedRuns/current_weights.xlsx')
+                future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
                 target_portfolio = await diff_portoflio(exchange, future_weights)
                 if target_portfolio.empty: return
                 #selected_coins = ['REN']#target_portfolios.sort_values(by='USDdiff', key=np.abs, ascending=False).iloc[2]['underlying']
