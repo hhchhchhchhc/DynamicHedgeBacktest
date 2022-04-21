@@ -522,8 +522,5 @@ def cash_carry_optimizer(exchange, futures,
         summary.loc['total', 'transactionCost'] = summary['transactionCost'].sum()
         summary.columns.names=['field']
 
-        with pd.ExcelWriter('Runtime/logs/strategies/paths.xlsx', engine='xlsxwriter') as writer:
-            summary.to_excel(writer, sheet_name='futureinfo')
-
         return summary
     return summarize()
