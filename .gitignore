@@ -1,16 +1,6 @@
 **/.idea
-/data/
-/BinanceUsdtBusdArbitrage/JupyterNotebooks/.ipynb_checkpoints/
 /DerivativeArbitrage/.ipynb_checkpoints/
-/Notebooks/.ipynb_checkpoints/
-/Notebooks/datasets/
-/puffin.egg-info/
-/SimpleMarketMaking/JupyterNotebooks/.ipynb_checkpoints/
-/SimpleMarketMaking/Mess/.ipynb_checkpoints/
-/SpreadExecution/JupyterNotebooks/.ipynb_checkpoints/
-/SpreadExecution/JupyterNotebooks/datasets/
-/SpreadExecution/Mess/datasets/
+/DerivativeArbitrage/Runtime/configs/api_param
 *.csv
 *.parquet
 **/__pycache__
-/PairsMarketMaking/JupyterNotebooks/.ipynb_checkpoints/
