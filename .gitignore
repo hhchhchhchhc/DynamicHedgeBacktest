@@ -1,5 +1,5 @@
 **/.idea
-/DerivativeArbitrage/.ipynb_checkpoints/
+/DerivativeArbitrage/JupyterNotebooks/.ipynb_checkpoints/
 /DerivativeArbitrage/Runtime/configs/api_param
 *.csv
 *.parquet
