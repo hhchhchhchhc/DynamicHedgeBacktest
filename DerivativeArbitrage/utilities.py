@@ -18,6 +18,7 @@ import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
 
+from cryptography.fernet import Fernet
 import ccxt.async_support as ccxt
 
 safe_gather_limit = 50
@@ -47,7 +48,7 @@ if not 'Runtime' in os.listdir('.'):
     os.chdir('../')
     if not 'Runtime' in os.listdir('.'):
         raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
-static_params=pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='params',index_col='key')
+static_params = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='params',index_col='key')
 NB_BLOWUPS = int(static_params.loc['NB_BLOWUPS','value'])#3)
 SHORT_BLOWUP = float(static_params.loc['SHORT_BLOWUP','value'])# = 0.3
 LONG_BLOWUP = float(static_params.loc['LONG_BLOWUP','value'])# = 0.15
@@ -63,6 +64,11 @@ EXCLUSION_LIST = [c for c in static_params.loc['REBASE_TOKENS','value'].split('+
 DELTA_BLOWUP_ALERT = float(static_params.loc['DELTA_BLOWUP_ALERT','value'])
 UNIVERSE = str(static_params.loc['UNIVERSE','value'])
 TYPE_ALLOWED = [c for c in static_params.loc['TYPE_ALLOWED','value'].split('+')]
+api_params = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='api',index_col='key')
+with open('Runtime/configs/api_param') as fp:
+    api_param = fp.read().encode()
+api_params  = api_params.applymap(lambda x: Fernet(api_param).decrypt(x.encode()).decode() if type(x)==str else ''.encode())
+
 print('read static_params')
 
 ########## only for dated futures
@@ -182,7 +188,7 @@ async def open_exchange(exchange_name,subaccount,config={}):
         exchange = ccxt.ftx(config={ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
-            'secret': 'RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm',
+            'secret': api_params.loc[exchange_name,'value'],
             'asyncio_loop': config['asyncio_loop'] if 'asyncio_loop' in config else asyncio.get_running_loop()
         }|config)
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
@@ -191,14 +197,14 @@ async def open_exchange(exchange_name,subaccount,config={}):
         exchange = ccxt.binance(config={# subaccount convexity
         'enableRateLimit': True,
         'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
-        'secret': '1rUn4jITdmck2vSSsnTDtR9vBS3oqLkNzx70SV1mijmr3BcVR2lwOkzWHpbULWc7',
+        'secret': api_params.loc[exchange_name,'value'],
     }|config)
     elif exchange_name == 'okex5':
         exchange = ccxt.okex5(config={
             'enableRateLimit': True,
             'apiKey': '6a72779d-0a4a-4554-a283-f28a17612747',
-            'secret': '1F0CA69C0766727542A11EE602163883',
-            'password': 'etvoilacestencoreokex'
+            'secret': api_params.loc[exchange_name,'value'],
+            'secret': api_params.loc[exchange_name,'comment'],
         }|config)
         if subaccount != 'convexity':
             logging.warning('subaccount override: convexity')
@@ -207,19 +213,19 @@ async def open_exchange(exchange_name,subaccount,config={}):
         exchange = ccxt.huobi(config={
             'enableRateLimit': True,
             'apiKey': 'b7d9d6f8-ce6a01b8-8b6ab42f-mn8ikls4qg',
-            'secret': '40aefa97-cf88ddd6-dbb4171d-44360',
+            'secret': api_params.loc[exchange_name,'value'],
         }|config)
     elif exchange_name == 'deribit':
         exchange = ccxt.deribit(config={
             'enableRateLimit': True,
             'apiKey': '4vc_41O4',
-            'secret': 'viEFbpRQpQLgUAujPrwWleL6Xutq9I8YVUVMkEfQG1E',
+            'secret': api_params.loc[exchange_name,'value'],
         }|config)
     elif exchange_name == 'kucoin':
         exchange = ccxt.kucoin(config={
                                            'enableRateLimit': True,
                                            'apiKey': '62091838bff2a30001b0d3f6',
-                                           'secret': 'c789d699-a298-4b64-a5ff-b7be011c4233',
+                                           'secret': api_params.loc[exchange_name,'value'],
                                        } | config)
     #subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     else: print('what exchange?')
