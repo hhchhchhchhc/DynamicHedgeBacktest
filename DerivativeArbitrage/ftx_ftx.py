@@ -79,10 +79,10 @@ async def fetch_coin_details(exchange):
     borrow_volumes = pd.DataFrame((await exchange.public_get_spot_margin_borrow_summary())['result']).astype(dtype={'coin': 'str', 'size': 'float'}).set_index('coin')
     borrow_volumes.rename(columns={'size': 'borrow_open_interest'}, inplace=True)
 
-    all= pd.concat([coin_details,borrow_rates,lending_rates,borrow_volumes],join='outer',axis=1)
+    all = pd.concat([coin_details,borrow_rates,lending_rates,borrow_volumes],join='outer',axis=1)
+    all = all.loc[coin_details.index] # borrow summary has beed seen containing provisional underlyings
     all.loc[coin_details['spotMargin'] == False,'borrow']= None ### hope this throws an error...
     all.loc[coin_details['spotMargin'] == False, 'lend'] = 0
-    #all.drop(['name'],axis=1,inplace=True)### because future has name too
 
     return all
 
