@@ -350,7 +350,7 @@ async def ftx_rest_spread_main_wrapper(*argv):
         log = await executer_sysperp(exchange, weights)
         # asyncio.run(clean_dust(exchange))
         end_time = datetime.now().timestamp()
-        with pd.ExcelWriter('Runtime/execution_diagnosis.xlsx', engine='xlsxwriter') as writer:
+        with pd.ExcelWriter('../Runtime/execution_diagnosis.xlsx', engine='xlsxwriter') as writer:
             pd.DataFrame(await exchange.fetch_orders(params={'start_time': start_time, 'end_time': end_time})).to_excel(
                 writer, sheet_name='fills')
             pd.DataFrame(audit).to_excel(writer, sheet_name='audit')

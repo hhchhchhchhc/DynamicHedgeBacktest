@@ -121,16 +121,16 @@ async def perp_vs_cash(
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
     await build_history(enriched,exchange)
-    hy_history = await get_history(enriched, end=backtest_end, start_or_nb_hours=backtest_start-signal_horizon-holding_period-timedelta(hours=1))
+    hy_history = await get_history(enriched, end=backtest_end, start_or_nb_hours=backtest_start-signal_horizon-holding_period)
     enriched = market_capacity(enriched, hy_history)
 
     # ------- build derived data history
-    (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow) = forecast(
+    (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
         exchange, enriched, hy_history,
         holding_period,  # to convert slippage into rate
         signal_horizon,filename='Runtime/logs/strategies/history.xlsx')  # historical window for expectations)
     updated = update(enriched, point_in_time, hy_history, equity,
-                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
+                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                      minimum_carry=0) # do not remove futures using minimum_carry
     enriched = None  # safety..
 
