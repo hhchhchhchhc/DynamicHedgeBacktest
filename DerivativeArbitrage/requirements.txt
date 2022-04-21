@@ -2,8 +2,8 @@ numpy
 pandas
 pyarrow
 python-dateutil
-ccxt  == 1.80.7
-ccxtpro @ git+https://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@github.com/kroitor/ccxt.pro.git#subdirectory=python # 1.0.51
+ccxt  == 1.78.60
+# ccxtpro @ git+https://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@github.com/kroitor/ccxt.pro.git#subdirectory=python # 1.0.51
 cufflinks
 #pickle
 XlsxWriter
