@@ -1,5 +1,7 @@
 from utilities import *
 
+# Vic adding comment on top
+
 # disregard pagination :(
 async def vwap(exchange,symbol,start_time,end_time,freq):
     trade_list = pd.DataFrame(await exchange.publicGetMarketsMarketNameTrades(
