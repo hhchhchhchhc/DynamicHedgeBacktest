@@ -1,6 +1,5 @@
-import math
-
-import scipy
+import math,scipy
+import requests
 
 from deribit_history import *
 
@@ -55,17 +54,7 @@ class black_scholes:
         theta = -((S * V * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T))) / (2 * math.sqrt(T)))
         return theta / 24/365.25 * (1 if cp != 'S' else 2)
 
-def deribit_smile_main(*argv):
-    argv = list(argv)
-    if len(argv) == 0:
-        argv.extend(['BTC'])
-    if len(argv) < 2:
-        argv.extend([1])
-    print(f'running {argv}')
-
-    currency = argv[0]
-    whatever = argv[1]
-
+def deribit_smile_tardis(currency,whatever):
     ## perp, volindex...
     rest_history = deribit_history_main('just use',[currency],'deribit','cache')[0]
 
@@ -103,6 +92,44 @@ def deribit_smile_main(*argv):
                                 ).sum(min_count=1)
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
+
+def deribit_smile_genesisvolatility(currency,start='2019-01-01',end='2019-01-02',timeframe='1h'):
+    payload='{\"query\":\"query ConstantMaturityAtm1Min($symbol: BTCOrETHEnumType, $dateStart: String, $dateEnd: String, $interval: String)' \
+            '{\\n  ConstantMaturityAtm1Min(symbol:$symbol, dateStart:$dateStart, dateEnd: $dateEnd, interval: $interval) ' \
+            '{\\n    date\\n    atm7\\n    atm30\\n    atm60\\n    atm90\\n    atm180\\n  }\\n}\\n\",' \
+            '\"variables\":{\"symbol\":\"'+currency+'\",\"dateStart\":\"'+start+'\",\"dateEnd\":\"'+end+'\",\"interval\":\"'+timeframe+'\"}}'
+
+    payload = "{\"query\":\"query FixedMaturityAtm($exchange: ExchangeEnumType, $symbol:BTCOrETHEnumType)" \
+              "{\\n  FixedMaturityAtm(exchange:$exchange, symbol: $symbol) " \
+              "{\\n    date\\n    atm7\\n    atm30\\n    atm60\\n    atm90\\n    atm180\\n    currency\\n  }" \
+              "\\n}\",\"variables\":{\"exchange\":\"deribit\",\"symbol\":\""+currency+"\"}}"
+    url = "https://app.pinkswantrading.com/graphql"
+    payload = "{\"query\":\"query FixedMaturityAtmLite($exchange: ExchangeEnumType, $symbol:BTCOrETHEnumType){\\n  FixedMaturityAtm(exchange:$exchange, symbol: $symbol) {\\n    date\\n    atm7\\n    atm30\\n    atm60\\n    atm90\\n    atm180\\n    currency\\n  }\\n}\",\"variables\":{\"exchange\":\"deribit\",\"symbol\":\"BTC\"}}"
+    headers = {
+        'x-oracle': api_params.loc['genesisvolatility','value'],
+        'Content-Type': 'application/json',
+        'accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9'
+    }
+
+    response = requests.request("GET", url, headers=headers, data=payload).json()
+
+def deribit_smile_main(*argv):
+    argv = list(argv)
+    if len(argv) == 0:
+        argv.extend(['genesisvolatility'])
+    if len(argv) < 2:
+        argv.extend(['ETH'])
+    if len(argv) < 3:
+        argv.extend([1])
+    print(f'running {argv}')
+
+    if argv[0] == 'genesisvolatility':
+        deribit_smile_genesisvolatility(argv[1])
+    elif argv[0] == 'tardis':
+        deribit_smile_tardis(argv[1],argv[2])
+    else:
+        raise Exception('unknown request ' + argv[0])
 
 if __name__ == "__main__":
     deribit_smile_main(*sys.argv[1:])
