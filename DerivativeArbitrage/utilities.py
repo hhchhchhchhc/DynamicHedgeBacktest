@@ -21,33 +21,16 @@ cf.set_config_file(offline=False, world_readable=True)
 from cryptography.fernet import Fernet
 import ccxt.async_support as ccxt
 
-safe_gather_limit = 50
-
-def async_wrap(f):
-    @functools.wraps(f)
-    async def run(*args, loop=None, executor=None, **kwargs):
-        if loop is None:
-            loop = asyncio.get_event_loop()
-        p = functools.partial(f, *args, **kwargs)
-        return await loop.run_in_executor(executor, p)
-    return run
-
-async def safe_gather(tasks,n=safe_gather_limit,semaphore=None):
-    semaphore = semaphore if semaphore else asyncio.Semaphore(n)
-
-    async def sem_task(task):
-        async with semaphore:
-            return await task
-    return await asyncio.gather(*(sem_task(task) for task in tasks))
-
-def timedeltatostring(dt):
-    return str(dt.days)+'d'+str(int(dt.seconds/3600))+'h'
+'''
+global variables
+'''
 
 if not 'Runtime' in os.listdir('.'):
     # notebooks run one level down...
     os.chdir('../')
     if not 'Runtime' in os.listdir('.'):
         raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
+
 static_params = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='params',index_col='key')
 NB_BLOWUPS = int(static_params.loc['NB_BLOWUPS','value'])#3)
 SHORT_BLOWUP = float(static_params.loc['SHORT_BLOWUP','value'])# = 0.3
@@ -71,32 +54,32 @@ api_params  = api_params.applymap(lambda x: Fernet(api_param).decrypt(x.encode()
 
 print('read static_params')
 
-########## only for dated futures
-def calc_basis(f,s,T,t): # T is tring, t is date
-    basis = np.log(float(f)/float(s))
-    res= (T-t)
-    return basis/np.max([1, res.days])*365.25
+'''
+async helpers
+'''
 
-#index_list=['DEFI_PERP','SHIT_PERP','ALT_PERP','MID_PERP','DRGN_PERP','PRIV_PERP']
-#publicGetIndexesIndexNameWeights()GET /indexes/{index_name}/weights
-#index_table=pd.DataFrame()
+safe_gather_limit = 50
 
-def getUnderlyingType(coin_detail_item):
-    if coin_detail_item['usdFungible'] == True:
-        return 'usdFungible'
-    if ('tokenizedEquity' in coin_detail_item.keys()):
-        if (coin_detail_item['tokenizedEquity'] == True):
-            return 'tokenizedEquity'
-    if coin_detail_item['fiat'] == True:
-        return 'fiat'
+def async_wrap(f):
+    @functools.wraps(f)
+    async def run(*args, loop=None, executor=None, **kwargs):
+        if loop is None:
+            loop = asyncio.get_event_loop()
+        p = functools.partial(f, *args, **kwargs)
+        return await loop.run_in_executor(executor, p)
+    return run
 
-    return 'crypto'
+async def safe_gather(tasks,n=safe_gather_limit,semaphore=None):
+    semaphore = semaphore if semaphore else asyncio.Semaphore(n)
 
-def pickleit(object,filename,mode="ab+"):############ timestamp and append to pickle
-    with open(filename,mode) as file:
-        pickle.dump(object,file)
-        file.close()
-    return
+    async def sem_task(task):
+        async with semaphore:
+            return await task
+    return await asyncio.gather(*(sem_task(task) for task in tasks))
+
+'''
+I/O helpers
+'''
 
 async def async_read_csv(*args,**kwargs):
     coro = async_wrap(pd.read_csv)
@@ -135,21 +118,30 @@ async def async_from_parquet(filename):
     coro = async_wrap(from_parquet)
     return await coro(filename)
 
-def openit(filename,mode="rb"):#### to open pickle
-    data=pd.DataFrame()
-    with open(filename, mode) as file:
-        try:
-            while True:
-                df=pickle.load(file)
-                data=data.append(df)
-        except EOFError:
-            return data
-    return data
+'''
+biz logic helpers
+'''
 
-def excelit(pickle_filename,excel_filename):
-    data = pd.DataFrame(openit(pickle_filename))
-    data.to_excel(excel_filename)
-    return
+########## only for dated futures
+def calc_basis(f,s,T,t):
+    basis = np.log(float(f)/float(s))
+    res= (T-t)
+    return basis/np.max([1, res.days])*365.25
+
+#index_list=['DEFI_PERP','SHIT_PERP','ALT_PERP','MID_PERP','DRGN_PERP','PRIV_PERP']
+#publicGetIndexesIndexNameWeights()GET /indexes/{index_name}/weights
+#index_table=pd.DataFrame()
+
+def getUnderlyingType(coin_detail_item):
+    if coin_detail_item['usdFungible'] == True:
+        return 'usdFungible'
+    if ('tokenizedEquity' in coin_detail_item.keys()):
+        if (coin_detail_item['tokenizedEquity'] == True):
+            return 'tokenizedEquity'
+    if coin_detail_item['fiat'] == True:
+        return 'fiat'
+
+    return 'crypto'
 
 def find_spot_ticker(markets,future,query):
     try:
@@ -161,29 +153,10 @@ def find_spot_ticker(markets,future,query):
     except:
         return np.NaN
 
-def find_borrow(markets,future,query):
-    try:
-        spot_found=next(item for item in markets if
-                        (item['base'] == future['underlying'])
-                        &(item['quote'] == 'USD')
-                        &(item['type'] == 'spot'))
-        return spot_found['info'][query]
-    except:
-        return np.NaN
-
-def outputit(data,datatype,exchange_name,params={'excelit':False,'pickleit':False}):
-    if params['pickleit']:
-        pickleit(data, "Runtime/temporary_parquets/" + exchange_name + datatype + ".pickle", "ab")
-    if params['excelit']:
-        try:
-            data.to_excel("Runtime/temporary_parquets/" + exchange_name + datatype + ".xlsx")
-        except:  ###usually because file is open
-            data.to_excel("Runtime/temporary_parquets/" + exchange_name + datatype + "copy.xlsx")
-
-apiKey='ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU'
-secret='RC3lziT6QVS4jSTx2VrnT2NvKQB6E9WKVmnOcBCm'
-
 async def open_exchange(exchange_name,subaccount,config={}):
+    '''
+    ccxt exchange object factory.
+    '''
     if exchange_name=='ftx':
         exchange = ccxt.ftx(config={ ## David personnal
             'enableRateLimit': True,
@@ -227,12 +200,23 @@ async def open_exchange(exchange_name,subaccount,config={}):
                                            'apiKey': '62091838bff2a30001b0d3f6',
                                            'secret': api_params.loc[exchange_name,'value'],
                                        } | config)
+    elif exchange_name == 'paradigm':
+        raise Exception('not implemented')
+        exchange = ccxt.paradigm(config={
+                                          'enableRateLimit': True,
+                                          'apiKey': 'EytZmov5bDDPGXqvYviriCs8',
+                                          'secret': api_params.loc[exchange_name, 'value'],
+                                      } | config)
     #subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     else: print('what exchange?')
     exchange.checkRequiredCredentials()  # raises AuthenticationError
     await exchange.load_markets()
     await exchange.load_fees()
     return exchange
+
+'''
+misc helpers
+'''
 
 import collections
 def flatten(dictionary, parent_key=False, separator='.'):
@@ -259,9 +243,7 @@ def flatten(dictionary, parent_key=False, separator='.'):
 
 def deepen(dictionary, parent_key=False, separator='.'):
     """
-    All credits to https://github.com/ScriptSmith
-    Turn a flattened dictionary into a nested dictionary
-    :return: A flattened dictionary
+    flatten^-1
     """
     top_keys = set(key.split(separator)[0] for key in dictionary.keys())
     result = {}
@@ -296,3 +278,6 @@ class NpEncoder(json.JSONEncoder):
         if isinstance(obj, collections.deque):
             return None
         return super(NpEncoder, self).default(obj)
+
+def timedeltatostring(dt):
+    return str(dt.days) + 'd' + str(int(dt.seconds / 3600)) + 'h'

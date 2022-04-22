@@ -1,39 +1,13 @@
 from utilities import *
 
-# Vic adding comment on top
-
-# disregard pagination :(
-async def vwap(exchange,symbol,start_time,end_time,freq):
-    trade_list = pd.DataFrame(await exchange.publicGetMarketsMarketNameTrades(
-        {'market_name': symbol, 'start_time': start_time/1000, 'end_time': end_time/1000}
-    )['result'], dtype=float)
-    trade_list['time']=trade_list['time'].apply(dateutil.parser.isoparse)
-    trade_list['amt']=trade_list.apply(lambda x: x['size']*(1 if x['side'] else -1),axis=1)
-    trade_list['amtUSD'] = trade_list['amt']*trade_list['price']
-
-    vwap=trade_list.set_index('time')[['amt','amtUSD']].resample(freq).sum()
-    vwap['vwap']=vwap['amtUSD']/vwap['amt']
-
-    return vwap.drop(columns='amtUSD').ffill()
-
-async def underlying_vol(exchange,symbol,start_time,end_time):
-    trade_list = pd.DataFrame(await exchange.publicGetMarketsMarketNameTrades(
-        {'market_name': symbol, 'start_time': start_time/1000, 'end_time': end_time/1000}
-    )['result'], dtype=float)
-    trade_list['timestamp']=trade_list['time'].apply(dateutil.parser.isoparse).apply(datetime.timestamp)
-    trade_list['amt']=trade_list.apply(lambda x: x['size']*(1 if x['side'] else -1),axis=1)
-    trade_list['amtUSD'] = trade_list['amt']*trade_list['price']
-
-    # in case duplicated index
-    trade_list=trade_list.set_index('timestamp')[['amt','amtUSD']].groupby(level=0).sum().reset_index()
-    trade_list['price'] = trade_list['amtUSD']/trade_list['amt']
-    vol = np.sqrt((trade_list['price'].diff()*trade_list['price'].diff()/trade_list['timestamp'].diff()).median())
-
-    return vol
+'''
+analytics helpers
+'''
 
 async def mkt_at_size(exchange, symbol, side, target_depth=10000.):
-    #side='bids' or 'asks'
-    # returns average px of a mkt order of size target_depth (in USD)
+    ''' returns average px of a mkt order of size target_depth (in USD)
+    side='bids' or 'asks'
+    '''
     order_book = await exchange.fetch_order_book(symbol)
     mktdepth = pd.DataFrame(order_book[side])
     other_side = 'bids' if side=='asks' else 'asks'
@@ -51,9 +25,29 @@ async def mkt_at_size(exchange, symbol, side, target_depth=10000.):
 
     return {'mid':mid,'side':interpolator[target_depth],'slippage':interpolator[target_depth]/mid-1.0,'symbol':symbol}
 
+def sweep_price(exchange, symbol, size):
+    ''' fast version of mkt_at_size for use in executer
+    slippage of a mkt order: https://www.sciencedirect.com/science/article/pii/S0378426620303022'''
+    depth = 0
+    previous_side = exchange.orderbooks[symbol]['bids' if size >= 0 else 'asks'][0][0]
+    for pair in exchange.orderbooks[symbol]['bids' if size>=0 else 'asks']:
+        depth += pair[0] * pair[1]
+        if depth > size:
+            break
+        previous_side = pair[0]
+    depth=0
+    previous_opposite = exchange.orderbooks[symbol]['bids' if size < 0 else 'asks'][0][0]
+    for pair in exchange.orderbooks[symbol]['bids' if size<0 else 'asks']:
+        depth += pair[0] * pair[1]
+        if depth > size:
+            break
+        previous_opposite = pair[0]
+    return {'side':previous_side,'opposite':previous_opposite}
+
 async def mkt_speed(exchange, symbol, target_depth=10000):
-    # side='bids' or 'asks'
-    # returns time taken to trade a certain target_depth (in USD)
+    '''
+    returns time taken to trade a certain target_depth (in USD)
+    side='bids' or 'asks' '''
     nowtime = datetime.now(tz=timezone.utc)
     trades=pd.DataFrame(await exchange.fetch_trades(symbol))
     if trades.shape[0] == 0: return 9999999
@@ -67,8 +61,42 @@ async def mkt_speed(exchange, symbol, target_depth=10000):
     res=interpolator[float(target_depth)]
     return nowtime-datetime.fromtimestamp(res / 1000, tz=timezone.utc)
 
+async def vwap(exchange,symbol,start_time,end_time,freq):
+    '''vwap calc, disregard pagination :('''
+    trade_list = pd.DataFrame(await exchange.publicGetMarketsMarketNameTrades(
+        {'market_name': symbol, 'start_time': start_time/1000, 'end_time': end_time/1000}
+    )['result'], dtype=float)
+    trade_list['time']=trade_list['time'].apply(dateutil.parser.isoparse)
+    trade_list['amt']=trade_list.apply(lambda x: x['size']*(1 if x['side'] else -1),axis=1)
+    trade_list['amtUSD'] = trade_list['amt']*trade_list['price']
+
+    vwap=trade_list.set_index('time')[['amt','amtUSD']].resample(freq).sum()
+    vwap['vwap']=vwap['amtUSD']/vwap['amt']
+
+    return vwap.drop(columns='amtUSD').ffill()
+
+async def underlying_vol(exchange,symbol,start_time,end_time):
+    raise Exception('bugged')
+    trade_list = pd.DataFrame(await exchange.publicGetMarketsMarketNameTrades(
+        {'market_name': symbol, 'start_time': start_time/1000, 'end_time': end_time/1000}
+    )['result'], dtype=float)
+    trade_list['timestamp']=trade_list['time'].apply(dateutil.parser.isoparse).apply(datetime.timestamp)
+    trade_list['amt']=trade_list.apply(lambda x: x['size']*(1 if x['side'] else -1),axis=1)
+    trade_list['amtUSD'] = trade_list['amt']*trade_list['price']
+
+    # in case duplicated index
+    trade_list=trade_list.set_index('timestamp')[['amt','amtUSD']].groupby(level=0).sum().reset_index()
+    trade_list['price'] = trade_list['amtUSD']/trade_list['amt']
+    vol = np.sqrt((trade_list['price'].diff()*trade_list['price'].diff()/trade_list['timestamp'].diff()).median())
+
+    return vol
+
+'''
+market data helpers
+'''
+
 async def fetch_coin_details(exchange):
-    coin_details=pd.DataFrame((await exchange.publicGetWalletCoins())['result']).astype(dtype={'collateralWeight': 'float','indexPrice': 'float'}).set_index('id')
+    coin_details = pd.DataFrame((await exchange.publicGetWalletCoins())['result']).astype(dtype={'collateralWeight': 'float','indexPrice': 'float'}).set_index('id')
 
     borrow_rates = pd.DataFrame((await exchange.private_get_spot_margin_borrow_rates())['result']).astype(dtype={'coin': 'str', 'estimate': 'float', 'previous': 'float'}).set_index('coin')[['estimate']]
     borrow_rates[['estimate']]*=24*365.25
@@ -90,6 +118,9 @@ async def fetch_coin_details(exchange):
 
 # time in mili, rate annualized, size is an open interest in USD
 async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}):
+    start_time = datetime.now().timestamp() - 499 * 3600
+    end_time = datetime.now().timestamp()
+
     request = {
         'coin': coin,
         'start_time': start_time,
@@ -109,11 +140,11 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
     result['size']*=1 # borrow size is an open interest
     original = result
 
-    response = await exchange.fetch_borrow_rate_history(coin,params=request)
+    response = await exchange.fetch_borrow_rate_history(coin,since=start_time*1000,limit=int((end_time-start_time)/3600))
     response = [x|{'size':x['info']['size']} for x in response]
-    result = pd.DataFrame(response).astype({'timestamp':str,'rate':float,'size':float})
-    result['time'] = result['timestamp']
+    result = pd.DataFrame(response).astype({'rate':float,'size':float}).rename(columns={'timestamp':'time','currency':'coin'})
     result['rate'] *= 24 * 365.25
+    result = result[['coin','time','size','rate']]
 
     return original
 
@@ -201,25 +232,3 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             })
 
     return result
-
-async def fetch_latencyStats(exchange,days,subaccount_nickname):
-    stats = await exchange.privateGetStatsLatencyStats({'days':days,'subaccount_nickname':subaccount_nickname})
-    return stats['result']
-
-def sweep_price(exchange, symbol, size):
-    '''slippage of a mkt order: https://www.sciencedirect.com/science/article/pii/S0378426620303022'''
-    depth = 0
-    previous_side = exchange.orderbooks[symbol]['bids' if size >= 0 else 'asks'][0][0]
-    for pair in exchange.orderbooks[symbol]['bids' if size>=0 else 'asks']:
-        depth += pair[0] * pair[1]
-        if depth > size:
-            break
-        previous_side = pair[0]
-    depth=0
-    previous_opposite = exchange.orderbooks[symbol]['bids' if size < 0 else 'asks'][0][0]
-    for pair in exchange.orderbooks[symbol]['bids' if size<0 else 'asks']:
-        depth += pair[0] * pair[1]
-        if depth > size:
-            break
-        previous_opposite = pair[0]
-    return {'side':previous_side,'opposite':previous_opposite}
