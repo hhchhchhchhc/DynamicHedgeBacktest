@@ -174,12 +174,25 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
     dummy_size = 100000  ## IM is in ^3/2 not linear, but rule typically kicks in at a few M for optimal leverage of 20 so we linearize
 
     markets = exchange.safe_value(response, 'result', []) + exchange.safe_value(expired, 'result', [])
+
+    perp_list = [f['name'] for f in markets if f['type'] == 'perpetual']
+    funding_rates = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
+                              for f in perp_list])
+    funding_rates = {name: float(rate['result']['nextFundingRate']) * 24 * 365.325 for name,rate in zip(perp_list,funding_rates)}
+
     result = []
     for i in range(0, len(markets)):
         market = markets[i]
         underlying = exchange.safe_string(market, 'underlying')
         mark =  exchange.safe_number(market, 'mark')
         imfFactor =  exchange.safe_number(market, 'imfFactor')
+        expiryTime = dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None) if exchange.safe_string(market, 'type') == 'future' else np.NaN
+        if exchange.safe_string(market,'type') == 'future':
+            future_carry = calc_basis(mark, market['index'], expiryTime, datetime.now())
+        elif exchange.safe_string(market,'type') == 'perpetual':
+            future_carry = funding_rates[exchange.safe_string(market, 'name')]
+        else:
+            future_carry = 0
 
         ## eg ADA has no coin details
         if not underlying in coin_details.index:
@@ -220,15 +233,16 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'new_symbol': exchange.market(exchange.safe_string(market, 'name'))['symbol'],
             'openInterestUsd': exchange.safe_number(market,'openInterestUsd'),
             'account_leverage': float(account_leverage['leverage']),
-            'collateralWeight':coin_details.loc[underlying,'collateralWeight'] if not includeIndex else 'coin_details not found',
+            'collateralWeight':coin_details.loc[underlying,'collateralWeight'] if underlying in coin_details.index else 'coin_details not found',
             'underlyingType': getUnderlyingType(coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
             'spot_ticker': exchange.safe_string(market, 'underlying')+'/USD',
-            'spotMargin': 'OTC' if underlying in otc_file.index else (coin_details.loc[underlying,'spotMargin'] if not includeIndex else 'coin_details not found'),
-            'tokenizedEquity':coin_details.loc[underlying,'tokenizedEquity'] if not includeIndex else 'coin_details not found',
-            'usdFungible':coin_details.loc[underlying,'usdFungible'] if not includeIndex else 'coin_details not found',
-            'fiat':coin_details.loc[underlying,'fiat'] if not includeIndex else 'coin_details not found',
-            'expiryTime':dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None)
-                            if exchange.safe_string(market, 'type') == 'future' else np.NaN
+            'cash_borrow': coin_details.loc[underlying,'borrow'] if underlying in coin_details.index and coin_details.loc[underlying,'spotMargin'] else None,
+            'future_carry': future_carry,
+            'spotMargin': 'OTC' if underlying in otc_file.index else (coin_details.loc[underlying,'spotMargin'] if underlying in coin_details.index else 'coin_details not found'),
+            'tokenizedEquity':coin_details.loc[underlying,'tokenizedEquity'] if underlying in coin_details.index else 'coin_details not found',
+            'usdFungible':coin_details.loc[underlying,'usdFungible'] if underlying in coin_details.index else 'coin_details not found',
+            'fiat':coin_details.loc[underlying,'fiat'] if underlying in coin_details.index else 'coin_details not found',
+            'expiryTime':expiryTime
             })
 
     return result
