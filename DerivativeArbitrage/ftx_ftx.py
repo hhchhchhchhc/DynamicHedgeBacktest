@@ -140,11 +140,11 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
     result['size']*=1 # borrow size is an open interest
     original = result
 
-    response = await exchange.fetch_borrow_rate_history(coin,since=start_time*1000,limit=int((end_time-start_time)/3600))
-    response = [x|{'size':x['info']['size']} for x in response]
-    result = pd.DataFrame(response).astype({'rate':float,'size':float}).rename(columns={'timestamp':'time','currency':'coin'})
-    result['rate'] *= 24 * 365.25
-    result = result[['coin','time','size','rate']]
+    # response = await exchange.fetch_borrow_rate_history(coin,since=start_time*1000,limit=int((end_time-start_time)/3600))
+    # response = [x|{'size':x['info']['size']} for x in response]
+    # result = pd.DataFrame(response).astype({'rate':float,'size':float}).rename(columns={'timestamp':'time','currency':'coin'})
+    # result['rate'] *= 24 * 365.25
+    # result = result[['coin','time','size','rate']]
 
     return original
 
