@@ -171,11 +171,10 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
     #### for IM calc
     account_leverage = (await exchange.privateGetAccount())['result']
     if float(account_leverage['leverage']) >= 50: print("margin rules not implemented for leverage >=50")
-    dummy_size = 100000  ## IM is in ^3/2 not linear, but rule typically kicks in at a few M for optimal leverage of 20 so we linearize
 
     markets = exchange.safe_value(response, 'result', []) + exchange.safe_value(expired, 'result', [])
 
-    perp_list = [f['name'] for f in markets if f['type'] == 'perpetual']
+    perp_list = [f['name'] for f in markets if f['type'] == 'perpetual' and f['enabled']]
     funding_rates = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
                               for f in perp_list])
     funding_rates = {name: float(rate['result']['nextFundingRate']) * 24 * 365.325 for name,rate in zip(perp_list,funding_rates)}
@@ -189,7 +188,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
         expiryTime = dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None) if exchange.safe_string(market, 'type') == 'future' else np.NaN
         if exchange.safe_string(market,'type') == 'future':
             future_carry = calc_basis(mark, market['index'], expiryTime, datetime.now())
-        elif exchange.safe_string(market,'type') == 'perpetual':
+        elif market['name'] in perp_list:
             future_carry = funding_rates[exchange.safe_string(market, 'name')]
         else:
             future_carry = 0
