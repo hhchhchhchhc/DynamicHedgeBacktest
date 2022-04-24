@@ -94,25 +94,70 @@ def deribit_smile_tardis(currency,whatever):
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
 
 def deribit_smile_genesisvolatility(currency,start='2019-01-01',end='2019-01-02',timeframe='1h'):
-    payload='{\"query\":\"query ConstantMaturityAtm1Min($symbol: BTCOrETHEnumType, $dateStart: String, $dateEnd: String, $interval: String)' \
-            '{\\n  ConstantMaturityAtm1Min(symbol:$symbol, dateStart:$dateStart, dateEnd: $dateEnd, interval: $interval) ' \
-            '{\\n    date\\n    atm7\\n    atm30\\n    atm60\\n    atm90\\n    atm180\\n  }\\n}\\n\",' \
-            '\"variables\":{\"symbol\":\"'+currency+'\",\"dateStart\":\"'+start+'\",\"dateEnd\":\"'+end+'\",\"interval\":\"'+timeframe+'\"}}'
-
-    payload = "{\"query\":\"query FixedMaturityAtm($exchange: ExchangeEnumType, $symbol:BTCOrETHEnumType)" \
-              "{\\n  FixedMaturityAtm(exchange:$exchange, symbol: $symbol) " \
-              "{\\n    date\\n    atm7\\n    atm30\\n    atm60\\n    atm90\\n    atm180\\n    currency\\n  }" \
-              "\\n}\",\"variables\":{\"exchange\":\"deribit\",\"symbol\":\""+currency+"\"}}"
+    '''
+    full volsurface history as multiindex dataframe: (currency,date as milli) x (tenor as years, strike of 'atm')
+    '''
     url = "https://app.pinkswantrading.com/graphql"
-    payload = "{\"query\":\"query FixedMaturityAtmLite($exchange: ExchangeEnumType, $symbol:BTCOrETHEnumType){\\n  FixedMaturityAtm(exchange:$exchange, symbol: $symbol) {\\n    date\\n    atm7\\n    atm30\\n    atm60\\n    atm90\\n    atm180\\n    currency\\n  }\\n}\",\"variables\":{\"exchange\":\"deribit\",\"symbol\":\"BTC\"}}"
     headers = {
-        'x-oracle': api_params.loc['genesisvolatility','value'],
+        'gvol-lite': api_params.loc['genesisvolatility','value'],
         'Content-Type': 'application/json',
         'accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9'
     }
 
+    ''' 
+    atm 
+    '''
+    payload = "{\"query\":\"query FixedMaturityAtmLite($exchange: ExchangeEnumType, $symbol:BTCOrETHEnumType)" \
+              "{\\n  FixedMaturityAtm(exchange:$exchange, symbol: $symbol) " \
+                "{\\n    date\\n    atm7\\n    atm30\\n    atm60\\n    atm90\\n    atm180\\n    currency\\n  }\\n}\"," \
+              "\"variables\":{\"exchange\":\"deribit\",\"symbol\":\""+currency+"\"}}"
     response = requests.request("GET", url, headers=headers, data=payload).json()
+    atm = pd.DataFrame(response['data']['FixedMaturityAtm'])
+    atm['date'] = atm['date'].apply(lambda x: datetime.fromtimestamp(float(x) / 1000))
+    atm.set_index(['currency','date'],inplace=True)
+    atm.columns = pd.MultiIndex.from_tuples([(float(c.split('atm')[1])/365.25,'atm') for c in atm.columns],names=['tenor','strike'])
+    atm /= 100
+
+    ''' 
+    skew 
+    '''
+    payload = "{\"query\":\"query FixedMaturitySkewLite($exchange: ExchangeEnumType, $symbol:BTCOrETHEnumType)" \
+              "{\\n  FixedMaturitySkewLite(exchange:$exchange, symbol: $symbol) {\\n    date\\n    currency\\n    " \
+              "thirtyFiveDelta7DayExp\\n    twentyFiveDelta7DayExp\\n    fifteenDelta7DayExp\\n    fiveDelta7DayExp\\n" \
+              "thirtyFiveDelta30DayExp\\n    twentyFiveDelta30DayExp\\n    fifteenDelta30DayExp\\n    fiveDelta30DayExp\\n" \
+              "    thirtyFiveDelta60DayExp\\n    twentyFiveDelta60DayExp\\n    fifteenDelta60DayExp\\n    fiveDelta60DayExp\\n" \
+              "    thirtyFiveDelta90DayExp\\n    twentyFiveDelta90DayExp\\n    fifteenDelta90DayExp\\n    fiveDelta90DayExp\\n" \
+              "    thirtyFiveDelta180DayExp\\n    twentyFiveDelta180DayExp\\n    fifteenDelta180DayExp\\n    fiveDelta180DayExp\\n  } \\n}\"," \
+              "\"variables\":{\"exchange\":\"deribit\",\"symbol\":\""+currency+"\"}}"
+    response = requests.request("GET", url, headers=headers, data=payload).json()
+    skew = pd.DataFrame(response['data']['FixedMaturitySkewLite'])
+    skew['date'] = skew['date'].apply(lambda x: datetime.fromtimestamp(float(x) / 1000))
+    skew.set_index(['currency','date'],inplace=True)
+    def columnParser(word):
+        def word2float(word):
+            if word == 'thirtyFive': return .35
+            elif word == 'twentyFive': return .25
+            elif word == 'fifteen': return .15
+            elif word == 'five': return .05
+            else: raise Exception('unknown word' + word)
+        DeltaSeparated = word.split('Delta')
+        return (float(DeltaSeparated[1].split('DayExp')[0])/365.25, word2float(DeltaSeparated[0]))
+
+    skew.columns = pd.MultiIndex.from_tuples([columnParser(c) for c in skew.columns],names=['tenor','strike'])
+    skew /= 100
+
+    # full vol surface history
+    data = atm.join(skew,how='outer')
+    data = data[~data.duplicated()]
+    # assert set(data.index.levels[1][1:]-data.index.levels[1][:-1]) == set([timedelta(hours=1)])
+
+    for c in data.columns:
+        if c[1]!='atm':
+            data[(c[0],-c[1])] = data[(c[0], 'atm')] - 0.5 * data[(c[0], c[1])]
+            data[(c[0],c[1])] = data[(c[0],'atm')] + 0.5 * data[(c[0],c[1])]
+
+    data.to_csv('Runtime/Deribit_Mktdata_database/genesisvolatility.csv')
 
 def deribit_smile_main(*argv):
     argv = list(argv)
