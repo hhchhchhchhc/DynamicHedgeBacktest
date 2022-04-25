@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
+import copy
+
+import pandas as pd
+
 from utilities import *
+from deribit_smile import deribit_smile_genesisvolatility, MktCurve, VolSurface
 import ccxt as ccxt # needs to be reassigned from ccxtpro
 
 funding_start = datetime(2019, 4, 30)
 perp_start = datetime(2018, 8, 14)
 volindex_start = datetime(2021, 3, 24)
-history_start = max([funding_start,perp_start,volindex_start])
+history_start = datetime(2019, 4, 14)
 
 ###### this file is syncronous ###############
 ###### this file is syncronous ###############
@@ -25,9 +30,21 @@ def open_exchange(exchange_name,subaccount,config={}):
     exchange.load_fees()
     return exchange
 
-def get_history(derivative, start = 'cache', end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
+def get_history(derivative, start = 'cache', end = datetime(2022,4,25,7),
         dirname = 'Runtime/Deribit_Mktdata_database'):
     ''' all rates annualized, all volumes daily in usd'''
+
+    def time_interval(data,start,end):
+        if start == 'cache':
+            return data[~data.index.duplicated()].sort_index()
+        elif isinstance(start,int):
+            start = end - timedelta(hours=start)
+            return data[~data.index.duplicated()].sort_index()[start:end]
+        elif isinstance(start,datetime):
+            return data[~data.index.duplicated()].sort_index()[start:end]
+        else:
+            raise Exception('invalid start mode')
+
     data = pd.concat(
             [from_parquet(dirname+'/'+f+'_funding.parquet')
              for f in derivative.loc[derivative['type'] == 'swap','instrument_name']] +
@@ -36,16 +53,26 @@ def get_history(derivative, start = 'cache', end = datetime.now(tz=None).replace
             [from_parquet(dirname+'/'+f+'_volIndex.parquet')
              for f in derivative['base_currency'].unique()]
         , join='outer', axis=1)
+    data = time_interval(data,start,end)
+    data = data.resample('H').mean().interpolate('linear') # forwsight bias, but not often...
 
-    if start == 'cache':
-        return data[~data.index.duplicated()].sort_index()
-    elif isinstance(start,int):
-        start = end - timedelta(hours=start)
-        return data[~data.index.duplicated()].sort_index()[start:end]
-    elif isinstance(start,datetime):
-        return data[~data.index.duplicated()].sort_index()[start:end]
-    else:
-        raise Exception('invalid start mode')
+    vol_dict = {currency:time_interval(deribit_smile_genesisvolatility(currency,min(data.index)),start,end) for currency in derivative['base'].unique()}
+
+    for currency,vol_data in vol_dict.items():
+        fwd = vol_data.xs('fwd',level='strike',axis=1).join(data[currency+'-PERPETUAL/indexes/o'],how='inner')
+        fwd_tenors = vol_data.xs('fwd', level='strike', axis=1).columns
+        data[currency+'/fwd'] = fwd.apply(lambda f: MktCurve(timestamp=f.name.timestamp(),
+                                                             series=pd.Series(
+                                                                 index= [0]+list(fwd_tenors),
+                                                                 data= [f[currency+'-PERPETUAL/indexes/o']]+[f[currency+'-PERPETUAL/indexes/o']*(1+f[tenor]*tenor/365.25) for tenor in fwd_tenors]
+                                                             )),axis=1)
+
+        vol = vol_data.drop(columns=[(tenor,'fwd') for tenor in fwd_tenors])
+        data[currency+'/vol'] = vol.apply(lambda f: VolSurface(timestamp=f.name.timestamp(),
+                                                               dataframe=f.unstack(level='tenor').sort_index(),
+                                                               fwdcurve=data[currency+'/fwd'].loc[f.name]),axis=1)
+
+    return data
 
 def build_history(derivative,exchange,
         end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
@@ -101,8 +128,9 @@ def funding_history(future,exchange,
     data = pd.DataFrame(funding)
     data['time']=data['timestamp'].astype(dtype='int64')
     data[future_id + '/rate/funding'] = data['interest_1h'].astype(float) *365.25*24
+    data[future_id + '/indexes/o'] = data['prev_index_price'].astype(float)
     data[future_id + '/indexes/c'] = data['index_price'].astype(float)
-    data=data[['time',future_id + '/rate/funding',future_id + '/indexes/c']].set_index('time')
+    data=data[['time',future_id + '/rate/funding',future_id + '/indexes/o',future_id + '/indexes/c']].set_index('time')
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
@@ -117,7 +145,7 @@ def rate_history(future,exchange,
                  timeframe='1h',
                  dirname=''):
     ## index is in funding......
-    parquet_name = dirname + '/' + future['instrument_name'] + '_funding.parquet'
+    parquet_name = dirname + '/' + '{}{}-PERPETUAL'.format(future['base'],'' if future['quote']=='USD' else '_'+future['quote']) + '_funding.parquet'
     indexes = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
 
     max_mark_data = 700
@@ -241,12 +269,11 @@ def vol_index_history(currency, exchange,
 def deribit_history_main_wrapper(*argv):
     exchange = open_exchange('deribit','')
     currencies = argv[1]
-    markets = {currency:exchange.fetch_tickers(params={'currency':currency,'future':'perpetual','expired':True})
+    markets = {currency: {symbol: data|data['info']
+                          for symbol,data in exchange.markets.items()
+                          if data['base'] == currency
+                          and data['type'] in ['swap']}
                for currency in currencies}
-    markets = {currency:
-                   {symbol:data|data['info']
-                    for symbol,data in currency_data.items() if 'PERP' in data['info']['instrument_name']}
-               for currency, currency_data in markets.items()}
     markets = {currency:pd.DataFrame(markets[currency]).T
                for currency in currencies}
     for market in markets.values():
@@ -268,7 +295,7 @@ def deribit_history_main(*argv):
     if len(argv) < 1:
         argv.extend(['build'])
     if len(argv) < 2:
-        argv.extend([['BTC']]) # universe name, or list of currencies, or 'all'
+        argv.extend([['ETH']]) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
         argv.extend(['deribit']) # exchange_name
     if len(argv) < 4:

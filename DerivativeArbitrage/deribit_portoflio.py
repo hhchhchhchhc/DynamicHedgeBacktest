@@ -6,7 +6,6 @@ import scipy
 
 from deribit_history import *
 
-
 class black_scholes:
     @staticmethod
     def d1(S, K, V, T):
@@ -89,15 +88,17 @@ class InverseFuture(Instrument):
         self.strike = 1 / strike_coinUSD
         self.maturity = maturity
         self.symbol = underlying+'-FUTURE:' + str(pd.to_datetime(maturity, unit='s'))
-
+    
     def pv(self, market):
         T = (self.maturity - market['t'])
         df = np.exp(-market['r']*T)
-        return df * (self.strike - 1 / market['fwd'])
+        fwd = market['fwd'].interpolate(self.maturity)
+        return df * (self.strike - 1 / fwd)
     def delta(self, market):
         '''for a 1% move'''
         T = (self.maturity - market['t'])
-        return np.exp(-market['r']*T) * 0.01 / market['fwd']
+        fwd = market['fwd'].interpolate(self.maturity)
+        return np.exp(-market['r']*T) * 0.01 / fwd
     def theta(self, market):
         '''for 1 day'''
         T = (self.maturity - market['t'])
@@ -106,10 +107,10 @@ class InverseFuture(Instrument):
     def cash_flow(self, market, prev_market):
         '''cash settled in coin'''
         if prev_market['t'] < self.maturity and market['t'] >= self.maturity:
-            cash_flow = (1 / market['fwd'] - self.strike)
-            return {'drop_from_pv':cash_flow,'accrues':0}
+            cash_flow = (1 / market['spot'] - self.strike)
         else:
-            return 0
+            cash_flow = 0
+        return {'drop_from_pv': cash_flow, 'accrues': 0}
     def margin_value(self, market):
         '''TODO: approx, in fact it's converted at spot not fwd'''
         return -6e-3
@@ -123,10 +124,12 @@ class InversePerpetual(Instrument):
         self.symbol = underlying+'-PERPETUAL:'
 
     def pv(self, market):
-        return (self.strike - 1 / market['fwd'])
+        fwd = market['fwd'].interpolate(0) ## conventionally 0d
+        return (self.strike - 1 / fwd)
     def delta(self, market):
         '''for a -1% move of 1/f'''
-        return 0.01 / market['fwd']
+        fwd = market['fwd'].interpolate(0)  ## conventionally 0d
+        return 0.01 / fwd
     def cash_flow(self, market, prev_market):
         '''accrues every millisecond.
         8h Funding Rate = Maximum (0.05%, Premium Rate) + Minimum (-0.05%, Premium Rate)
@@ -136,8 +139,6 @@ class InversePerpetual(Instrument):
     def margin_value(self, market):
         '''TODO: approx, in fact it's converted at spot not fwd'''
         return -6e-3 / market['spot']
-
-
 
 class Option(Instrument):
     '''a coinUSD call(size in coin, strike in coinUSD) is a USDcoin put(strike*size in USD,1/strike in USDTBC)
@@ -159,40 +160,52 @@ class Option(Instrument):
     def pv(self, market):
         T = (self.maturity - market['t'])
         df = np.exp(-market['r']*T)
-        return df * black_scholes.pv(1 / market['fwd'], self.strike, market['vol'],
+        fwd = market['fwd'].interpolate(self.maturity)
+        vol = market['vol'].interpolate(self.strike,self.maturity)
+        return df * black_scholes.pv(1 / fwd, self.strike, vol,
                                                 T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market['t'] else 0
     def delta(self, market):
         T = (self.maturity - market['t'])
         df = np.exp(-market['r']*T)
-        return df * black_scholes.delta(1 / market['fwd'], self.strike, market['vol'],
+        fwd = market['fwd'].interpolate(self.maturity)
+        vol = market['vol'].interpolate(self.strike,self.maturity)
+        return df * black_scholes.delta(1 / fwd, self.strike, vol,
                                                    T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market['t'] else 0
     def gamma(self, market):
         T = (self.maturity - market['t'])
         df = np.exp(-market['r']*T)
-        return df * black_scholes.gamma(1 / market['fwd'], self.strike, market['vol'],
+        fwd = market['fwd'].interpolate(self.maturity)
+        vol = market['vol'].interpolate(self.strike,self.maturity)
+        return df * black_scholes.gamma(1 / fwd, self.strike, vol,
                                                    T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market['t'] else 0
     def vega(self, market):
         T = (self.maturity - market['t'])
         df = np.exp(-market['r'] * T)
-        return df * black_scholes.vega(1 / market['fwd'], self.strike, market['vol'],
+        fwd = market['fwd'].interpolate(self.maturity)
+        vol = market['vol'].interpolate(self.strike,self.maturity)
+        return df * black_scholes.vega(1 / fwd, self.strike, vol,
                                                   T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market['t'] else 0
     def theta(self, market):
         T = (self.maturity - market['t'])
         df = np.exp(-market['r']*T)
-        theta_fwd = df * black_scholes.theta(1 / market['fwd'], self.strike, market['vol'],
+        fwd = market['fwd'].interpolate(self.maturity)
+        vol = market['vol'].interpolate(self.strike,self.maturity)
+        theta_fwd = df * black_scholes.theta(1 / fwd, self.strike, vol,
                                                   T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market['t'] else 0
         return theta_fwd - market['r'] * df / 24/365.25
 
     def cash_flow(self, market, prev_market):
         '''cash settled in coin'''
         if prev_market['t'] < self.maturity and market['t'] >= self.maturity:
-            cash_flow = max(0,(1 if self.call_put == 'C' else -1)*(1 / market['fwd'] - self.strike))
+            fwd = market['spot']
+            cash_flow = max(0,(1 if self.call_put == 'C' else -1)*(1 / fwd - self.strike))
         else:
             cash_flow = 0
         return {'drop_from_pv': cash_flow, 'accrues': 0}
 
     def margin_value(self, market):
-        return - (max(0.15 - (1 / market['fwd'] - self.strike) * (1 if self.call_put == 'C' else -1),
+        fwd = market['spot']
+        return - (max(0.15 - (1 / fwd - self.strike) * (1 if self.call_put == 'C' else -1),
                                       0.1) + self.pv(market)) if self.maturity > market['t'] else 0
 
 class Position:
@@ -228,7 +241,7 @@ class Portfolio():
 
         # slippage
         if price_coin == 'slippage':
-            assert market is not None
+            assert market is not None , 'market is None'
             slippage_cost = sum(
                 slippage[greek] * np.abs(self.apply(greek,market)) for greek in instrument.__class__.greeks_available)
             new_deal_pnl = slippage_cost * np.sign(notional_USD)
@@ -249,17 +262,10 @@ class Portfolio():
                        price_coin= 'slippage',
                        market = market)
 
-    def gamma_target(self, target, market, hedge_instrument = 'atm', hedge_mode = 'add'):
+    def gamma_target(self, target, market, hedge_instrument, hedge_mode = 'add'):
         '''hedge_instrument in ['atm,an Option]'''
-        if hedge_instrument == 'atm':
-            hedge_instrument = Option(
-                underlying=self.positions[0].instrument.currency,
-                strike_coinUSD=market['fwd'],
-                maturity=market['t'] + 3600 * 24 * 30,
-                call_put='S',
-                market=market)
         hedge_instrument_gamma = hedge_instrument.gamma(market)
-        assert hedge_instrument_gamma
+        assert hedge_instrument_gamma , f'zero gamma {hedge_instrument.symbol}'
 
         if hedge_mode == 'replace':
             [self.new_trade(position.instrument,
@@ -295,10 +301,11 @@ class Portfolio():
         return new_positions
 
 def display_current(portfolio,prev_portfolio, market,prev_market):
-    predictors = {'delta':lambda x: x.apply(greek='delta', market=prev_market)*(1-prev_market['fwd']/market['fwd'])*100,
-                  'gamma':lambda x: 0.5 * x.apply(greek='gamma', market=prev_market)*(1-prev_market['fwd']/market['fwd'])**2 *100*100,
-                  'vega':lambda x: x.apply(greek='vega', market=prev_market)*(market['vol']/prev_market['vol']-1)*10,
-                  'theta':lambda x: x.apply(greek='theta', market=prev_market)*(market['t']-prev_market['t'])/3600}
+    predictors = {'delta':lambda x: x.apply(greek='delta', market=prev_market)*(1-prev_market['spot']/market['spot'])*100,
+                  'gamma':lambda x: 0.5 * x.apply(greek='gamma', market=prev_market)*(1-prev_market['spot']/market['spot'])**2 *100*100,
+                  'vega':lambda x: x.apply(greek='vega', market=prev_market)*(market['vol'].interpolate(x.instrument.strike,x.instrument.maturity)/prev_market['vol'].interpolate(x.instrument.strike,x.instrument.maturity)-1)*10 if type(x.instrument) == Option else 0,
+                  'theta':lambda x: x.apply(greek='theta', market=prev_market)*(market['t']-prev_market['t'])/3600,
+                  'IR01':lambda x: x.apply(greek='delta', market=prev_market)*(1-market['spot']/prev_market['spot']*prev_market['fwd'].interpolate(x.instrument.maturity)/market['fwd'].interpolate(x.instrument.maturity))*100 if type(x.instrument) in [InverseFuture,Option] else 0}
 
     # 1: mkt
     display_market = pd.Series({('mkt',data,'total'):market[data] for data in ['t', 'spot', 'fwd', 'vol', 'fundingRate', 'borrow', 'r']})
@@ -328,7 +335,10 @@ def display_current(portfolio,prev_portfolio, market,prev_market):
         |{('actual', 'new_deal', p1.instrument.symbol.split(':')[0]):
               p1.new_deal_pnl # new deals only contribute here.
           for p1 in portfolio.positions[1:]})
-    assert all(p0.new_deal_pnl for p0 in prev_portfolio.positions[1:]) # check new_deal accrues only once.
+    # check new_deal accrues only once.
+    issues = [p0.instrument.symbol for p0 in prev_portfolio.positions[1:] if p0.new_deal_pnl]
+    if len(issues)>0:
+          print('new_deal_pnl double count'+ ''.join([p0.instrument.symbol for p0 in prev_portfolio.positions[1:] if p0.new_deal_pnl]))
 
     # add totals and mkt
     new_data = pd.concat([greeks,predict,actual],axis=0).unstack(level=2)
@@ -342,55 +352,43 @@ def display_current(portfolio,prev_portfolio, market,prev_market):
 def strategies_main(*argv):
     argv = list(argv)
     if len(argv) == 0:
-        argv.extend(['BTC'])
+        argv.extend(['ETH'])
     if len(argv) < 2:
-        argv.extend([0.9])
+        argv.extend([1])
     print(f'running {argv}')
 
     currency = argv[0]
     volfactor = argv[1]
+    front_tenor = 7
+    back_tenor = 60
     ## get history
-    history = deribit_history_main('just use',[currency],'deribit','cache')[0]
-
-    # 1mFwd
-    if False: # not enough history unless we fetch all expired futures
-        tenor_columns = history.filter(like='rate/T').columns
-        mark_columns = history.filter(like='mark/c').columns
-        mark_columns = [r for r in mark_columns if 'PERPETUAL' not in r]
-        history['1mFwd'] = history.apply(lambda t: scipy.interpolate.interp1d(
-            x=np.array([t[tenor] for tenor in tenor_columns if not pd.isna(t[tenor])]),
-            y=np.array([t[rate] for rate in mark_columns if not pd.isna(t[rate])]),
-            kind='linear', fill_value='extrapolate')(1/12), axis=1)
-    history['1mFwd'] = history[currency+'-PERPETUAL/mark/c']
+    history = deribit_history_main('just use',[currency],'deribit',100)[0]
 
     ## format history
     history.reset_index(inplace=True)
-    history.rename(columns={'index':'t',#TODO: more consistent with /o
-                            '1mFwd':'fwd',
-                            currency+'/volindex/c':'vol',
-                            currency+'-PERPETUAL/indexes/c':'spot',
-                            currency+'-PERPETUAL/rate/funding':'fundingRate'},inplace=True)
+    history.rename(columns={'index':'t'},inplace=True)
     history['t'] = history['t'].apply(lambda t:t.timestamp())
-    history['vol'] = history['vol']/100*volfactor
+    history['spot'] = history[currency + '-PERPETUAL/indexes/o']
+    history['fwd'] = history[currency+'/fwd']
+    history['vol'] = history[currency+'/vol'].apply(lambda v: v.scale(volfactor))
+    history['fundingRate'] = history[currency + '-PERPETUAL/rate/funding']
     history['borrow'] = 0
     history['r'] = history['borrow']
     history.ffill(limit=2,inplace=True)
     history.bfill(inplace=True)
 
     prev_mkt = history.iloc[0]
+    fwd = prev_mkt['fwd'].interpolate(prev_mkt['t'] + front_tenor*24*3600)
 
     ## new portfolio
     portfolio = Portfolio(currency,notional_coin=1,market=prev_mkt)
-    hedge_instrument = InversePerpetual(underlying=currency,
-                                        strike_coinUSD=prev_mkt['fwd'],
-                                        market=prev_mkt)
     straddle = Option(underlying=currency,
-                      strike_coinUSD=prev_mkt['fwd'],
-                      maturity=prev_mkt['t'] + 3600 * 24 * 30,
+                      strike_coinUSD=fwd,
+                      maturity=prev_mkt['t'] + 3600 * 24 * front_tenor,
                       call_put='S',
                       market=prev_mkt)
     portfolio.new_trade(instrument= straddle,
-                        notional_USD= -prev_mkt['fwd'],
+                        notional_USD= -fwd,
                         price_coin= 'slippage',
                         market= prev_mkt)
     target_gamma = portfolio.apply('gamma',prev_mkt)
@@ -400,14 +398,29 @@ def strategies_main(*argv):
     series = []
     for run_i,market in history.iterrows():
         portfolio.positions = prev_portfolio.process_settlements(market, prev_mkt)
-        portfolio.gamma_target(target_gamma,market,hedge_instrument='atm',hedge_mode='replace')
+
+        fwd = market['fwd'].interpolate(market['t'] + front_tenor*24*3600)
+        maturity = market['t'] + 3600 * 24 * front_tenor
+
+        hedge_instrument = Option(
+            underlying=currency,
+            strike_coinUSD=fwd,
+            maturity=maturity,
+            call_put='S',
+            market=market)
+        portfolio.gamma_target(target_gamma,market,hedge_instrument,hedge_mode='replace')
+
+        hedge_instrument = InverseFuture(underlying=currency,
+                                         strike_coinUSD=fwd,
+                                         maturity=maturity,
+                                         market=prev_mkt)
         portfolio.delta_hedge(hedge_instrument,market)
 
         series += [display_current(portfolio,prev_portfolio,market,prev_mkt)]
         prev_mkt = market
         prev_portfolio = copy.deepcopy(portfolio)
 
-        if run_i%1000==0:
+        if run_i%100==0:
             print('{} at {}'.format(run_i,datetime.now()))
 
     display = pd.concat(series,axis=1)

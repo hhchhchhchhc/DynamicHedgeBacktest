@@ -1,9 +1,7 @@
-import math,scipy
-
+import sys,math,scipy,datetime,copy
 import pandas as pd
+import numpy as np
 import requests
-
-from deribit_history import *
 
 class black_scholes:
     @staticmethod
@@ -56,6 +54,47 @@ class black_scholes:
         theta = -((S * V * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T))) / (2 * math.sqrt(T)))
         return theta / 24/365.25 * (1 if cp != 'S' else 2)
 
+class MktCurve:
+    '''pd.Series mixin'''
+    def __init__(self,timestamp,series):
+        '''timsetamp in sec'''
+        self.timestamp = timestamp
+        self.series = series
+    def interpolate(self,T):
+        '''T in sec'''
+        maturity_days = (T - self.timestamp) / 3600 / 24
+        interpolator = scipy.interpolate.interp1d(self.series.index,
+                                                  self.series.values,
+                                                  fill_value="extrapolate")  # could do linear in fwd variance....
+        return interpolator([maturity_days])[0]
+
+class VolSurface:
+    '''pd.DataFrame mixin
+    somewhat approximate (uses atm to interpolate across delta)
+    '''
+    def __init__(self,timestamp,dataframe,fwdcurve):
+        '''
+        :param timestamp: in sec
+        :param dataframe: delta x T
+        :param fwdcurve: FwdCurve
+        '''
+        self.timestamp = timestamp
+        self.dataframe = pd.DataFrame(dataframe)
+        self.fwdcurve = fwdcurve
+        self.atmcurve = MktCurve(self.timestamp,self.dataframe.loc[50])
+    def interpolate(self,K,T):
+        fwd = self.fwdcurve.interpolate(T)
+        atm_vol = self.atmcurve.interpolate(T)
+        approx_delta = black_scholes.delta(1 / fwd, K, atm_vol, T / 3600 / 24 / 365.25, 'P')
+        return scipy.interpolate.RectBivariateSpline(self.dataframe.index, self.dataframe.columns, self.dataframe.values).ev(
+            [np.clip(approx_delta * 100,a_min=min(self.dataframe.index),a_max=max(self.dataframe.index))],
+            [np.clip(T / 3600 / 24,a_min=min(self.dataframe.columns),a_max=max(self.dataframe.columns))]
+        )[0]  # could plug quantlib / heston
+    def scale(self,scaler):
+        '''in_place'''
+        self.dataframe *= scaler
+        return self
+
 def deribit_smile_tardis(currency,whatever):
     ## perp, volindex...
     rest_history = deribit_history_main('just use',[currency],'deribit','cache')[0]
@@ -95,13 +134,14 @@ def deribit_smile_tardis(currency,whatever):
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
 
-def deribit_smile_genesisvolatility(currency,start='2019-01-01',end='2019-01-02',timeframe='1h'):
+def deribit_smile_genesisvolatility(currency,start):
     '''
-    full volsurface history as multiindex dataframe: (currency,date as milli) x (tenor as years, strike of 'atm')
+    full volsurface history as multiindex dataframe: date as milli x (tenor as years, strike of 'atm')
     '''
 
     # just read from file, since we only have 30d using LITE
-    data = pd.read_excel('Runtime/Deribit_Mktdata_database/genesisvolatility/manual.xlsx',index_col=0,header=[0,1],sheet_name=currency)/100
+    nrows = int(1 + (datetime.datetime.now() - start).total_seconds() / 3600)
+    data = pd.read_excel('Runtime/Deribit_Mktdata_database/genesisvolatility/manual.xlsx',index_col=0,header=[0,1],sheet_name=currency,nrows=nrows)/100
     return data
 
     url = "https://app.pinkswantrading.com/graphql"
@@ -122,7 +162,7 @@ def deribit_smile_genesisvolatility(currency,start='2019-01-01',end='2019-01-02'
     response = requests.request("GET", url, headers=headers, data=payload).json()
     atm = pd.DataFrame(response['data']['FixedMaturityAtm'])
     atm['date'] = atm['date'].apply(lambda x: datetime.fromtimestamp(float(x) / 1000))
-    atm.set_index(['currency','date'],inplace=True)
+    atm.set_index('date',inplace=True)
     atm.columns = pd.MultiIndex.from_tuples([(float(c.split('atm')[1])/365.25,'atm') for c in atm.columns],names=['tenor','strike'])
     atm /= 100
 
@@ -140,7 +180,7 @@ def deribit_smile_genesisvolatility(currency,start='2019-01-01',end='2019-01-02'
     response = requests.request("GET", url, headers=headers, data=payload).json()
     skew = pd.DataFrame(response['data']['FixedMaturitySkewLite'])
     skew['date'] = skew['date'].apply(lambda x: datetime.fromtimestamp(float(x) / 1000))
-    skew.set_index(['currency','date'],inplace=True)
+    skew.set_index('date',inplace=True)
     def columnParser(word):
         def word2float(word):
             if word == 'thirtyFive': return .35
