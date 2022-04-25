@@ -1,4 +1,6 @@
 import math,scipy
+
+import pandas as pd
 import requests
 
 from deribit_history import *
@@ -97,6 +99,11 @@ def deribit_smile_genesisvolatility(currency,start='2019-01-01',end='2019-01-02'
     '''
     full volsurface history as multiindex dataframe: (currency,date as milli) x (tenor as years, strike of 'atm')
     '''
+
+    # just read from file, since we only have 30d using LITE
+    data = pd.read_excel('Runtime/Deribit_Mktdata_database/genesisvolatility/manual.xlsx',index_col=0,header=[0,1],sheet_name=currency)/100
+    return data
+
     url = "https://app.pinkswantrading.com/graphql"
     headers = {
         'gvol-lite': api_params.loc['genesisvolatility','value'],
@@ -157,7 +164,11 @@ def deribit_smile_genesisvolatility(currency,start='2019-01-01',end='2019-01-02'
             data[(c[0],-c[1])] = data[(c[0], 'atm')] - 0.5 * data[(c[0], c[1])]
             data[(c[0],c[1])] = data[(c[0],'atm')] + 0.5 * data[(c[0],c[1])]
 
-    data.to_csv('Runtime/Deribit_Mktdata_database/genesisvolatility.csv')
+    output_path = 'Runtime/Deribit_Mktdata_database/genesisvolatility/surface_history.csv'
+    previous_data = pd.read_csv(output_path).index
+    data = data[~previous_data]
+    data.to_csv(output_path,mode='a', header=not os.path.exists(output_path))
+    shutil.copy2(output_path, 'Runtime/Deribit_Mktdata_database/genesisvolatility/surface_history_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.csv')
 
 def deribit_smile_main(*argv):
     argv = list(argv)
@@ -170,7 +181,7 @@ def deribit_smile_main(*argv):
     print(f'running {argv}')
 
     if argv[0] == 'genesisvolatility':
-        deribit_smile_genesisvolatility(argv[1])
+        deribit_smile_genesisvolatility(currency=argv[1])
     elif argv[0] == 'tardis':
         deribit_smile_tardis(argv[1],argv[2])
     else:
