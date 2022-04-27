@@ -89,7 +89,7 @@ class VolSurface:
         return scipy.interpolate.RectBivariateSpline(self.dataframe.index, self.dataframe.columns, self.dataframe.values).ev(
             [np.clip(approx_delta * 100,a_min=min(self.dataframe.index),a_max=max(self.dataframe.index))],
             [np.clip(T / 3600 / 24,a_min=min(self.dataframe.columns),a_max=max(self.dataframe.columns))]
-        )[0]  # could plug quantlib / heston
+        )[0]  # TODO: could plug quantlib / heston
     def scale(self,scaler):
         '''in_place'''
         self.dataframe *= scaler

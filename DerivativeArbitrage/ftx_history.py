@@ -1,6 +1,6 @@
 from ftx_ftx import *
 
-history_start = datetime(2020, 11, 26)
+history_start = datetime(2019, 11, 26)
 
 # all rates annualized, all volumes daily in usd
 async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
@@ -348,11 +348,15 @@ async def ftx_history_main_wrapper(*argv):
     # volume screening
     if argv[0] == 'build':
         await build_history(futures, exchange)
-    if argv[0] == 'correct':
+    elif argv[0] == 'correct':
         hy_history = await get_history(futures, history_start)
         end = datetime.now()-timedelta(days=int(argv[3]))
         await correct_history(futures,exchange,hy_history[:end])
         await build_history(futures, exchange)
+    elif argv[0] == 'get':
+        pass
+    else:
+        raise Exception(f'unknown command{argv[0]}: use build,correct,get')
 
     hy_history = await get_history(futures, 24*int(argv[3]))
     await exchange.close()
@@ -361,13 +365,13 @@ async def ftx_history_main_wrapper(*argv):
 def ftx_history_main(*argv):
     argv=list(argv)
     if len(argv) < 1:
-        argv.extend(['build'])
+        argv.extend(['build']) # build or correct
     if len(argv) < 2:
         argv.extend(['wide']) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
         argv.extend(['ftx']) # exchange_name
     if len(argv) < 4:
-        argv.extend([7])# nb days
+        argv.extend([100])# nb days
 
     return asyncio.run(ftx_history_main_wrapper(*argv))
 

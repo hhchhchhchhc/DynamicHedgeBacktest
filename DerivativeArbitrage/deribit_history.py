@@ -267,26 +267,28 @@ def vol_index_history(currency, exchange,
     return data
 
 def deribit_history_main_wrapper(*argv):
-    exchange = open_exchange('deribit','')
-    currencies = argv[1]
-    markets = {currency: {symbol: data|data['info']
-                          for symbol,data in exchange.markets.items()
-                          if data['base'] == currency
-                          and data['type'] in ['swap']}
-               for currency in currencies}
-    markets = {currency:pd.DataFrame(markets[currency]).T
-               for currency in currencies}
-    for market in markets.values():
-        market['type'] = market['symbol'].apply(lambda f: exchange.market(f)['type'])
-        market['expiryTime'] = market['symbol'].apply(lambda f: dateutil.parser.isoparse(exchange.market(f)['expiryDatetime']).replace(tzinfo=None))
+    currency = argv[1]
+    exchange = open_exchange(argv[2], '')
+
+    markets = {symbol: data|data['info']
+               for symbol,data in exchange.markets.items()
+               if data['base'] == currency
+               and data['type'] in ['swap']}
+    markets = pd.DataFrame(markets).T
+    markets['type'] = markets['symbol'].apply(lambda f: exchange.market(f)['type'])
+    markets['expiryTime'] = markets['symbol'].apply(lambda f: dateutil.parser.isoparse(exchange.market(f)['expiryDatetime']).replace(tzinfo=None))
 
     if argv[0] == 'build':
-        [build_history(markets[currency], exchange) for currency in argv[1]]
+        build_history(markets, exchange)
+    elif argv[0] == 'get':
+        pass
+    else:
+        raise Exception(f'unknown command{argv[0]}: use build,get')
 
     if argv[3] == 'cache':
-        hy_history = [get_history(markets[currency],'cache') for currency in argv[1]]
+        hy_history = get_history(markets,'cache')
     else:
-        hy_history = [get_history(markets[currency], 24 * int(argv[3])) for currency in argv[1]]
+        hy_history = get_history(markets, 24 * int(argv[3]))
 
     return hy_history
 
@@ -295,7 +297,7 @@ def deribit_history_main(*argv):
     if len(argv) < 1:
         argv.extend(['build'])
     if len(argv) < 2:
-        argv.extend([['ETH']]) # universe name, or list of currencies, or 'all'
+        argv.extend(['ETH']) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
         argv.extend(['deribit']) # exchange_name
     if len(argv) < 4:
