@@ -333,6 +333,7 @@ def strategies_main(*argv):
                                         backtest_end=datetime(2022,3,1)))
     else:
         print(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
+        raise Exception('unknown request ' + argv[0])
 
 if __name__ == "__main__":
     strategies_main(*sys.argv[1:])

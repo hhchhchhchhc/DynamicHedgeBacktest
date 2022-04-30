@@ -65,7 +65,7 @@ slippage = {'delta':0, # 1 means 1%
 
 class Instrument:
     '''everything is coin margined so beware confusions:
-    self.notional is in USD
+    self.notional is in USD, except cash.
     all greeks are in coin and have signature: (self,market,optionnal **kwargs)
     +ve Delta still means long coin, though, and is in USD'''
     def __init__(self,market):
@@ -76,6 +76,7 @@ class Instrument:
         return {'drop_from_pv': 0, 'accrues': 0}
 
 class Cash(Instrument):
+    '''size in coin'''
     def __init__(self, market, currency):
         self.symbol = currency+'-CASH:'
         self.currency = currency
@@ -118,7 +119,7 @@ class InverseFuture(Instrument):
             cash_flow = 0
         return {'drop_from_pv': cash_flow, 'accrues': 0}
     def margin_value(self, market):
-        return -6e-3
+        return -6e-3 / market['spot']
 
 class InversePerpetual(Instrument):
     '''a long perpetual (size in USD, strike in coinUSD) is a short USDcoin(notional in USD, 1/strike in USDcoin
@@ -159,7 +160,7 @@ class Option(Instrument):
             self.call_put = 'S'
         else:
             raise Exception("unknown option type")
-        self.symbol = underlying+'-' + call_put + ':' + str(pd.to_datetime(maturity, unit='s')) + '+' + str(int(strike_coinUSD))
+        self.symbol = underlying + '-' + call_put + ':' + str(pd.to_datetime(maturity, unit='s')) + '+' + str(int(strike_coinUSD))
 
     def pv(self, market):
         T = (self.maturity - market['t'])
@@ -216,10 +217,16 @@ class Option(Instrument):
             cash_flow = 0
         return {'drop_from_pv': cash_flow, 'accrues': 0}
 
-    def margin_value(self, market):
+    def margin_value(self, market, notional):
         fwd = market['spot']
-        return - (max(0.15 - (1 / fwd - self.strike) * (1 if self.call_put == 'C' else -1),
-                                      0.1) + self.pv(market)) if self.maturity > market['t'] else 0
+        if self.maturity > market['t']:
+            intrisinc = max(0.15 - (1 / fwd - self.strike) * (1 if self.call_put == 'C' else -1) * np.sign(notional),0.1) / market['spot']
+            mark = self.pv(market)
+            vega = self.vega(market) * 0.45 * np.power(30*24*3600/(self.maturity-market['t']),0.3)
+            pin = 0.01 / market['spot'] if notional<0 else 0
+            return - (intrisinc+mark+vega+pin)
+        else:
+            return 0
 
 class Position:
     def __init__(self,instrument,notional_USD,label=None):
@@ -229,6 +236,10 @@ class Position:
         self.label = label # this str is handy to describe why position is here, eg gamma_hedge, delta_hedge...
     def apply(self, greek, market, **kwargs):
         return self.notional * getattr(self.instrument, greek)(market,**kwargs) if hasattr(self.instrument,greek) else 0
+    def margin_value(self, market):
+        kwargs = {'notional':self.notional} if type(self.instrument) == Option else {}
+        return self.notional * getattr(self.instrument, 'margin_value')(market, **kwargs)
+
     def process_margin_call(self, market, prev_market):
         '''apply to prev_portfolio !! '''
         self.new_deal_pnl = 0
@@ -277,7 +288,7 @@ class Portfolio():
                        market=market,
                        label=hedge_params['replace_label'])
 
-    def hedging_program(self, market, underlying, vol_maturity_timestamp, gamma_maturity_timestamp):
+    def vol_flattener(self, market, underlying, vega_target, vol_maturity_timestamp, gamma_maturity_timestamp):
         '''
         This is where the hedging steps are detailed
         '''
@@ -287,7 +298,7 @@ class Portfolio():
         self.target_greek(market,
                           greek= 'vega', greek_params= {'maturity_timestamp':vol_maturity_timestamp},
                           hedge_instrument=hedge_instrument,
-                          hedge_params={'replace_label': 'vega_leg'}, target= -1)
+                          hedge_params={'replace_label': 'vega_leg'}, target= vega_target)
 
         # 2: hedge gamma, replacing front legs
         hedge_instrument = Option(market, underlying, market['fwd'].interpolate(gamma_maturity_timestamp), gamma_maturity_timestamp, 'S')
@@ -406,15 +417,18 @@ def strategies_main(*argv):
         argv.extend([7])
     if len(argv) < 4:
         argv.extend([30])
+    if len(argv) < 5:
+        argv.extend([100])
     print(f'running {argv}')
 
     currency = argv[0]
     volfactor = argv[1]
     gamma_tenor = argv[2]*24*3600
     vol_tenor = argv[3]*24*3600
+    backtest_window = argv[4]
 
     ## get history
-    history = deribit_history_main('get',currency,'deribit',100)
+    history = deribit_history_main('get',currency,'deribit',backtest_window)
 
     ## format history
     history.reset_index(inplace=True)
@@ -434,6 +448,7 @@ def strategies_main(*argv):
     prev_mkt = history.iloc[0]
     portfolio = Portfolio(currency,notional_coin=1,market=prev_mkt)
     prev_portfolio = copy.deepcopy(portfolio)
+    vega_target = -0.1 # silly start value
 
     ## run backtest
     series = []
@@ -442,7 +457,8 @@ def strategies_main(*argv):
         portfolio.positions = prev_portfolio.process_settlements(market, prev_mkt)
 
         # all the hedging steps
-        portfolio.hedging_program(market,currency, market['t']+vol_tenor, market['t']+gamma_tenor)
+        portfolio.vol_flattener(market,currency, vega_target, market['t']+vol_tenor, market['t']+gamma_tenor)
+        vega_target *= portfolio.apply()
 
         # all the info
         series += [display_current(portfolio,prev_portfolio,market,prev_mkt)]
@@ -456,13 +472,13 @@ def strategies_main(*argv):
 
     display = pd.concat(series,axis=1)
     display.loc[(['predict','actual'],slice(None),slice(None))] = display.loc[(['predict','actual'],slice(None),slice(None))].cumsum(axis=1)
-    display = pd.DataFrame(index=['params'],
-                           data={'underlying':[currency],'vol_tenor':[vol_tenor],'gamma_tenor':[gamma_tenor]}
-                           ).append(display,ignore_index=True)
 
     filename = f'Runtime/runs/run_{argv[1]}_{datetime.utcnow().strftime("%Y-%m-%d-%Hh")}' # should be linear 1 to 1
     with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter',mode='w') as writer:
         display.T.to_excel(writer,sheet_name=f'{argv[1]}_{argv[2]}_{argv[3]}')
+        pd.DataFrame(index=['params'],
+                     data={'underlying': [currency], 'vol_tenor': [vol_tenor], 'gamma_tenor': [gamma_tenor]}
+                     ).to_excel(writer, sheet_name=f'params')
     display.to_pickle(filename+'.pickle')
 
 if __name__ == "__main__":
