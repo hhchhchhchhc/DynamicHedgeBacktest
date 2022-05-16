@@ -2,8 +2,8 @@
 import copy
 
 import pandas as pd
-
-from utilities import *
+from io_utils import *
+from ccxt_utilities import *
 from deribit_smile import deribit_smile_genesisvolatility, MktCurve, VolSurface
 import ccxt as ccxt # needs to be reassigned from ccxtpro
 

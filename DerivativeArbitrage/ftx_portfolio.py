@@ -1,4 +1,5 @@
-from ftx_ftx import *
+from ftx_utils import *
+from portfolio_optimizer_utils import *
 
 class MarginCalculator:
     '''low level class to compute margins
@@ -880,7 +881,7 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['risk'])
+        argv.extend(['fromoptimal'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     print(f'running {argv}')

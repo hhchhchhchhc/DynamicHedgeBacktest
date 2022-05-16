@@ -2,6 +2,7 @@ finite_diff_rel_step = 1e-4
 
 from ftx_portfolio import BasisMarginCalculator
 from ftx_history import *
+from portfolio_optimizer_utils import *
 
 def market_capacity(futures, hy_history, universe_filter_window=[]):
     if len(universe_filter_window) == 0:
@@ -25,6 +26,12 @@ def market_capacity(futures, hy_history, universe_filter_window=[]):
                                                          min([0 if f['spotMargin']==False else f['borrow_volume_decile'],
                                                               f['openInterestUsd'],f['spot_volume_avg'] / 24, f['future_volume_avg'] / 24])
                                                          , axis=1)
+    futures['carry_native_spot'] = futures['carry_mid']*futures.apply(
+        lambda f: f['concentration_limit_long'],# if futures['direction']==1 else f['concentration_limit_short'],
+        axis=1)
+    futures['carry_external_spot'] = futures['carry_mid'] * futures.apply(
+        lambda f: min([f['openInterestUsd'],f['future_volume_avg']/24]),
+        axis=1)
 
     return futures
 
@@ -117,7 +124,7 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
             HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate
-            filename='Runtime/logs/strategies/history.xlsx')  # historical window for expectations)
+            filename='Runtime/logs/portfolio_optimizer/history.xlsx')  # historical window for expectations)
         point_in_time = max(hy_history.index)
         updated = update(enriched, point_in_time, hy_history, depth,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short,
@@ -451,7 +458,7 @@ def cash_carry_optimizer(exchange, futures,
                 'stopout_constraint': stopout_constraint['fun'](x),
                 'success': print_with_flag
             }).append(pd.Series(index=futures.index, data=x))]
-            with pd.ExcelWriter('Runtime/logs/strategies/paths.xlsx', engine='xlsxwriter') as writer:
+            with pd.ExcelWriter('Runtime/logs/portfolio_optimizer/paths.xlsx', engine='xlsxwriter') as writer:
                 pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
         return []
 

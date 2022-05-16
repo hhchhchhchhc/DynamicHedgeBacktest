@@ -1,19 +1,20 @@
 numpy
 pandas
+scipy
+sklearn
 pyarrow
 python-dateutil
-ccxt  == 1.78.60
+ccxt  == 1.80.30
 # ccxtpro @ git+https://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@github.com/kroitor/ccxt.pro.git#subdirectory=python # 1.0.51
 cufflinks
 #pickle
 XlsxWriter
 openpyxl
 boto3
-scipy
 matplotlib
 websockets
 python-telegram-bot
 #dataframe-image
 #prometheus-client
-aiofiles==0.4.0
-ikp3db
+aiofiles #==0.4.0
+#ikp3db

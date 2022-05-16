@@ -1,12 +1,12 @@
-from strategies import *
-from ftx_portfolio import *
-from ftx_ws_execute import *
-#import dataframe_image as dfi
-
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # This program is dedicated to the public domain under the CC0 license.
 
+from ftx_history import *
+from portoflio_optimizer import *
+from ftx_portfolio import *
+from ftx_ws_execute import *
+#import dataframe_image as dfi
 """
 Pronoia_Bot to reply to Telegram messages with all ftx basis
 
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 def start(update, context):
     """Send a message when the command /start is issued."""
     update.message.reply_text('coucou')
-    temp_dir = '/Runtime/temporary_parquets'
+    temp_dir = '/Runtime/logs/Pronoia_Bot'
     for file in os.listdir(temp_dir): os.remove(temp_dir + '/' + file)
 
 def help(update, context):
@@ -74,13 +74,13 @@ def echo(update, context):
             elif split_message[0] == 'sysperp':
                 data = strategies_main(*split_message)
             elif split_message[0] == 'execute':
-                data = ftx_ws_spread_main(*split_message)
+                data = ftx_ws_spread_main(*split_message)[0]
             else:
                 raise Exception('unknown command, type /help')
         else:
             raise Exception('unknown command, type /help')
 
-        filename = "Runtime/temporary_parquets/telegram_file.xlsx"
+        filename = "Runtime/logs/Pronoia_Bot/telegram_file.xlsx"
         data.to_excel(filename)
         with open(filename, "rb") as file:
             update.message.bot.sendDocument(update.message['chat']['id'], document=file)

@@ -458,7 +458,7 @@ def strategies_main(*argv):
 
         # all the hedging steps
         portfolio.vol_flattener(market,currency, vega_target, market['t']+vol_tenor, market['t']+gamma_tenor)
-        vega_target *= portfolio.apply()
+        vega_target *= portfolio.apply(greek='vega',market=market,maturity_timestamp=market['t']+vol_tenor)
 
         # all the info
         series += [display_current(portfolio,prev_portfolio,market,prev_mkt)]
@@ -473,7 +473,7 @@ def strategies_main(*argv):
     display = pd.concat(series,axis=1)
     display.loc[(['predict','actual'],slice(None),slice(None))] = display.loc[(['predict','actual'],slice(None),slice(None))].cumsum(axis=1)
 
-    filename = f'Runtime/runs/run_{argv[1]}_{datetime.utcnow().strftime("%Y-%m-%d-%Hh")}' # should be linear 1 to 1
+    filename = f'Runtime/logs/deribit_portfolio/run_{argv[1]}_{datetime.utcnow().strftime("%Y-%m-%d-%Hh")}' # should be linear 1 to 1
     with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter',mode='w') as writer:
         display.T.to_excel(writer,sheet_name=f'{argv[1]}_{argv[2]}_{argv[3]}')
         pd.DataFrame(index=['params'],

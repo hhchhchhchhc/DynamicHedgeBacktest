@@ -1,8 +1,8 @@
 import ccxtpro
-from utilities import *
+from ccxt_utilities import *
 import ccxtpro
 
-from utilities import *
+from ccxt_utilities import *
 
 
 class myFtx(ccxtpro.ftx):

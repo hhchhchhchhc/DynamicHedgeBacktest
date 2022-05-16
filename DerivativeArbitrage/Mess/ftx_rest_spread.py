@@ -1,7 +1,7 @@
-from ftx_ftx import *
+from ftx_utils import *
 from ftx_history import fetch_trades_history
 from ftx_portfolio import diff_portoflio
-from utilities import *
+from ccxt_utilities import *
 
 placement_latency = 0.25# in sec
 amend_speed = 10.# in sec

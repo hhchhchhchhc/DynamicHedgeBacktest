@@ -1,8 +1,31 @@
-from utilities import *
+from ccxt_utilities import *
+import requests
+from string import Template
 
-'''
-analytics helpers
-'''
+#index_list=['DEFI_PERP','SHIT_PERP','ALT_PERP','MID_PERP','DRGN_PERP','PRIV_PERP']
+#publicGetIndexesIndexNameWeights()GET /indexes/{index_name}/weights
+#index_table=pd.DataFrame()
+
+def getUnderlyingType(coin_detail_item):
+    if coin_detail_item['usdFungible'] == True:
+        return 'usdFungible'
+    if ('tokenizedEquity' in coin_detail_item.keys()):
+        if (coin_detail_item['tokenizedEquity'] == True):
+            return 'tokenizedEquity'
+    if coin_detail_item['fiat'] == True:
+        return 'fiat'
+
+    return 'crypto'
+
+def find_spot_ticker(markets,future,query):
+    try:
+        spot_found=next(item for item in markets if
+                        (item['base'] == future['underlying'])
+                        &(item['quote'] == 'USD')
+                        &(item['type'] == 'spot'))
+        return spot_found['info'][query]
+    except:
+        return np.NaN
 
 async def mkt_at_size(exchange, symbol, side, target_depth=10000.):
     ''' returns average px of a mkt order of size target_depth (in USD)

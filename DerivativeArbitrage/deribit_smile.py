@@ -96,6 +96,7 @@ class VolSurface:
         return self
 
 def deribit_smile_tardis(currency,whatever):
+    '''not implemented. genesis volatility for now'''
     ## perp, volindex...
     rest_history = deribit_history_main('just use',[currency],'deribit','cache')[0]
 
