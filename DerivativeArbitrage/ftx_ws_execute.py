@@ -5,10 +5,10 @@ import threading
 import dateutil.parser
 import pandas as pd
 
-from ftx_ftx import fetch_futures
+from io_utils import *
+from ftx_utils import *
 from ftx_history import fetch_trades_history
 from ftx_portfolio import diff_portoflio, MarginCalculator
-from utilities import *
 import ccxtpro
 
 max_nb_coins = 10  # TODO: sharding needed
@@ -18,10 +18,10 @@ check_frequency = 60
 entry_tolerance = 0.5 # green light if basket better than median
 edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(5) # stop on 5m stdev
-time_budget = 15*60 # 30m. used in transaction speed screener and to scale down exec params
+time_budget = 15*60 # 10m. used in transaction speed screener and to scale down exec params
 delta_limit = 0.2 # delta limit / pv
 slice_factor = 0.25 # % of request
-edit_price_tolerance = np.sqrt(60/60)#price on 10s std
+edit_price_tolerance = np.sqrt(60/60)#price on 1m std
 
 class CustomRLock(threading._PyRLock):
     @property
@@ -38,64 +38,73 @@ def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
         risk = pd.DataFrame(d)
     with open(f'{path}_request.json', 'r') as file:
         d = json.load(file)
-        #start_time = d.pop('inception_time')
+        start_time = d.pop('inception_time')
         request = pd.DataFrame(d)
-    history = from_parquet(f'{path}_minutely.parquet')
 
-    with pd.ExcelWriter(f'{dirname}/latest_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
-        data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
+    data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
 
     # pick biggest 'filled' for each clientOrderId
-    temp_timeseries = [{'inception_event':clientOrderId_data[clientOrderId_data['lifecycle_state']=='pending_new'].iloc[0],
-                        'last_fill_event' : clientOrderId_data.sort_values(by='filled').tail(1).iloc[0]}
-                       for clientOrderId, clientOrderId_data in data.groupby(by='clientOrderId') if clientOrderId_data['filled'].max()>0]
-    fill_timeseries = [{'symbol':clientOrderId_data['inception_event']['symbol'],
-                        'slice_started' : clientOrderId_data['inception_event']['datetime'],
-                        'mid_at_inception' : 0.5*(clientOrderId_data['inception_event']['bid']+clientOrderId_data['inception_event']['ask']),
-                        'amount' : clientOrderId_data['inception_event']['amount'],
+    temp_events = {clientOrderId:
+                       {'inception_event':clientOrderId_data[clientOrderId_data['lifecycle_state']=='pending_new'].iloc[0],
+                        'last_fill_event':clientOrderId_data[clientOrderId_data['filled']>0].iloc[-1]}
+                   for clientOrderId, clientOrderId_data in data.groupby(by='clientOrderId') if clientOrderId_data['filled'].max()>0}
+    by_clientOrderId = pd.DataFrame({
+        clientOrderId:
+            {'symbol':clientOrderId_data['inception_event']['symbol'],
+             'slice_started' : clientOrderId_data['inception_event']['timestamp'],
+             'mid_at_inception' : 0.5*(clientOrderId_data['inception_event']['bid']+clientOrderId_data['inception_event']['ask']),
+             'amount' : clientOrderId_data['inception_event']['amount']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
 
-                        'filled' : clientOrderId_data['last_fill_event']['filled'],
-                        'average' : clientOrderId_data['last_fill_event']['average'],
-                        'slice_ended' : clientOrderId_data['last_fill_event']['datetime']}
-                       for clientOrderId_data in temp_timeseries]
-            
-            fill_timeseries += [clientOrderId_data.rename(columns={
-                'average': symbol + '/fills/average',
-                'filled': symbol + '/fills/filled',
-                'slice_started': symbol + '/fills/slice_started'})]
-        fill_timeseries = pd.concat(fill_timeseries)
+             'filled' : clientOrderId_data['last_fill_event']['filled']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
+             'average' : clientOrderId_data['last_fill_event']['average'],
+             'slice_ended' : clientOrderId_data['last_fill_event']['timestamp']}
+        for clientOrderId,clientOrderId_data in temp_events.items()}).T
 
-        for symbol, symbol_data in data.groupby(by='symbol'):
+    by_symbol = pd.DataFrame({
+        symbol:
+            {'time_to_execute':symbol_data['slice_started'].max()-symbol_data['slice_started'].min(),
+             'cost_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['average']).sum()/symbol_data['filled'].sum()/symbol_data.sort_values(by='slice_started',ascending=True).iloc[0]['mid_at_inception']-1),
+             'filledUSD': (symbol_data['filled']*symbol_data['average']).sum()
+             }
+        for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T
 
+    fill_history = []
+    for symbol, symbol_data in by_clientOrderId.groupby(by='symbol'):
+        df = symbol_data[['slice_ended','filled','average']]
+        df['slice_ended'] = df['slice_ended'].apply(lambda t:datetime.utcfromtimestamp(t/1000).replace(tzinfo=timezone.utc))
+        df.set_index('slice_ended',inplace=True)
+        df = df.rename(columns={
+            'average':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/average',
+            'filled':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/filled'})
+        fill_history += [df]
 
+    async def build_vwap(start, end):
+        date_start = datetime.utcfromtimestamp(start / 1000).replace(tzinfo=timezone.utc)
+        date_end = datetime.utcfromtimestamp(end / 1000).replace(tzinfo=timezone.utc)
+        exchange = myFtx({  ## David personnal
+            'enableRateLimit': True,
+            'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
+            'secret': api_params.loc['ftx', 'value'],
+            'newUpdates': True})
+        exchange.authenticate()
+        await exchange.load_markets()
+        trades_history_list = await safe_gather([fetch_trades_history(
+            exchange.market(symbol)['id'], exchange, date_start,date_end, frequency=timedelta(seconds=1))
+            for symbol in by_symbol.index], semaphore=exchange.rest_semaphor)
+        await exchange.close()
 
-            request.loc['amount_filled',symbol] = fills['filled'].sum()
-            request.loc['average',symbol] = fills['sumprod'].sum()/fills['filled'].sum()
-            fill_history[symbol] = fills.set_index('datetime').rename(columns={
-                'average':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/average',
-                'filled':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/filled'})
-        inception_data = data[data['lifecycle_state']=='pending_new'].groupby(by='clientOrderId')[['symbol','side','mkt_timestamp','bid','ask']].min()
-        #data['mkt_timestamp'] += start_time
+        return pd.concat([x['vwap'] for x in trades_history_list], axis=1,join='outer')
 
+    history = pd.concat([asyncio.run(build_vwap(start_time,by_clientOrderId['slice_ended'].max()))]+fill_history).sort_index()
 
-        all_fills = data[data['filled']>0].groupby(by='clientOrderId').max()
-        fill_report = inception_market.join(all_fills[all_fills['filled']>0])
-        fill_report = fill_report[fill_report['filled']>0]
-        fill_report['sumprod'] = fill_report['filled']*fill_report['side'].apply(lambda x:1 if x=='buy' else -1)*fill_report['average']
-
-        fill_history = {}
-
-        history = pd.concat([history]+[f for f in fill_history.values()])
-
-        request.to_excel(writer, sheet_name='fills')
-        data.to_excel(writer,sheet_name='summary')
+    with pd.ExcelWriter(f'{path}_exec.xlsx', engine='xlsxwriter', mode="w") as writer: #https://github.com/energyquantified/eq-python-client/issues/17
+        by_symbol.to_excel(writer,sheet_name='by_symbol')
         request.to_excel(writer, sheet_name='request')
+        by_clientOrderId.to_excel(writer, sheet_name='by_clientOrderId')
+        data.to_excel(writer, sheet_name='data')
+        history.index = [t.replace(tzinfo=None) for t in history.index]
         history.to_excel(writer, sheet_name='history')
-
-        for symbol,data in pd.concat(events.values(),axis=0).groupby(by='symbol'):
-            data.sort_values(by='timestamp',ascending=True).to_excel(writer, sheet_name=str(symbol.replace('/USD:USD','-PERP').replace('/USD','')))
-        if not risk.empty:
-            risk.sort_values(by='delta_timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
+        if not risk.empty: risk.sort_values(by='delta_timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
 
 def loop(func):
     @functools.wraps(func)
@@ -117,7 +126,7 @@ def symbol_locked(wrapped):
     '''decorates self.lifecycle_xxx(lientOrderId) to prevent race condition on state'''
     @functools.wraps(wrapped)
     def _wrapper(*args, **kwargs):
-        return wrapped(*args, **kwargs) # temporary disable
+       # return wrapped(*args, **kwargs) # temporary disable
 
         self=args[0]
         symbol = args[1]['clientOrderId'].split('_')[1]
@@ -303,7 +312,7 @@ class myFtx(ccxtpro.ftx):
         '''self.orders_lifecycle = {clientId:[{key:data}]}
         order_event:trigger,symbol'''
         #1) resolve clientID
-        nowtime = self.milliseconds() - self.exec_parameters['timestamp']
+        nowtime = self.milliseconds()
         clientOrderId = order_event['trigger'] + '_' + order_event['symbol'] + '_' + str(int(nowtime))
 
         #2) validate block
@@ -324,7 +333,7 @@ class myFtx(ccxtpro.ftx):
 
         ## risk details
         risk_data = self.risk_state[coin]
-        current |= {'risk_timestamp':risk_data[symbol]['delta_timestamp']-self.exec_parameters['timestamp'],
+        current |= {'risk_timestamp':risk_data[symbol]['delta_timestamp'],
                        'delta':risk_data[symbol]['delta'],
                        'netDelta': risk_data['netDelta'],
                        'pv(wrong timestamp)':self.pv,
@@ -338,7 +347,7 @@ class myFtx(ccxtpro.ftx):
         else:
             mkt_data = self.markets[symbol]['info']|{'bidVolume':0,'askVolume':0}#TODO: should have all risk group
             timestamp = self.exec_parameters['timestamp']
-        current |= {'mkt_timestamp': timestamp - self.exec_parameters['timestamp']}\
+        current |= {'mkt_timestamp': timestamp}\
                         | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
 
         #4) mine genesis block
@@ -359,7 +368,7 @@ class myFtx(ccxtpro.ftx):
             return
 
         # 3) new block
-        nowtime = order_event['timestamp'] - self.exec_parameters['timestamp']
+        nowtime = order_event['timestamp']
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID,
                    'lifecycle_state':'sent'}
@@ -394,7 +403,7 @@ class myFtx(ccxtpro.ftx):
             return
 
         # 3) new block
-        nowtime = self.milliseconds() - self.exec_parameters['timestamp']
+        nowtime = self.milliseconds()
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID': eventID,
                                  'lifecycle_state': 'pending_cancel',
@@ -417,7 +426,7 @@ class myFtx(ccxtpro.ftx):
             return
 
         # 3) new block
-        nowtime = order_event['timestamp'] - self.exec_parameters['timestamp']
+        nowtime = order_event['timestamp']
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID': eventID,
                    'lifecycle_state': 'cancel_sent',
@@ -436,7 +445,7 @@ class myFtx(ccxtpro.ftx):
         pass
 
         # 3) new block
-        nowtime = order_event['timestamp'] - self.exec_parameters['timestamp']
+        nowtime = order_event['timestamp']
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID}
         # overwrite some fields
@@ -476,23 +485,22 @@ class myFtx(ccxtpro.ftx):
         # 2) validate block
         past = self.orders_lifecycle[clientOrderId][-1]
 
-        # reconcile often rereads filled trades, skip then.
-        if order_event['id'] in [block['fillId'] for block in self.orders_lifecycle[clientOrderId] if 'fillId' in block]:
-            pass
-            assert order_event['trigger'] in ['reconciled','replayed'],"order_event['trigger'] == 'reconciled'"
-            #return
-
         # 3) new block
         if not isinstance(order_event['timestamp'], tuple):
-            nowtime = order_event['timestamp'] - self.exec_parameters['timestamp']
+            nowtime = order_event['timestamp']
         else:
-            nowtime = order_event['timestamp'][0] - self.exec_parameters['timestamp']
+            nowtime = order_event['timestamp'][0]
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID,
                           'fillId': order_event['id']}
         # overwrite some fields
         current['timestamp'] = nowtime
-        current['remaining'] = past['remaining']-order_event['amount']
+
+        # reconcile often rereads filled trades, skip then.
+        if order_event['id'] not in [block['fillId']
+                                     for block in self.orders_lifecycle[clientOrderId]
+                                     if 'fillId' in block]:
+            current['remaining'] = past['remaining']-order_event['amount']
         current['id'] = order_event['order']
 
         symbol = order_event['symbol']
@@ -519,9 +527,9 @@ class myFtx(ccxtpro.ftx):
 
         # 3) new block
         if isinstance(order_event['timestamp']+.1, float):
-            nowtime = order_event['timestamp'] - self.exec_parameters['timestamp']
+            nowtime = order_event['timestamp']
         else:
-            nowtime = order_event['timestamp'][0] - self.exec_parameters['timestamp']
+            nowtime = order_event['timestamp'][0]
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event
         current['eventID'] = eventID
@@ -536,7 +544,7 @@ class myFtx(ccxtpro.ftx):
         with lock:
             async with aiofiles.open(filename,mode='w') as file:
                 await file.write(json.dumps(self.orders_lifecycle, cls=NpEncoder))
-            shutil.copy2(filename, 'Runtime/logs/ftx_ws_execute/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_events.json')
+            shutil.copy2(filename, 'Runtime/logs/ftx_ws_execute/'+datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y-%m-%d-%H-%M")+'_events.json')
 
     async def risk_reconciliation_to_json(self,filename = 'Runtime/logs/ftx_ws_execute/latest_risk_reconciliations.json'):
         '''asyncronous + has it's own lock'''
@@ -544,7 +552,7 @@ class myFtx(ccxtpro.ftx):
         with lock:
             async with aiofiles.open(filename,mode='w') as file:
                 await file.write(json.dumps(self.risk_reconciliations, cls=NpEncoder))
-            shutil.copy2(filename, 'Runtime/logs/ftx_ws_execute/'+datetime.fromtimestamp(self.exec_parameters['timestamp']/1000).strftime("%Y-%m-%d-%H-%M")+'_risk_reconciliations.json')
+            shutil.copy2(filename, 'Runtime/logs/ftx_ws_execute/'+datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y-%m-%d-%H-%M")+'_risk_reconciliations.json')
 
     #@synchronized
     async def reconcile_fills(self):
@@ -577,7 +585,7 @@ class myFtx(ccxtpro.ftx):
                 self.lifecycle_cancel_or_reject(order| {'trigger':'reconciled','lifecycle_state':'canceled'})
             elif order['status'] == 'closed':
                 current = order
-                #current['timestamp'] = self.milliseconds() - self.exec_parameters['timestamp'],
+                #current['timestamp'] = self.milliseconds(),
                 current['trigger'] = 'reconciled'
                 if order['remaining'] == 0:
                     current['order'] = order['id']
@@ -594,7 +602,7 @@ class myFtx(ccxtpro.ftx):
         # remove fakes
         for clientOrderId,data in self.orders_lifecycle.items():
             if data[-1]['lifecycle_state'] in myFtx.openStates \
-                    and data[-1]['timestamp'] > self.latest_order_reconcile_timestamp - self.exec_parameters['timestamp'] \
+                    and data[-1]['timestamp'] > self.latest_order_reconcile_timestamp \
                     and clientOrderId not in fetch_processed:
                 current = {'clientOrderId': clientOrderId,
                            'timestamp': self.milliseconds(),
@@ -624,7 +632,7 @@ class myFtx(ccxtpro.ftx):
         self.limit.delta_limit = delta_limit
 
         frequency = timedelta(minutes=1)
-        end = datetime.now()
+        end = datetime.now(timezone.utc)
         start = end - timedelta(hours=1)
 
         trades_history_list = await safe_gather([fetch_trades_history(
@@ -722,20 +730,12 @@ class myFtx(ccxtpro.ftx):
         self.latest_exec_parameters_reconcile_timestamp = self.exec_parameters['timestamp']
         await self.reconcile()
 
-        vwap_dataframe = pd.concat([data['vwap'].filter(like='vwap').fillna(method='ffill') for data in trades_history_list],axis=1,join='outer').fillna(method='bfill')
-        vwap_dataframe=vwap_dataframe.apply(np.log).diff()
-        size_dataframe = pd.concat([data['vwap'].filter(like='volume').fillna(method='ffill') for data in trades_history_list], axis=1, join='outer').fillna(method='bfill')
-        to_parquet(pd.concat([vwap_dataframe,size_dataframe], axis=1, join='outer'),'Runtime/logs/ftx_ws_execute/latest_minutely.parquet')
-        shutil.copy2('Runtime/logs/ftx_ws_execute/latest_minutely.parquet',
-                     'Runtime/logs/ftx_ws_execute/' + datetime.fromtimestamp(self.exec_parameters['timestamp'] / 1000).strftime(
-                         "%Y-%m-%d-%Hh") + '_minutely.parquet')
-
         with open('Runtime/logs/ftx_ws_execute/latest_request.json', 'w') as file:
             json.dump({'inception_time':self.exec_parameters['timestamp']}|
                       {symbol:data
                         for coin,coin_data in self.exec_parameters.items() if coin in self.currencies
                         for symbol,data in coin_data.items() if symbol in self.markets}, file, cls=NpEncoder)
-        shutil.copy2('Runtime/logs/ftx_ws_execute/latest_request.json','Runtime/logs/ftx_ws_execute/' + datetime.fromtimestamp(self.exec_parameters['timestamp'] / 1000).strftime(
+        shutil.copy2('Runtime/logs/ftx_ws_execute/latest_request.json','Runtime/logs/ftx_ws_execute/' + datetime.utcfromtimestamp(self.exec_parameters['timestamp'] / 1000).replace(tzinfo=timezone.utc).strftime(
                          "%Y-%m-%d-%Hh") + '_request.json')
 
     def update_exec_parameters(self): # cut in 10):
@@ -888,7 +888,7 @@ class myFtx(ccxtpro.ftx):
 
         # logger.info
         self.myLogger.info('{} fill at {}: {} {} {} at {}'.format(symbol,
-                                                                fill['timestamp'] - self.exec_parameters['timestamp'],
+                                                                fill['timestamp'],
                                                                 fill['side'], fill['amount'], symbol, fill['price']))
 
         current = self.risk_state[coin][symbol]['delta']
@@ -897,7 +897,7 @@ class myFtx(ccxtpro.ftx):
         target = self.exec_parameters[coin][symbol]['target'] * fill['price']
         self.myLogger.info('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
             symbol,
-            self.risk_state[coin][symbol]['delta_timestamp'] - self.exec_parameters['timestamp'],
+            self.risk_state[coin][symbol]['delta_timestamp'],
             (current - initial) / (target - initial) * 100,
             current,
             initial,
@@ -1007,9 +1007,9 @@ class myFtx(ccxtpro.ftx):
             self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=None)
         # if decrease risk, go aggressive
         else:
-            edit_trigger_depth=params['priceIncrement'] # priceIncrement not edit_trigger_depth !
-            edit_price_depth=params['priceIncrement'] # priceIncrement not edit_price_depth !
-            stop_depth=params['stop_depth']*self.exec_parameters_scaler
+            edit_trigger_depth = 0 # priceIncrement not edit_trigger_depth !
+            edit_price_depth = 0 # mkt order
+            stop_depth = params['stop_depth']*self.exec_parameters_scaler
             self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
     def peg_or_stopout(self,symbol,size,orderbook_depth,edit_trigger_depth,edit_price_depth,stop_depth=None):
