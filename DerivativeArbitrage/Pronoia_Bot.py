@@ -63,6 +63,7 @@ def echo(update, context):
         if split_message[0] == 'hist':
             argv = ['build']+split_message[1:]
             data = ftx_history_main(*argv)
+            data.index = [t.replace(tzinfo=None) for t in data.index]
         elif split_message[0] == 'basis':
             type='future' if len(split_message)<2 else str(split_message[1])
             depth=1000 if len(split_message)<3 else int(split_message[2])

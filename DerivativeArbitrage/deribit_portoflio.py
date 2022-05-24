@@ -468,13 +468,14 @@ def strategies_main(*argv):
         prev_portfolio = copy.deepcopy(portfolio)
 
         if run_i%100==0:
-            print('{} at {}'.format(run_i,datetime.now()))
+            print('{} at {}'.format(run_i,datetime.now(timezone.utc)))
 
     display = pd.concat(series,axis=1)
     display.loc[(['predict','actual'],slice(None),slice(None))] = display.loc[(['predict','actual'],slice(None),slice(None))].cumsum(axis=1)
 
-    filename = f'Runtime/logs/deribit_portfolio/run_{argv[1]}_{datetime.utcnow().strftime("%Y-%m-%d-%Hh")}' # should be linear 1 to 1
+    filename = f'Runtime/logs/deribit_portfolio/run_{argv[1]}_{datetime.now(timezone.utc).strftime("%Y-%m-%d-%Hh")}' # should be linear 1 to 1
     with pd.ExcelWriter(filename+'.xlsx', engine='xlsxwriter',mode='w') as writer:
+        display.columns = [t.replace(tzinfo=None) for t in display.columns]
         display.T.to_excel(writer,sheet_name=f'{argv[1]}_{argv[2]}_{argv[3]}')
         pd.DataFrame(index=['params'],
                      data={'underlying': [currency], 'vol_tenor': [vol_tenor], 'gamma_tenor': [gamma_tenor]}

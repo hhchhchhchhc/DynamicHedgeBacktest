@@ -5,8 +5,8 @@ import json
 import pandas as pd
 import numpy as np
 import pyarrow,pyarrow.parquet,s3fs
+from datetime import timezone
 import requests
-from string import Template
 
 # this is for jupyter
 import cufflinks as cf
@@ -55,7 +55,9 @@ async def async_from_parquet_s3(filename,columns=None):
     return await coro(filename,columns)
 
 def from_parquet(filename):
-    return pyarrow.parquet.read_table(filename).to_pandas()
+    result = pyarrow.parquet.read_table(filename).to_pandas()
+    result.index = [t.replace(tzinfo=timezone.utc) for t in result.index]
+    return result
 async def async_from_parquet(filename):
     coro = async_wrap(from_parquet)
     return await coro(filename)

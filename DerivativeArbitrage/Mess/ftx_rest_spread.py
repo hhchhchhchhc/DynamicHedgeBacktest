@@ -55,7 +55,7 @@ class AggressivePost:
 
 async def symbol_ordering(exchange: ccxt.Exchange,symbol1: str,symbol2: str) -> Tuple:
     ## get 5m histories
-    nowtime = datetime.now().timestamp()
+    nowtime = datetime.now(timezone.utc).timestamp()
     since = nowtime - 5 * 60
     try:
         history1 = pd.DataFrame(await exchange.fetch_trades(symbol1, since=since*1000)).set_index('timestamp')
@@ -331,7 +331,7 @@ async def ftx_rest_spread_main_wrapper(*argv):
     weights = await diff_portoflio(exchange, argv[3])
 
     trades_history_list=await safe_gather([fetch_trades_history(
-       s,exchange,datetime.now()-timedelta(weeks=1),datetime.now(),'1s')
+       s,exchange,datetime.now(timezone.utc)-timedelta(weeks=1),datetime.now(timezone.utc),'1s')
                       for s in weights['name'].values])
     weights['volume'] = [th.mean()[s.split('/USD')[0] + '/trades/volume'] for th,s in zip(trades_history_list,weights['name'].values)]
     weights['time2do'] = weights['price'] * weights['diff'].apply(np.abs) / weights['volume']
@@ -343,13 +343,13 @@ async def ftx_rest_spread_main_wrapper(*argv):
     #coin='OMG'
     #weights = weights[weights['name'].isin([coin+'/USD',coin+'-PERP'])]
 
-    start_time = datetime.now().timestamp()
+    start_time = datetime.now(timezone.utc).timestamp()
     log = ExecutionLog('dummy', [])
     try:
         if weights.empty: raise Exception('nothing to execute')
         log = await executer_sysperp(exchange, weights)
         # asyncio.run(clean_dust(exchange))
-        end_time = datetime.now().timestamp()
+        end_time = datetime.now(timezone.utc).timestamp()
         with pd.ExcelWriter('../Runtime/execution_diagnosis.xlsx', engine='xlsxwriter') as writer:
             pd.DataFrame(await exchange.fetch_orders(params={'start_time': start_time, 'end_time': end_time})).to_excel(
                 writer, sheet_name='fills')

@@ -7,10 +7,10 @@ from ccxt_utilities import *
 from deribit_smile import deribit_smile_genesisvolatility, MktCurve, VolSurface
 import ccxt as ccxt # needs to be reassigned from ccxtpro
 
-funding_start = datetime(2019, 4, 30)
-perp_start = datetime(2018, 8, 14)
-volindex_start = datetime(2021, 3, 24)
-history_start = datetime(2019, 4, 14)
+funding_start = datetime(2019, 4, 30,tzinfo=timezone.utc)
+perp_start = datetime(2018, 8, 14,tzinfo=timezone.utc)
+volindex_start = datetime(2021, 3, 24,tzinfo=timezone.utc)
+history_start = datetime(2019, 4, 14,tzinfo=timezone.utc)
 
 ###### this file is syncronous ###############
 ###### this file is syncronous ###############
@@ -30,7 +30,7 @@ def open_exchange(exchange_name,subaccount,config={}):
     exchange.load_fees()
     return exchange
 
-def get_history(derivative, start = 'cache', end = datetime(2022,4,25,7),
+def get_history(derivative, start = 'cache', end = datetime(2022,4,25,7,tzinfo=timezone.utc),
         dirname = 'Runtime/Deribit_Mktdata_database'):
     ''' all rates annualized, all volumes daily in usd'''
 
@@ -131,7 +131,7 @@ def funding_history(future,exchange,
     data[future_id + '/indexes/o'] = data['prev_index_price'].astype(float)
     data[future_id + '/indexes/c'] = data['index_price'].astype(float)
     data=data[['time',future_id + '/rate/funding',future_id + '/indexes/o',future_id + '/indexes/c']].set_index('time')
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
     if dirname != '': to_parquet(data,dirname + '/' + exchange.market(future['symbol'])['id'] + '_funding.parquet',mode='a')
@@ -184,14 +184,14 @@ def rate_history(future,exchange,
         data['rate/c'] = data.apply(
             lambda y: calc_basis(y['mark/c'],
                                  indexes.loc[y.name, future['instrument_name']+'/indexes/c'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
+                                 datetime.utcfromtimestamp(int(y.name / 1000),tz=timezone.utc)), axis=1)
     elif future['type'] == 'swap': ### 1h funding = (mark/spot-1)/24
         data['rate/c'] = (data['mark/c'] / indexes[future['instrument_name']+'/indexes/c'] - 1)*365.25
     else:
         print('what is ' + future['symbol'] + ' ?')
         return
     data.columns = [exchange.market(future['symbol'])['id'] + '/' + c for c in data.columns]
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
     if dirname != '': to_parquet(data,dirname + '/' + exchange.market(future['symbol'])['id'] + '_derivative.parquet',mode='a')
@@ -226,7 +226,7 @@ def spot_history(symbol, exchange,
     data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
     data['volume'] = data['volume'] * 24 * 3600 / int(resolution)
     data.columns = [symbol.replace('/USD','') + '/price/' + column for column in data.columns]
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
     if dirname!='': to_parquet(data,dirname + '/' + symbol.replace('/USD', '') + '_price.parquet',mode='a')
 
@@ -260,7 +260,7 @@ def vol_index_history(currency, exchange,
     ###### spot
     data = pd.DataFrame(columns=column_names, data=spot,dtype=float).astype(dtype={'t': 'int64'}).set_index('t')
     data.columns = [currency + '/volindex/' + column for column in data.columns]
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
     if dirname!='': to_parquet(data,dirname + '/' + currency + '_volindex.parquet',mode='a')
 
@@ -276,7 +276,7 @@ def deribit_history_main_wrapper(*argv):
                and data['type'] in ['swap']}
     markets = pd.DataFrame(markets).T
     markets['type'] = markets['symbol'].apply(lambda f: exchange.market(f)['type'])
-    markets['expiryTime'] = markets['symbol'].apply(lambda f: dateutil.parser.isoparse(exchange.market(f)['expiryDatetime']).replace(tzinfo=None))
+    markets['expiryTime'] = markets['symbol'].apply(lambda f: dateutil.parser.isoparse(exchange.market(f)['expiryDatetime']).replace(tzinfo=timezone.utc))
 
     if argv[0] == 'build':
         build_history(markets, exchange)

@@ -2,6 +2,7 @@ import sys,math,scipy,datetime,copy
 import pandas as pd
 import numpy as np
 import requests
+from datetime import *
 
 class black_scholes:
     @staticmethod
@@ -135,14 +136,15 @@ def deribit_smile_tardis(currency,whatever):
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
 
-def deribit_smile_genesisvolatility(currency,start):
+def deribit_smile_genesisvolatility(currency,start = datetime.now(tz=timezone.utc) - timedelta(days=30)):
     '''
     full volsurface history as multiindex dataframe: date as milli x (tenor as years, strike of 'atm')
     '''
 
     # just read from file, since we only have 30d using LITE
-    nrows = int(1 + (datetime.datetime.now() - start).total_seconds() / 3600)
+    nrows = int(1 + (datetime.now(tz=timezone.utc) - start).total_seconds() / 3600)
     data = pd.read_excel('Runtime/Deribit_Mktdata_database/genesisvolatility/manual.xlsx',index_col=0,header=[0,1],sheet_name=currency,nrows=nrows)/100
+    data.index = [t.replace(tzinfo=timezone.utc) for t in data.index]
     return data
 
     url = "https://app.pinkswantrading.com/graphql"
@@ -162,7 +164,7 @@ def deribit_smile_genesisvolatility(currency,start):
               "\"variables\":{\"exchange\":\"deribit\",\"symbol\":\""+currency+"\"}}"
     response = requests.request("GET", url, headers=headers, data=payload).json()
     atm = pd.DataFrame(response['data']['FixedMaturityAtm'])
-    atm['date'] = atm['date'].apply(lambda x: datetime.fromtimestamp(float(x) / 1000))
+    atm['date'] = atm['date'].apply(lambda x: datetime.utcfromtimestamp(float(x) / 1000,tz=timezone.utc))
     atm.set_index('date',inplace=True)
     atm.columns = pd.MultiIndex.from_tuples([(float(c.split('atm')[1])/365.25,'atm') for c in atm.columns],names=['tenor','strike'])
     atm /= 100
@@ -180,7 +182,7 @@ def deribit_smile_genesisvolatility(currency,start):
               "\"variables\":{\"exchange\":\"deribit\",\"symbol\":\""+currency+"\"}}"
     response = requests.request("GET", url, headers=headers, data=payload).json()
     skew = pd.DataFrame(response['data']['FixedMaturitySkewLite'])
-    skew['date'] = skew['date'].apply(lambda x: datetime.fromtimestamp(float(x) / 1000))
+    skew['date'] = skew['date'].apply(lambda x: datetime.utcfromtimestamp(float(x) / 1000,tz=timezone.utc))
     skew.set_index('date',inplace=True)
     def columnParser(word):
         def word2float(word):
@@ -209,7 +211,7 @@ def deribit_smile_genesisvolatility(currency,start):
     previous_data = pd.read_csv(output_path).index
     data = data[~previous_data]
     data.to_csv(output_path,mode='a', header=not os.path.exists(output_path))
-    shutil.copy2(output_path, 'Runtime/Deribit_Mktdata_database/genesisvolatility/surface_history_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.csv')
+    shutil.copy2(output_path, 'Runtime/Deribit_Mktdata_database/genesisvolatility/surface_history_' + datetime.now(tz=timezone.utc).strftime("%Y-%m-%d-%Hh")+'.csv')
 
 def deribit_smile_main(*argv):
     argv = list(argv)

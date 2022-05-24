@@ -51,7 +51,6 @@ async def refresh_universe(exchange,universe_size):
             'universe_end': universe_end,
             'borrow_decile': borrow_decile}).to_excel(writer,sheet_name='parameters')
         screening_params.to_excel(writer, sheet_name='screening_params')
-        #TODO: s3_upload_file(filename, 'gof.crypto.shared', 'ftx_universe_'+str(datetime.now())+'.xlsx')
 
     print('refreshed universe')
     return futures
@@ -76,7 +75,7 @@ async def perp_vs_cash(
 
     markets = await exchange.fetch_markets()
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
-    now_time = datetime.now()
+    now_time = datetime.now(timezone.utc)
 
     # qualitative filtering
     universe = await refresh_universe(exchange,UNIVERSE)
@@ -176,6 +175,7 @@ async def perp_vs_cash(
 
         # increment
         trajectory = trajectory.append(optimized.reset_index().rename({'name': 'symbol'}), ignore_index=True)
+        trajectory['time'] = trajectory['time'].apply(lambda t: t.replace(tzinfo=None))
         trajectory.to_excel('Runtime/logs/portfolio_optimizer/temp_trajectory.xlsx')
         previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
         previous_time = point_in_time
@@ -183,7 +183,7 @@ async def perp_vs_cash(
 
     # for live, just send last optimized
     if backtest_start==backtest_end:
-        filename = 'Runtime/ApprovedRuns/ftx_optimal_cash_carry_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
+        filename = 'Runtime/ApprovedRuns/ftx_optimal_cash_carry_'+datetime.now(timezone.utc).strftime("%Y-%m-%d-%Hh")+'.xlsx'
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             parameters = pd.Series({
                 'run_date':datetime.today(),
@@ -197,6 +197,7 @@ async def perp_vs_cash(
                 'equity':equity,
                 'slippage_scaler': slippage_scaler,
                 'slippage_orderbook_depth': slippage_orderbook_depth})
+            optimized['time'] = optimized['time'].apply(lambda t: t.replace(tzinfo=None))
             optimized.to_excel(writer,sheet_name='optimized')
             parameters.to_excel(writer,sheet_name='parameters')
             updated.to_excel(writer, sheet_name='snapshot')
@@ -219,7 +220,7 @@ async def perp_vs_cash(
         trajectory['holding_period'] = holding_period
 
         global run_i
-        filename = 'Runtime/logs/portfolio_optimizer/run_'+str(run_i)+'_'+datetime.utcnow().strftime("%Y-%m-%d-%Hh")+'.xlsx'
+        filename = 'Runtime/logs/portfolio_optimizer/run_'+str(run_i)+'_'+datetime.now(timezone.utc).strftime("%Y-%m-%d-%Hh")+'.xlsx'
         run_i+=1
         with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
             parameters = pd.Series({

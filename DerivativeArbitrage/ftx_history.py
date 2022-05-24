@@ -1,10 +1,14 @@
+import ccxt
+import dateutil.tz
+import pandas as pd
+
 from ftx_utils import *
 from io_utils import *
 
-history_start = datetime(2019, 11, 26)
+history_start = datetime(2019, 11, 26,tzinfo=timezone.utc)
 
 # all rates annualized, all volumes daily in usd
-async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
+async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0),
         dirname = 'Runtime/Mktdata_database'):
     data = pd.concat(await safe_gather((
             [async_from_parquet(dirname+'/'+f+'_funding.parquet')
@@ -25,7 +29,7 @@ async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).re
     return data[~data.index.duplicated()].sort_index()[start:end]
 
 async def build_history(futures,exchange,
-        end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
+        end = (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
         dirname = 'Runtime/Mktdata_database'):
     '''for now, increments local files and then uploads to s3'''
 
@@ -125,7 +129,7 @@ async def borrow_history(coin,exchange,
     data = data.astype(dtype={'time': 'int64'}).set_index(
         'time')[['rate','size']]
     data.rename(columns={'rate':coin+'/rate/borrow','size':coin+'/rate/size'},inplace=True)
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data=data[~data.index.duplicated()].sort_index()
 
     if dirname != '': await async_to_parquet(data,dirname + '/' + coin + '_borrow.parquet',mode='a')
@@ -157,25 +161,25 @@ async def funding_history(future,exchange,
     data['time']=data['timestamp'].astype(dtype='int64')
     data[exchange.market(future['symbol'])['id'] + '/rate/funding']=data['fundingRate']*365.25*24
     data=data[['time',exchange.market(future['symbol'])['id'] + '/rate/funding']].set_index('time')
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
     if dirname != '': await async_to_parquet(data,dirname + '/' + exchange.market(future['symbol'])['id'] + '_funding.parquet',mode='a')
 
     return data
 
-async def fetch_trades_history(symbol,exchange,
-                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                    end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
-                         frequency=timedelta(minutes=1),
-                    dirname=''):
+async def fetch_trades_history(symbol: str,exchange: ccxt.Exchange,
+                               start: datetime,
+                               end: datetime,
+                               frequency: timedelta,
+                               dirname: str = '') -> dict[str, pd.DataFrame]:
     max_trades_data = int(5000)  # in trades. limit is 5000 :(
     print('trades_history: ' + symbol)
 
-    ### grab data per batch of 5000, try weekly
+    ### grab data per batch of 5000, try hourly
     trades=[]
-    end_time = (start + timedelta(hours=1)).timestamp()
     start_time = start.timestamp()
+    end_time = (start + timedelta(minutes=30)).timestamp()
 
     while start_time < end.timestamp():
         new_trades =  (await exchange.publicGetMarketsMarketNameTrades(
@@ -184,35 +188,35 @@ async def fetch_trades_history(symbol,exchange,
         trades.extend(new_trades)
 
         if len(new_trades) > 0:
-            last_trade_time = dateutil.parser.isoparse(new_trades[0]['time']).timestamp()
+            last_trade_time = dateutil.parser.isoparse(max(t['time'] for t in new_trades)).timestamp()
             if last_trade_time > end.timestamp(): break
             if (len(new_trades)<max_trades_data)&(end_time>end.timestamp()): break
             start_time = last_trade_time if len(new_trades)==max_trades_data else end_time
         else:
             start_time=end_time
-        end_time = (datetime.fromtimestamp(start_time) + timedelta(
-            hours=1)).timestamp()
+        end_time = (datetime.utcfromtimestamp(start_time) + timedelta(minutes=30)).timestamp()
 
     if len(trades)==0:
         vwap=pd.DataFrame(columns=['size','volume','count','vwap'])
         vwap.columns = [symbol.split('/USD')[0] + '/trades/' + column for column in vwap.columns]
         return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
 
-    data = pd.DataFrame(data=trades)
+    data = pd.DataFrame(data=trades).sort_values('time')
     data[['size','price']] = data[['size','price']].astype(float)
     data['volume'] = data['size'] * data['price']
     data['square'] = data['size'] * data['price']*data['price']
     data['count'] = 1
 
-    data['time']=data['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=None))
+    data['time']=data['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=timezone.utc))
+    data = data.loc[(data['time']>=start) & (data['time']<=end),['time','size','volume','square','count']]
     data.set_index('time',inplace=True)
 
-    vwap=data[['size','volume','square','count']].resample(frequency).sum()
+    vwap=data.resample(frequency).sum()
     vwap['vwap']=vwap['volume']/vwap['size']
-    vwap['vwsp'] = np.sqrt(vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap'])
+    #vwap['vwsp'] = np.sqrt(vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap'])
 
     vwap.columns = [symbol.split('/USD')[0] + '/trades/' + column for column in vwap.columns]
-    #data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    #data.index = [datetime.utcfromtimestamp(x / 1000) for x in data.index]
     vwap = vwap[~vwap.index.duplicated()].sort_index().ffill()
 
     parquet_filename = dirname + '/' + symbol.split('/USD')[0] + "_trades.parquet"
@@ -271,13 +275,13 @@ async def rate_history(future,exchange,
         data['rate/c'] = data.apply(
             lambda y: calc_basis(y['mark/c'],
                                  indexes.loc[y.name, 'indexes/c'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
+                                 datetime.utcfromtimestamp(int(y.name / 1000)).replace(tzinfo=timezone.utc)), axis=1)
         data['rate/h'] = data.apply(
             lambda y: calc_basis(y['mark/h'], indexes.loc[y.name, 'indexes/h'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
+                                 datetime.utcfromtimestamp(int(y.name / 1000)).replace(tzinfo=timezone.utc)), axis=1)
         data['rate/l'] = data.apply(
             lambda y: calc_basis(y['mark/l'], indexes.loc[y.name, 'indexes/l'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
+                                 datetime.utcfromtimestamp(int(y.name / 1000)).replace(tzinfo=timezone.utc)), axis=1)
     elif future['type'] == 'perpetual': ### 1h funding = (mark/spot-1)/24
         data['rate/T'] = None
         data['rate/c'] = (mark['mark/c'] / indexes['indexes/c'] - 1)*365.25
@@ -287,7 +291,7 @@ async def rate_history(future,exchange,
         print('what is ' + future['symbol'] + ' ?')
         return
     data.columns = [exchange.market(future['symbol'])['id'] + '/' + c for c in data.columns]
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
     if dirname != '': await async_to_parquet(data,dirname + '/' + exchange.market(future['symbol'])['id'] + '_futures.parquet',mode='a')
@@ -322,7 +326,7 @@ async def spot_history(symbol, exchange,
     data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
     data['volume'] = data['volume'] * 24 * 3600 / int(resolution)
     data.columns = [symbol.replace('/USD','') + '/price/' + column for column in data.columns]
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
     if dirname!='': await async_to_parquet(data,dirname + '/' + symbol.replace('/USD', '') + '_price.parquet',mode='a')
 
@@ -351,7 +355,7 @@ async def ftx_history_main_wrapper(*argv):
         await build_history(futures, exchange)
     elif argv[0] == 'correct':
         hy_history = await get_history(futures, history_start)
-        end = datetime.now()-timedelta(days=int(argv[3]))
+        end = datetime.now(timezone.utc)-timedelta(days=int(argv[3]))
         await correct_history(futures,exchange,hy_history[:end])
         await build_history(futures, exchange)
     elif argv[0] == 'get':
@@ -366,13 +370,13 @@ async def ftx_history_main_wrapper(*argv):
 def ftx_history_main(*argv):
     argv=list(argv)
     if len(argv) < 1:
-        argv.extend(['build']) # build or correct
+        argv.extend(['correct']) # build or correct
     if len(argv) < 2:
         argv.extend(['wide']) # universe name, or list of currencies, or 'all'
     if len(argv) < 3:
         argv.extend(['ftx']) # exchange_name
     if len(argv) < 4:
-        argv.extend([100])# nb days
+        argv.extend([10])# nb days
 
     return asyncio.run(ftx_history_main_wrapper(*argv))
 

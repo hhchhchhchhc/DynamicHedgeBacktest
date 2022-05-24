@@ -65,7 +65,7 @@ async def enricher(exchange,futures,holding_period,equity,
 
     if not futures[futures['type'] == 'future'].empty:
         futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
-            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
+            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now(timezone.utc)), axis=1)
 
     #### fill in borrow for spotMargin==False ot OTC override
     futures.loc[futures['spotMargin']==False,'borrow']=999
@@ -158,7 +158,7 @@ def update(futures,point_in_time,history,equity,
         lambda f: history.loc[point_in_time, f.name + '/rate/T'],axis=1)
     futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
         lambda f: calc_basis(f['mark'], f['index'],
-                             dateutil.parser.isoparse(f['expiry']).replace(tzinfo=None),
+                             dateutil.parser.isoparse(f['expiry']).replace(tzinfo=timezone.utc),
                              point_in_time), axis=1)
 
     # spot carries
@@ -286,6 +286,7 @@ def forecast(exchange, futures, hy_history,
                 all.columns = ['intLongCarry', 'intShortCarry', 'E_long','E_short','intBorrow','E_intBorrow']
                 all['intUSDborrow']=intUSDborrow
                 all['E_intUSDborrow'] = E_intUSDborrow
+                all.index = all.index = [t.replace(tzinfo=None) for t in all.index]
                 all.to_excel(writer, sheet_name=col)
 
     return (intLongCarry,intShortCarry,intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow)
@@ -298,7 +299,7 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
                               slippage_override: int = -999, slippage_orderbook_depth: float = 0,
                               slippage_scaler: float = 1.0,params={'override_slippage':True,'fee_mode':'retail'}) -> None:
     futures=input_futures.copy()
-    point_in_time=datetime.now()
+    point_in_time=datetime.now(timezone.utc)
     markets=await exchange.fetch_markets()
     if params['override_slippage']==True:
         futures['spot_ask'] = slippage_override
@@ -345,7 +346,7 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
     futures['expiryTime'] = futures.apply(lambda x:
                                           x['expiryTime'] if x['type'] == 'future'
                                           else point_in_time + holding_period,
-                                          axis=1)  # .replace(tzinfo=timezone.utc)
+                                          axis=1)  # ,tz=timezone.utc)
 
     # buy is negative, sell is positive
     buy_slippage=futures['future_bid'] - futures['spot_ask']
