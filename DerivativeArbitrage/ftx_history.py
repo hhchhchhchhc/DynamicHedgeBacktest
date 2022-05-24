@@ -179,7 +179,7 @@ async def fetch_trades_history(symbol: str,exchange: ccxt.Exchange,
     ### grab data per batch of 5000, try hourly
     trades=[]
     start_time = start.timestamp()
-    end_time = (start + timedelta(minutes=30)).timestamp()
+    end_time = start_time + 30*60
 
     while start_time < end.timestamp():
         new_trades =  (await exchange.publicGetMarketsMarketNameTrades(
@@ -194,7 +194,7 @@ async def fetch_trades_history(symbol: str,exchange: ccxt.Exchange,
             start_time = last_trade_time if len(new_trades)==max_trades_data else end_time
         else:
             start_time=end_time
-        end_time = (datetime.utcfromtimestamp(start_time) + timedelta(minutes=30)).timestamp()
+        end_time = start_time + 30*60
 
     if len(trades)==0:
         vwap=pd.DataFrame(columns=['size','volume','count','vwap'])
