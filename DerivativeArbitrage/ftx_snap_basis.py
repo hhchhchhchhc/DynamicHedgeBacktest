@@ -346,7 +346,7 @@ async def fetch_rate_slippage(input_futures, exchange: ccxt.Exchange,holding_per
     futures['expiryTime'] = futures.apply(lambda x:
                                           x['expiryTime'] if x['type'] == 'future'
                                           else point_in_time + holding_period,
-                                          axis=1)  # ,tz=timezone.utc)
+                                          axis=1)  # ).replace(tzinfo=timezone.utc)
 
     # buy is negative, sell is positive
     buy_slippage=futures['future_bid'] - futures['spot_ask']

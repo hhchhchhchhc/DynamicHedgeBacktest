@@ -82,7 +82,7 @@ async def mkt_speed(exchange, symbol, target_depth=10000):
     interpolator[float(target_depth)]=np.NaN
     interpolator.interpolate(method='index',inplace=True)
     res=interpolator[float(target_depth)]
-    return nowtime-datetime.utcfromtimestamp(res / 1000, tz=timezone.utc)
+    return nowtime-datetime.utcfromtimestamp(res / 1000).replace(tzinfo=timezone.utc)
 
 async def vwap(exchange,symbol,start_time,end_time,freq):
     '''vwap calc, disregard pagination :('''

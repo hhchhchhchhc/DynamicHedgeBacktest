@@ -164,7 +164,7 @@ def deribit_smile_genesisvolatility(currency,start = datetime.now(tz=timezone.ut
               "\"variables\":{\"exchange\":\"deribit\",\"symbol\":\""+currency+"\"}}"
     response = requests.request("GET", url, headers=headers, data=payload).json()
     atm = pd.DataFrame(response['data']['FixedMaturityAtm'])
-    atm['date'] = atm['date'].apply(lambda x: datetime.utcfromtimestamp(float(x) / 1000,tz=timezone.utc))
+    atm['date'] = atm['date'].apply(lambda x: datetime.utcfromtimestamp(float(x) / 1000).replace(tzinfo=timezone.utc))
     atm.set_index('date',inplace=True)
     atm.columns = pd.MultiIndex.from_tuples([(float(c.split('atm')[1])/365.25,'atm') for c in atm.columns],names=['tenor','strike'])
     atm /= 100
@@ -182,7 +182,7 @@ def deribit_smile_genesisvolatility(currency,start = datetime.now(tz=timezone.ut
               "\"variables\":{\"exchange\":\"deribit\",\"symbol\":\""+currency+"\"}}"
     response = requests.request("GET", url, headers=headers, data=payload).json()
     skew = pd.DataFrame(response['data']['FixedMaturitySkewLite'])
-    skew['date'] = skew['date'].apply(lambda x: datetime.utcfromtimestamp(float(x) / 1000,tz=timezone.utc))
+    skew['date'] = skew['date'].apply(lambda x: datetime.utcfromtimestamp(float(x) / 1000).replace(tzinfo=timezone.utc))
     skew.set_index('date',inplace=True)
     def columnParser(word):
         def word2float(word):
