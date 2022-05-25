@@ -13,9 +13,10 @@ import ccxtpro
 
 max_nb_coins = 10  # TODO: sharding needed
 max_cache_size = 10000
+message_cache_size = 1000
 check_frequency = 60
 
-entry_tolerance = 0.5 # green light if basket better than median
+entry_tolerance = 0.2 # green light if basket better than quantile
 edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(5) # stop on 5m stdev
 time_budget = 15*60 # 10m. used in transaction speed screener and to scale down exec params
@@ -126,7 +127,7 @@ def symbol_locked(wrapped):
     '''decorates self.lifecycle_xxx(lientOrderId) to prevent race condition on state'''
     @functools.wraps(wrapped)
     def _wrapper(*args, **kwargs):
-       # return wrapped(*args, **kwargs) # temporary disable
+        return wrapped(*args, **kwargs) # TODO:temporary disabled
 
         self=args[0]
         symbol = args[1]['clientOrderId'].split('_')[1]
@@ -157,8 +158,8 @@ class myFtx(ccxtpro.ftx):
     def __init__(self, config={}):
         super().__init__(config=config)
         self.lock = {'reconciling':threading.Lock()}
-        self.message_missed = collections.deque(maxlen=100)
-        if __debug__: self.all_messages = collections.deque(maxlen=1000)
+        self.message_missed = collections.deque(maxlen=message_cache_size)
+        if __debug__: self.all_messages = collections.deque(maxlen=message_cache_size*10)
         self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
 
         self.orders_lifecycle = dict()
@@ -842,6 +843,9 @@ class myFtx(ccxtpro.ftx):
                 self.handle_order(self.client('wss://ftx.com/ws'),message | {'orderTrigger':'replayed'})
             elif channel == 'fills':
                 self.handle_my_trade(self.client('wss://ftx.com/ws'), message | {'orderTrigger':'replayed'})
+            # we record the orderbook but don't launch quoter (don't want to react after the fact)
+            elif channel == 'orderbook':
+                self.handle_order_book_update(self.client('wss://ftx.com/ws'), message | {'orderTrigger':'replayed'})
 
         # log risk
         if True:
@@ -939,6 +943,7 @@ class myFtx(ccxtpro.ftx):
     async def monitor_order_book(self, symbol):
         order_book = await self.watch_order_book(symbol)
 
+    @intercept_message_during_reconciliation
     def handle_order_book_update(self, client, message):
         '''on each top of book update, update market_state and send orders
         tunes aggressiveness according to risk.
@@ -961,7 +966,8 @@ class myFtx(ccxtpro.ftx):
                               'bidVolume':orderbook['bids'][0][1],
                               'askVolume':orderbook['asks'][0][1]}
         self.exec_parameters[coin][symbol]['history'].append([timestamp,mid])
-        if symbol in self.running_symbols and not self.lock['reconciling'].locked():
+        if not ('orderTrigger' in message and message['orderTrigger'] != 'replayed')\
+                and not self.lock['reconciling'].locked():
             with self.lock[symbol]:
                 self.quoter(symbol, message)
 
@@ -998,12 +1004,15 @@ class myFtx(ccxtpro.ftx):
         # if increases risk, go passive
         if np.abs(netDelta+size)-np.abs(netDelta)>0:
 
-            # set limit at target quantile
-            #current_basket_price = sum(self.mid(symbol)*self.exec_parameters[coin][symbol]['diff']
-            #                           for symbol in self.exec_parameters[coin].keys() if symbol in self.markets)
-            #edit_price_depth = max([0,(current_basket_price-self.exec_parameters[coin]['entry_level'])/params['diff']])#TODO: sloppy logic assuming no correlation
-            edit_price_depth = (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth']*self.exec_parameters_scaler # equate: profit if done ~ marginal risk * stdev
-            edit_trigger_depth=params['edit_trigger_depth']*self.exec_parameters_scaler
+            current_basket_price = sum(self.mid(symbol)*self.exec_parameters[coin][symbol]['diff']
+                                       for symbol in self.exec_parameters[coin].keys() if symbol in self.markets)
+            # mkt order if target reached...
+            if current_basket_price < self.exec_parameters[coin]['entry_level']/params['diff']:#TODO: sloppy logic assuming no correlation
+                edit_price_depth = 0 # (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth']*self.exec_parameters_scaler # equate: profit if done ~ marginal risk * stdev
+            # ...risk-based limit otherwise
+            else:
+                edit_price_depth = (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth']*self.exec_parameters_scaler # equate: profit if done ~ marginal risk * stdev
+            edit_trigger_depth = params['edit_trigger_depth']*self.exec_parameters_scaler
             self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=None)
         # if decrease risk, go aggressive
         else:
