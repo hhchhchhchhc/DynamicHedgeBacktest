@@ -67,14 +67,16 @@ async def build_history(futures,exchange,
 
     # static values for non spot Margin underlyings
     otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
+    coroutines = []
     for f in list(futures.loc[futures['spotMargin'] == False, 'underlying'].unique()):
         spot_parquet = from_parquet(dirname + '/' + f + '_price.parquet')
-        to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/borrow'],
+        coroutines += [async_to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/borrow'],
                                 data=otc_file.loc[f,'borrow'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 999
-                                ),dirname + '/' + f + '_borrow.parquet',mode='a')
-        to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/size'],
+                                ),dirname + '/' + f + '_borrow.parquet',mode='a'),
+                       async_to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/size'],
                                 data=otc_file.loc[f,'size'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 0
-                                ),dirname + '/' + f + '_borrow.parquet',mode='a')
+                                ),dirname + '/' + f + '_borrow.parquet',mode='a')]
+    await safe_gather(coroutines)
 
     #os.system("aws s3 sync Runtime/Mktdata_database/ s3://hourlyftx/Mktdata_database")
 
