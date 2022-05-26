@@ -12,7 +12,7 @@ async def refresh_universe(exchange,universe_size):
         except Exception as e:
             logging.exception('invalid Runtime/configs/universe.xlsx', exc_info=True)
 
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
+    fetched = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = await exchange.fetch_markets()
 
     universe_start = datetime(2021, 12, 1)
@@ -26,15 +26,15 @@ async def refresh_universe(exchange,universe_size):
               'institutional':[5e6,5e6,-1,1e7]})# instiutionals borrow OTC
 
     # qualitative screening
-    futures = futures[
-        (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
-        & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
-        & (futures['tokenizedEquity'] != True)]
-
+    filtered = fetched[
+        (fetched['expired'] == False) & (fetched['enabled'] == True) & (fetched['type'] != "move")
+        & (fetched.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
+        & (fetched['tokenizedEquity'] != True)]
+    enriched = await enricher(exchange, filtered, holding_period=timedelta(days=2), equity=1e6)
     # volume screening
-    await build_history(futures,exchange)
-    hy_history = await get_history(futures, end=universe_end, start_or_nb_hours=universe_start)
-    futures = market_capacity(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
+    await build_history(enriched,exchange)
+    hy_history = await get_history(enriched, end=universe_end, start_or_nb_hours=universe_start)
+    futures = market_capacity(enriched, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
 
     with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
         for c in screening_params:# important that wide is first :(
