@@ -215,7 +215,7 @@ async def fetch_trades_history(symbol: str,exchange: ccxt.Exchange,
 
     vwap=data.resample(frequency).sum()
     vwap['vwap']=vwap['volume']/vwap['size']
-    #vwap['vwsp'] = np.sqrt(vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap'])
+    vwap['vwsp'] = (vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap']).apply(np.sqrt)
 
     vwap.columns = [symbol.split('/USD')[0] + '/trades/' + column for column in vwap.columns]
     #data.index = [datetime.utcfromtimestamp(x / 1000) for x in data.index]
@@ -224,7 +224,10 @@ async def fetch_trades_history(symbol: str,exchange: ccxt.Exchange,
     parquet_filename = dirname + '/' + symbol.split('/USD')[0] + "_trades.parquet"
     if dirname != '': vwap.to_parquet(parquet_filename)
 
-    return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
+    return {'symbol':exchange.market(symbol)['symbol'],
+            'coin':exchange.market(symbol)['base'],
+            'vwap':vwap[symbol.split('/USD')[0] + '/trades/vwap'],
+            'volume':vwap[symbol.split('/USD')[0] + '/trades/volume']}
 
 
 #### annualized rates for futures and perp, volumes are daily
