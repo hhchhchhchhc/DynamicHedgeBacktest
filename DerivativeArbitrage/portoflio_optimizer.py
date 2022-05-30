@@ -154,32 +154,36 @@ async def perp_vs_cash(
                          intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
                          minimum_carry=minimum_carry,
                          previous_weights_index=previous_weights.index)
+        try:
+            optimized = cash_carry_optimizer(exchange, updated,
+                                             previous_weights_df=previous_weights[
+                                                 previous_weights.index.isin(filtered.index)],
+                                             holding_period=holding_period,
+                                             signal_horizon=signal_horizon,
+                                             concentration_limit=concentration_limit,
+                                             mktshare_limit=mktshare_limit,
+                                             equity=equity,
+                                             optional_params=(['verbose'] if __debug__ else []) + (['cost_blind']
+                                             if (point_in_time == backtest_start)&(backtest_start != backtest_end)
+                                             else [])) # ignore costs on first time of a backtest
+            # need to assign RealizedCarry to previous_time
+            if not trajectory.empty:
+                trajectory.loc[trajectory['time'] == previous_time,'RealizedCarry'] = \
+                    trajectory.loc[trajectory['time'] == previous_time,'name'].apply(
+                        lambda f: optimized.loc[f,'RealizedCarry'] if f in optimized.index else 0)
+        except Exception as e:
+            print(e)
+        finally:
+            optimized['time'] = point_in_time
 
-        optimized = cash_carry_optimizer(exchange, updated,
-                                         previous_weights_df=previous_weights[
-                                             previous_weights.index.isin(filtered.index)],
-                                         holding_period=holding_period,
-                                         signal_horizon=signal_horizon,
-                                         concentration_limit=concentration_limit,
-                                         mktshare_limit=mktshare_limit,
-                                         equity=equity,
-                                         optional_params=(['verbose'] if __debug__ else []) + (['cost_blind']
-                                         if (point_in_time == backtest_start)&(backtest_start != backtest_end)
-                                         else [])) # ignore costs on first time of a backtest
-        # need to assign RealizedCarry to previous_time
-        if not trajectory.empty:
-            trajectory.loc[trajectory['time'] == previous_time,'RealizedCarry'] = \
-                trajectory.loc[trajectory['time'] == previous_time,'name'].apply(
-                    lambda f: optimized.loc[f,'RealizedCarry'] if f in optimized.index else 0)
-        optimized['time'] = point_in_time
+            # increment
+            trajectory = trajectory.append(optimized.reset_index().rename({'name': 'symbol'}), ignore_index=True)
+            trajectory['time'] = trajectory['time'].apply(lambda t: t.replace(tzinfo=None))
+            trajectory.to_excel('Runtime/logs/portfolio_optimizer/temp_trajectory.xlsx')
+            previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
 
-        # increment
-        trajectory = trajectory.append(optimized.reset_index().rename({'name': 'symbol'}), ignore_index=True)
-        trajectory['time'] = trajectory['time'].apply(lambda t: t.replace(tzinfo=None))
-        trajectory.to_excel('Runtime/logs/portfolio_optimizer/temp_trajectory.xlsx')
-        previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
-        previous_time = point_in_time
-        point_in_time += holding_period
+            previous_time = point_in_time
+            point_in_time += holding_period
 
     # for live, just send last optimized
     if backtest_start==backtest_end:
@@ -205,6 +209,7 @@ async def perp_vs_cash(
         shutil.copy2(filename,'Runtime/ApprovedRuns/current_weights.xlsx')
 
         display = optimized[['optimalWeight','ExpectedCarry','transactionCost']]
+        display['annualCarry'] = optimized['ExpectedCarry']/optimized['optimalWeight']
         totals = display.loc[['USD','total']]
         display = display.drop(index=['USD','total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
         #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
@@ -277,7 +282,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['sysperp'])
+        argv.extend(['backtest'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -318,9 +323,9 @@ def strategies_main(*argv):
             for concentration_limit in [[1]]:
                 for mktshare_limit in [[MKTSHARE_LIMIT]]:
                     for minimum_carry in [[MINIMUM_CARRY]]:
-                        for signal_horizon in [[timedelta(hours=h) for h in [24]]]:
-                            for holding_period in [[timedelta(hours=h) for h in [48]]]:
-                                for slippage_override in [[0.0002]]:
+                        for signal_horizon in [[timedelta(hours=h) for h in [60]]]:
+                            for holding_period in [[timedelta(hours=h) for h in [12]]]:
+                                for slippage_override in [[0.000]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange='ftx',
                                         equity=equity,
@@ -331,8 +336,8 @@ def strategies_main(*argv):
                                         signal_horizon=signal_horizon,
                                         holding_period=holding_period,
                                         slippage_override=slippage_override,
-                                        backtest_start=datetime(2021,9,1),
-                                        backtest_end=datetime(2022,3,1)))
+                                        backtest_start=datetime(2021,5,25), # fails at 9oct21, 26oct21
+                                        backtest_end=datetime(2022,5,25)))
         return pd.DataFrame()
     else:
         print(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
