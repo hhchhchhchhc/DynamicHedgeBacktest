@@ -21,6 +21,7 @@ entry_tolerance = 0.2 # green light if basket better than quantile
 edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
 stop_tolerance = np.sqrt(5) # stop on 5m stdev
 time_budget = 15*60 # 10m. used in transaction speed screener and to scale down exec params
+stdev_window = 5* time_budget
 delta_limit = 0.2 # delta limit / pv
 slice_factor = 0.25 # % of request
 edit_price_tolerance = np.sqrt(60/60)#price on 1m std
@@ -41,7 +42,19 @@ def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
     with open(f'{path}_request.json', 'r') as file:
         d = json.load(file)
         start_time = d.pop('inception_time')
-        request = pd.DataFrame(d)
+        request = pd.DataFrame(d).T
+    parameters = pd.DataFrame(index=['value','comment'],data={'max_nb_coins': [max_nb_coins,'sharding'],
+                            'time_budget': [time_budget, 'scaling aggressiveness to 0 at time_budget (in seconds)'],
+                            'slice_factor': [slice_factor, 'slice in % of request'],
+                            'max_cache_size': [max_cache_size,'mkt data cache'],
+                            'message_cache_size': [message_cache_size,'missed messages cache'],
+                            'entry_tolerance': [entry_tolerance,'green light if basket better than quantile'],
+                            'stdev_window': [stdev_window, 'stdev horizon for scaling parameters'],
+                            'edit_price_tolerance': [edit_price_tolerance,'place on edit_price_tolerance (in minutes) *  stdev'],
+                            'edit_trigger_tolerance': [edit_trigger_tolerance, 'chase at edit_trigger_tolerance (in minutes) *  stdev'],
+                            'stop_tolerance': [stop_tolerance, 'stop at stop_tolerance (in minutes) *  stdev'],
+                            'check_frequency': [check_frequency,'risk recon frequency'],
+                            'delta_limit': [delta_limit,  'in % of pv']}).T
 
     data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
     if data[data['filled']>0].empty:
@@ -68,7 +81,7 @@ def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
     by_symbol = pd.DataFrame({
         symbol:
             {'time_to_execute':symbol_data['slice_started'].max()-symbol_data['slice_started'].min(),
-             'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['average']).sum()/symbol_data['filled'].sum()/symbol_data.sort_values(by='slice_started',ascending=True).iloc[0]['mid_at_inception']-1),
+             'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['average']).sum()/symbol_data['filled'].sum()/request.loc[symbol,'spot']-1),
              'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['average']).sum()),
              'filledUSD': (symbol_data['filled']*symbol_data['average']).sum()
              }
@@ -112,6 +125,7 @@ def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
             np.abs).sum()
         by_symbol.to_excel(writer,sheet_name='by_symbol')
         request.to_excel(writer, sheet_name='request')
+        parameters.to_excel(writer, sheet_name='parameters')
         by_clientOrderId.to_excel(writer, sheet_name='by_clientOrderId')
         data.to_excel(writer, sheet_name='data')
         history.index = [t.replace(tzinfo=None) for t in history.index]
@@ -627,13 +641,14 @@ class myFtx(ccxtpro.ftx):
 
         self.latest_order_reconcile_timestamp = nowtime
         await self.lifecycle_to_json()
+        #await self.order_snaphot_check()
 
     async def order_snaphot_check(self):
-        # remove fakes
-        fetch_status = [self.fetch_order(id=None, params={clientOrderId}) for clientOrderId,data in
+        fetch_coros = [self.fetch_order(id=None, params={clientOrderId}) for clientOrderId,data in
                          self.orders_lifecycle.items()
                          if data[-1]['lifecycle_state'] in myFtx.openStates]
-        orderStatuses = await safe_gather([self.fetch_open_orders()] + orderStatuses)
+        fetch_coros += [self.fetch_open_orders()]
+        orderStatuses = await safe_gather(fetch_coros)
 
         for internal, actual in zip(self.orders_lifecycle.values(), orderStatuses[1:]):
             pass
@@ -658,7 +673,7 @@ class myFtx(ccxtpro.ftx):
 
         frequency = timedelta(minutes=1)
         end = datetime.now(timezone.utc)
-        start = end - timedelta(seconds=time_budget)
+        start = end - timedelta(seconds=stdev_window)
 
         trades_history_list = await safe_gather([fetch_trades_history(
             self.market(symbol)['id'], self, start, end, frequency=frequency)
@@ -752,7 +767,7 @@ class myFtx(ccxtpro.ftx):
         '''scales order placement params with time'''
         frequency = timedelta(minutes=1)
         end = datetime.now(timezone.utc)
-        start = end - timedelta(seconds=time_budget)
+        start = end - timedelta(seconds=stdev_window)
 
         # TODO: rather use cached history except for first run
         #if any(len(self.exec_parameters[self.markets[symbol]['base']][symbol]['history']) < 100 for symbol in self.running_symbols):
@@ -788,6 +803,7 @@ class myFtx(ccxtpro.ftx):
                 entry_tolerance)
             for symbol, data in coin_data.items():
                 stdev = data['vwap'].std().squeeze()
+                if not (stdev>0): stdev = 1e-16
                 self.exec_parameters[coin][symbol]['edit_trigger_depth'] = stdev * edit_trigger_tolerance * scaler
                 self.exec_parameters[coin][symbol]['edit_price_depth'] = stdev * edit_price_tolerance * scaler
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * stop_tolerance * scaler
@@ -1067,13 +1083,12 @@ class myFtx(ccxtpro.ftx):
                     if _symbol in self.markets:
                         self.exec_parameters[coin][_symbol]['edit_price_depth'] = 0
 
-            edit_price_depth = params['edit_price_depth']
             edit_trigger_depth = params['edit_trigger_depth']
             self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=None)
         # if decrease risk, go aggressive
         else:
-            edit_trigger_depth = 0 # priceIncrement not edit_trigger_depth !
-            edit_price_depth = 0 # mkt order
+            edit_trigger_depth = 10 * self.exec_parameters[coin][symbol]['priceIncrement'] # priceIncrement not edit_trigger_depth !
+            edit_price_depth = 2 * self.exec_parameters[coin][symbol]['priceIncrement']
             stop_depth = params['stop_depth']
             self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
@@ -1368,7 +1383,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
 def ftx_ws_spread_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['unwind'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     logging.info(f'running {argv}')
