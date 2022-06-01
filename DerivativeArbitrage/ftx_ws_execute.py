@@ -48,12 +48,12 @@ def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
                             'slice_factor': [slice_factor, 'slice in % of request'],
                             'max_cache_size': [max_cache_size,'mkt data cache'],
                             'message_cache_size': [message_cache_size,'missed messages cache'],
-                            'entry_tolerance': [entry_tolerance,'green light if basket better than quantile'],
-                            'stdev_window': [stdev_window, 'stdev horizon for scaling parameters'],
+                            'entry_tolerance': [entry_tolerance,'green light if basket better than quantile(entry_tolerance)'],
+                            'stdev_window': [stdev_window, 'stdev horizon for scaling parameters. in sec.'],
                             'edit_price_tolerance': [edit_price_tolerance,'place on edit_price_tolerance (in minutes) *  stdev'],
                             'edit_trigger_tolerance': [edit_trigger_tolerance, 'chase at edit_trigger_tolerance (in minutes) *  stdev'],
                             'stop_tolerance': [stop_tolerance, 'stop at stop_tolerance (in minutes) *  stdev'],
-                            'check_frequency': [check_frequency,'risk recon frequency'],
+                            'check_frequency': [check_frequency,'risk recon frequency. in seconds'],
                             'delta_limit': [delta_limit,  'in % of pv']}).T
 
     data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
