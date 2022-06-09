@@ -491,17 +491,34 @@ async def diff_portoflio_wrapper(*argv):
     return diff
 
 async def fetch_portfolio(exchange,time):
-    # fetch mark,spot and balances as closely as possible
-    markets = await exchange.fetch_markets()
-    balances = (await exchange.fetch_balance(params={}))['info']['result']
+    '''fetch mark,spot and balances as closely as possible
+    we shoot rest requests and avg to reduce impact of latency'''
+    n_requests = int(safe_gather_limit / 3)
+    p = [getattr(exchange,coro)(params={'dummy':i})
+         for i in range(n_requests)
+         for coro in ['fetch_markets','fetch_balance','fetch_positions']]
+    results = await safe_gather(p)
+
+    markets_list = []
+    for result in results[0::3]:
+        res = pd.DataFrame(result).set_index('id')
+        res['price'] = res['info'].apply(lambda f: float(f['price']) if f['price'] else -9999999)
+        markets_list.append(res[['price']])
+    markets = sum(markets_list) / len(markets_list)
+
+    balances_list = [pd.DataFrame(r['info']['result']).set_index('coin')[['total']].astype(float) for r in results[1::3]]
+    balances = sum(balances_list)/len(balances_list)
+    var = sum([bal*bal for bal in balances_list])/len(balances_list) - balances*balances
+    balances.reset_index(inplace=True)
+
+    positions_list = [pd.DataFrame([r['info'] for r in result],dtype=float).set_index('future')[['netSize','unrealizedPnl']] for result in results[2::3]]
+    positions = sum(positions_list) / len(positions_list)
+    var = sum([pos*pos for pos in positions_list]) / len(positions_list) - positions * positions
+    positions.reset_index(inplace=True)
+
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True))
     futures=futures.set_index('name')
 
-    markets = pd.DataFrame([r['info'] for r in markets], dtype=float).set_index('name')
-    balances=pd.DataFrame(balances, dtype=float)
-
-    positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={'showAvgPrice':True})],
-                             dtype=float)  # )
     positions = positions[positions['netSize'] != 0.0].fillna(0.0)
     if not positions.empty:
         unrealizedPnL= positions['unrealizedPnl'].sum()
