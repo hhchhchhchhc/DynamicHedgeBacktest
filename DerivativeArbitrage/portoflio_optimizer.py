@@ -15,8 +15,8 @@ async def refresh_universe(exchange,universe_size):
     fetched = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
     markets = await exchange.fetch_markets()
 
-    universe_start = datetime(2021, 12, 1)
-    universe_end = datetime(2022, 3, 1)
+    universe_start = datetime(2022, 1, 1)
+    universe_end = datetime(2022, 5, 1)
     borrow_decile = 0.5
     #type_allowed=['perpetual']
     screening_params=pd.DataFrame(
@@ -45,7 +45,7 @@ async def refresh_universe(exchange,universe_size):
                 & (futures['openInterestUsd'] > screening_params.loc['open_interest_threshold',c])]
             population.to_excel(writer, sheet_name=c)
 
-        parameters = pd.Series(name='run_params',data={
+        pd.Series(name='run_params',data={
             'run_date':datetime.today(),
             'universe_start': universe_start,
             'universe_end': universe_end,
@@ -282,7 +282,7 @@ async def strategy_wrapper(**kwargs):
 def strategies_main(*argv):
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['backtest'])
+        argv.extend(['sysperp'])
     if len(argv) < 3:
         argv.extend([HOLDING_PERIOD, SIGNAL_HORIZON])
     print(f'running {argv}')
@@ -300,19 +300,21 @@ def strategies_main(*argv):
             backtest_start=None,backtest_end=None))[0]
     elif argv[0] == 'depth':
         global UNIVERSE
-        UNIVERSE = 'max' # set universe to 'max'
-        equities = [100000, 1000000, 5000000]
-        results = asyncio.run(strategy_wrapper(
-            exchange='ftx',
-            equity=equities,
-            concentration_limit=[CONCENTRATION_LIMIT],
-            mktshare_limit=[MKTSHARE_LIMIT],
-            minimum_carry=[MINIMUM_CARRY],
-            exclusion_list=EXCLUSION_LIST,
-            signal_horizon=[argv[1]],
-            holding_period=[argv[2]],
-            slippage_override=[SLIPPAGE_OVERRIDE],
-            backtest_start=None, backtest_end=None))
+        UNIVERSE = 'wide' # set universe to 'max'
+        equities = [10000, 100000, 1000000]
+        results = []
+        for equity in equities:
+            results += asyncio.run(strategy_wrapper(
+                exchange='ftx',
+                equity=[equity],
+                concentration_limit=[CONCENTRATION_LIMIT],
+                mktshare_limit=[MKTSHARE_LIMIT],
+                minimum_carry=[MINIMUM_CARRY],
+                exclusion_list=EXCLUSION_LIST,
+                signal_horizon=[argv[1]],
+                holding_period=[argv[2]],
+                slippage_override=[SLIPPAGE_OVERRIDE],
+                backtest_start=None, backtest_end=None))
         with pd.ExcelWriter('Runtime/logs/portfolio_optimizer/depth.xlsx', engine='xlsxwriter') as writer:
             for res,equity in zip(results,equities):
                 res.to_excel(writer,sheet_name=str(equity))
