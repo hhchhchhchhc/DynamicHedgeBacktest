@@ -1,136 +1,13 @@
-import asyncio
-import collections
-import threading
-import time
-
-import dateutil.parser
-import pandas as pd
-
 from io_utils import *
 from ftx_utils import *
 from ftx_history import fetch_trades_history
 from ftx_portfolio import diff_portoflio, MarginCalculator
 import ccxtpro
 
-max_nb_coins = 10  # TODO: sharding needed
-max_cache_size = 10000
-message_cache_size = 1000
-check_frequency = 60
-
-entry_tolerance = 0.2 # green light if basket better than quantile
-edit_trigger_tolerance = np.sqrt(60/60) # chase on 1m stdev
-stop_tolerance = np.sqrt(5) # stop on 5m stdev
-time_budget = 15*60 # 10m. used in transaction speed screener and to scale down exec params
-stdev_window = 5* time_budget
-delta_limit = 0.2 # delta limit / pv
-slice_factor = 0.25 # % of request
-edit_price_tolerance = np.sqrt(60/60)#price on 1m std
-
 class CustomRLock(threading._PyRLock):
     @property
     def count(self):
         return self._count
-
-def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
-    path = f'{dirname}/{prefix}'
-    with open(f'{path}_events.json', 'r') as file:
-        d = json.load(file)
-        events = {clientId: pd.DataFrame(data) for clientId, data in d.items()}
-    with open(f'{path}_risk_reconciliations.json', 'r') as file:
-        d = json.load(file)
-        risk = pd.DataFrame(d)
-    with open(f'{path}_request.json', 'r') as file:
-        d = json.load(file)
-        start_time = d.pop('inception_time')
-        request = pd.DataFrame(d).T
-    parameters = pd.DataFrame(index=['value','comment'],data={'max_nb_coins': [max_nb_coins,'sharding'],
-                            'time_budget': [time_budget, 'scaling aggressiveness to 0 at time_budget (in seconds)'],
-                            'slice_factor': [slice_factor, 'slice in % of request'],
-                            'max_cache_size': [max_cache_size,'mkt data cache'],
-                            'message_cache_size': [message_cache_size,'missed messages cache'],
-                            'entry_tolerance': [entry_tolerance,'green light if basket better than quantile(entry_tolerance)'],
-                            'stdev_window': [stdev_window, 'stdev horizon for scaling parameters. in sec.'],
-                            'edit_price_tolerance': [edit_price_tolerance,'place on edit_price_tolerance (in minutes) *  stdev'],
-                            'edit_trigger_tolerance': [edit_trigger_tolerance, 'chase at edit_trigger_tolerance (in minutes) *  stdev'],
-                            'stop_tolerance': [stop_tolerance, 'stop at stop_tolerance (in minutes) *  stdev'],
-                            'check_frequency': [check_frequency,'risk recon frequency. in seconds'],
-                            'delta_limit': [delta_limit,  'in % of pv']}).T
-
-    data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
-    if data[data['filled']>0].empty:
-        raise Exception('no fill to parse')
-
-    # pick biggest 'filled' for each clientOrderId
-    temp_events = {clientOrderId:
-                       {'inception_event':clientOrderId_data[clientOrderId_data['lifecycle_state']=='pending_new'].iloc[0],
-                        'last_fill_event':clientOrderId_data[clientOrderId_data['filled']>0].iloc[-1]}
-                   for clientOrderId, clientOrderId_data in data.groupby(by='clientOrderId') if clientOrderId_data['filled'].max()>0}
-    by_clientOrderId = pd.DataFrame({
-        clientOrderId:
-            {'symbol':clientOrderId_data['inception_event']['symbol'],
-             'slice_started' : clientOrderId_data['inception_event']['timestamp'],
-             'mid_at_inception' : 0.5*(clientOrderId_data['inception_event']['bid']+clientOrderId_data['inception_event']['ask']),
-             'amount' : clientOrderId_data['inception_event']['amount']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
-
-             'filled' : clientOrderId_data['last_fill_event']['filled']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
-             'average' : clientOrderId_data['last_fill_event']['average'],
-             'fee': sum(data.loc[data['clientOrderId']==clientOrderId,'fee'].dropna().apply(lambda x:x['cost'])),
-             'slice_ended' : clientOrderId_data['last_fill_event']['timestamp']}
-        for clientOrderId,clientOrderId_data in temp_events.items()}).T
-
-    by_symbol = pd.DataFrame({
-        symbol:
-            {'time_to_execute':symbol_data['slice_started'].max()-symbol_data['slice_started'].min(),
-             'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['average']).sum()/symbol_data['filled'].sum()/request.loc[symbol,'spot']-1),
-             'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['average']).sum()),
-             'filledUSD': (symbol_data['filled']*symbol_data['average']).sum()
-             }
-        for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T
-
-    fill_history = []
-    for symbol, symbol_data in by_clientOrderId.groupby(by='symbol'):
-        df = symbol_data[['slice_ended','filled','average']]
-        df['slice_ended'] = df['slice_ended'].apply(lambda t:datetime.utcfromtimestamp(t/1000).replace(tzinfo=timezone.utc))
-        df.set_index('slice_ended',inplace=True)
-        df = df.rename(columns={
-            'average':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/average',
-            'filled':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/filled'})
-        fill_history += [df]
-
-    async def build_vwap(start, end):
-        date_start = datetime.utcfromtimestamp(start / 1000).replace(tzinfo=timezone.utc)
-        date_end = datetime.utcfromtimestamp(end / 1000).replace(tzinfo=timezone.utc)
-        exchange = myFtx({  ## David personnal
-            'enableRateLimit': True,
-            'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
-            'secret': api_params.loc['ftx', 'value'],
-            'newUpdates': True})
-        exchange.authenticate()
-        await exchange.load_markets()
-        trades_history_list = await safe_gather([fetch_trades_history(
-            exchange.market(symbol)['id'], exchange, date_start,date_end, frequency=timedelta(seconds=1))
-            for symbol in by_symbol.index], semaphore=exchange.rest_semaphor)
-        await exchange.close()
-
-        return pd.concat([x['vwap'] for x in trades_history_list], axis=1,join='outer')
-
-    history = pd.concat([asyncio.run(build_vwap(start_time,by_clientOrderId['slice_ended'].max()))]+fill_history).sort_index()
-
-    with pd.ExcelWriter(f'{path}_exec.xlsx', engine='xlsxwriter', mode="w") as writer: #https://github.com/energyquantified/eq-python-client/issues/17
-        by_symbol.loc['average', 'fee'] = (by_symbol['filledUSD'].apply(
-            np.abs) * by_symbol['fee']).sum() / by_symbol['filledUSD'].apply(
-            np.abs).sum()
-        by_symbol.loc['average', 'slippage_bps'] = (by_symbol['filledUSD'].apply(
-            np.abs) * by_symbol['slippage_bps']).sum() / by_symbol['filledUSD'].apply(
-            np.abs).sum()
-        by_symbol.to_excel(writer,sheet_name='by_symbol')
-        request.to_excel(writer, sheet_name='request')
-        parameters.to_excel(writer, sheet_name='parameters')
-        by_clientOrderId.to_excel(writer, sheet_name='by_clientOrderId')
-        data.to_excel(writer, sheet_name='data')
-        history.index = [t.replace(tzinfo=None) for t in history.index]
-        history.to_excel(writer, sheet_name='history')
-        if not risk.empty: risk.sort_values(by='delta_timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
 
 def loop(func):
     @functools.wraps(func)
@@ -181,11 +58,12 @@ def intercept_message_during_reconciliation(wrapped):
     return _wrapper
 
 class myFtx(ccxtpro.ftx):
-    def __init__(self, config={}):
+    def __init__(self, parameters, config={}):
         super().__init__(config=config)
+        self.parameters = parameters
         self.lock = {'reconciling':threading.Lock()}
-        self.message_missed = collections.deque(maxlen=message_cache_size)
-        if __debug__: self.all_messages = collections.deque(maxlen=message_cache_size*10)
+        self.message_missed = collections.deque(maxlen=parameters['message_cache_size'])
+        if __debug__: self.all_messages = collections.deque(maxlen=parameters['message_cache_size']*10)
         self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
 
         self.orders_lifecycle = dict()
@@ -193,7 +71,7 @@ class myFtx(ccxtpro.ftx):
         self.latest_fill_reconcile_timestamp = None
         self.latest_exec_parameters_reconcile_timestamp = None
 
-        self.limit = myFtx.LimitBreached()
+        self.limit = myFtx.LimitBreached(parameters['check_frequency'])
         self.exec_parameters = {}
         self.running_symbols =[]
 
@@ -218,7 +96,7 @@ class myFtx(ccxtpro.ftx):
         def __init__(self,status):
             super().__init__(status)
     class LimitBreached(Exception):
-        def __init__(self,limit=None,check_frequency=check_frequency):
+        def __init__(self,check_frequency,limit=None):
             super().__init__()
             self.limit = limit
             self.check_frequency = check_frequency
@@ -241,7 +119,7 @@ class myFtx(ccxtpro.ftx):
                                      #and x['type'] == fill['type'] # sometimes None in fill
                                      and event['side'] == fill['side'] for event in events))
                 except StopIteration as e:
-                    raise Exception("fill {} not found".format(fill['symbol']))
+                    raise Exception("fill {} not found".format(fill))
         return found
 
     def mid(self,symbol):
@@ -392,7 +270,7 @@ class myFtx(ccxtpro.ftx):
         # 2) validate block
         past = self.orders_lifecycle[clientOrderId][-1]
         if past['lifecycle_state'] not in ['pending_new','acknowledged','partially_filled']:
-            self.myLogger.warning('order {} was {}'.format(past['clientOrderId'],past['lifecycle_state']))
+            self.myLogger.warning('order {} was {} before sent'.format(past['clientOrderId'],past['lifecycle_state']))
             return
 
         # 3) new block
@@ -532,12 +410,9 @@ class myFtx(ccxtpro.ftx):
             current['id'] = order_event['order']
 
             if current['remaining'] < size_threhold:
-                current['lifecycle_state'] = 'filled'
+                self.orders_lifecycle[clientOrderId] += [current|{'lifecycle_state':'filled'}]
             else:
-                current['lifecycle_state'] = 'partially_filled'
-
-            # 4) mine
-            self.orders_lifecycle[clientOrderId] += [current]
+                self.orders_lifecycle[clientOrderId] += [current | {'lifecycle_state': 'partially_filled'}]
 
     @symbol_locked
     def lifecycle_cancel_or_reject(self, order_event):
@@ -592,88 +467,47 @@ class myFtx(ccxtpro.ftx):
         # hopefully using another lock instance
         await self.lifecycle_to_json()
 
-    # @synchronized
     async def reconcile_orders(self):
-        '''fetch orders, recover missed messages and discard other pending_new'''
-        sincetime = max(self.exec_parameters['timestamp'],self.latest_fill_reconcile_timestamp-1000)
-        fetched_orders = await self.fetch_orders(since=sincetime)
-        nowtime = datetime.now(timezone.utc).timestamp()*1000
+        self.latest_order_reconcile_timestamp = datetime.now(timezone.utc).timestamp() * 1000
 
-        fetch_processed = []
-        # forcefully acknowledge
-        for order in fetched_orders:
-            clientOrderId = order['clientOrderId']
-            current_state = self.latest_value(clientOrderId,'lifecycle_state')
-            if order['status'] == 'open' and current_state not in myFtx.acknowledgedStates:
-                assert order['remaining'] > 0,"assert order['remaining'] > 0"
-                self.lifecycle_acknowledgment(order| {'comment': 'reconciled'})
-                self.myLogger.warning(f'{clientOrderId} reconciled from {current_state} to acknowledged')
-            elif order['status'] == 'canceled' and current_state not in ['canceled','rejected']:
-                self.lifecycle_cancel_or_reject(order| {'comment':'reconciled','lifecycle_state':'canceled'})
-                self.myLogger.warning(f'{clientOrderId} reconciled from {current_state} to canceled')
-            elif order['status'] == 'closed' and current_state not in ['filled', 'canceled', 'rejected']:
-                current = order| {'comment': 'reconciled'}
-                if order['remaining'] == 0:
-                    current['order'] = order['id']
-                    current['id'] = None
-                    self.lifecycle_fill(current)
-                    self.myLogger.warning(f'{clientOrderId} reconciled from {current_state} to filled')
+        internal_order_internal_status = {clientOrderId:data[-1] for clientOrderId,data in self.orders_lifecycle.items()
+                         if data[-1]['lifecycle_state'] in myFtx.openStates}
+        internal_order_external_status = await safe_gather([self.fetch_order(id=None, params={'clientOrderId':clientOrderId})
+                                                   for clientOrderId in internal_order_internal_status.keys()])
+        external_orders = await self.fetch_open_orders()
+
+        # missing orders
+        for order in external_orders:
+            if order['clientOrderId'] not in internal_order_internal_status.keys():
+                if order['clientOrderId'] in self.orders_lifecycle.keys():
+                    self.lifecycle_acknowledgment(order | {'comment':'reconciled_missing'})
+                    self.myLogger.warning('{} was missing'.format(order['clientOrderId']))
                 else:
-                    self.lifecycle_cancel_or_reject(current | {'lifecycle_state': 'rejected'})
-                    self.myLogger.warning(f'{clientOrderId} reconciled from {current_state} to rejected')
-            else:
-                raise Exception('unknown status {}'.format(order['status']))
-            fetch_processed += [clientOrderId]
+                    raise Exception('{} never intended'.format(order['clientOrderId']))
 
-        # remove fakes
-        for clientOrderId,data in self.orders_lifecycle.items():
-            # this implicitely relies on local timestamp < remote_timestamp + 1s
-            if data[-1]['lifecycle_state'] in myFtx.openStates \
-                    and data[0]['timestamp'] > self.latest_order_reconcile_timestamp \
-                    and clientOrderId not in fetch_processed:
-                current_state = self.latest_value(clientOrderId, 'lifecycle_state')
-                current = {'clientOrderId': clientOrderId,
-                           'timestamp': nowtime,
-                           'lifecycle_state': 'rejected',
-                           'comment': 'reconciled_not_found'}
-                #self.lifecycle_cancel_or_reject(current)
-                #self.myLogger.warning(f'fake {clientOrderId} rejected from state {current_state}')
+        #zombie orders
+        for external_status in internal_order_external_status:
+            if external_status['status'] != 'open':
+                self.lifecycle_cancel_or_reject(external_status | {'lifecycle_state': 'canceled', 'comment':'reconciled_zombie'})
+                self.myLogger.warning('{} was a {} zombie'.format(external_status['clientOrderId'],internal_order_internal_status[external_status['clientOrderId']]))
 
-        self.latest_order_reconcile_timestamp = nowtime
         await self.lifecycle_to_json()
-        #await self.order_snaphot_check()
 
-    async def order_snaphot_check(self):
-        fetch_coros = [self.fetch_order(id=None, params={clientOrderId}) for clientOrderId,data in
-                         self.orders_lifecycle.items()
-                         if data[-1]['lifecycle_state'] in myFtx.openStates]
-        fetch_coros += [self.fetch_open_orders()]
-        orderStatuses = await safe_gather(fetch_coros)
-
-        for internal, actual in zip(self.orders_lifecycle.values(), orderStatuses[1:]):
-            pass
     # ---------------------------------------------------------------------------------------------
     # ---------------------------------- PMS -----------------------------------------
     # ---------------------------------------------------------------------------------------------
 
-    async def build_state(self, weights,
-                          entry_tolerance = entry_tolerance,
-                          edit_trigger_tolerance = edit_trigger_tolerance, # chase on 30s stdev
-                          edit_price_tolerance = edit_price_tolerance,
-                          stop_tolerance = stop_tolerance, # stop on 5min stdev
-                          time_budget = time_budget,
-                          delta_limit = delta_limit, # delta limit / pv
-                          slice_factor = slice_factor): # cut in 10):
+    async def build_state(self, weights,parameters): # cut in 10):
         '''initialize all state and does some filtering (weeds out slow underlyings; should be in strategy)
-            target_sub_portfolios = {coin:{entry_level_increment,
+            target_sub_portfolios = {coin:{rush_level_increment,
             symbol1:{'spot_price','diff','target'}]}]'''
         self.build_logging()
 
-        self.limit.delta_limit = delta_limit
+        self.limit.delta_limit = self.parameters['delta_limit']
 
         frequency = timedelta(minutes=1)
         end = datetime.now(timezone.utc)
-        start = end - timedelta(seconds=stdev_window)
+        start = end - timedelta(seconds=self.parameters['stdev_window'])
 
         trades_history_list = await safe_gather([fetch_trades_history(
             self.market(symbol)['id'], self, start, end, frequency=frequency)
@@ -701,15 +535,19 @@ class myFtx(ccxtpro.ftx):
         diff_threshold = sorted(
             [max([np.abs(weights.loc[data['symbol'], 'diffUSD'])
                   for data in trades_history_list if data['coin']==coin])
-             for coin in coin_list])[-min(max_nb_coins,len(coin_list))]
+             for coin in coin_list])[-min(self.parameters['max_nb_coins'],len(coin_list))]
 
         data_dict = {coin: coin_data
                      for coin, coin_data in full_dict.items() if
-                     all(data['volume'] * time_budget > np.abs(data['diff']) for data in coin_data.values())
+                     all(data['volume'] * self.parameters['time_budget'] > np.abs(data['diff']) for data in coin_data.values())
                      and any(np.abs(data['diff']) >= max(diff_threshold/data['spot_price'], float(self.markets[symbol]['info']['minProvideSize'])) for symbol, data in coin_data.items())}
         if data_dict =={}:
             self.exec_parameters = {'timestamp': end.timestamp() * 1000}
             raise myFtx.DoneDeal('nothing to do')
+
+        self.running_symbols = [symbol
+                                    for coin_data in data_dict.values()
+                                    for symbol in coin_data.keys()]
 
         # get times series of target baskets, compute quantile of increments and add to last price
         # remove series
@@ -720,17 +558,17 @@ class myFtx(ccxtpro.ftx):
                                              sys.intern('diff'): data['diff'],
                                              sys.intern('target'): data['target'],
                                              sys.intern('slice_size'): max([float(self.markets[symbol]['info']['minProvideSize']),
-                                                                            slice_factor * np.abs(data['diff'])]),  # in coin
+                                                                            self.parameters['slice_factor'] * np.abs(data['diff'])]),  # in coin
                                              sys.intern('priceIncrement'): float(self.markets[symbol]['info']['priceIncrement']),
                                              sys.intern('sizeIncrement'): float(self.markets[symbol]['info']['minProvideSize']),
                                              sys.intern('takerVsMakerFee'): trading_fees[symbol]['taker']-trading_fees[symbol]['maker'],
                                              sys.intern('spot'): self.mid(symbol),
-                                             sys.intern('history'): collections.deque(maxlen=max_cache_size)
+                                             sys.intern('history'): collections.deque(maxlen=self.parameters['max_cache_size'])
                                          }
                                          for symbol, data in coin_data.items()}
                                  for coin, coin_data in data_dict.items()}
 
-        self.lock |= {symbol: CustomRLock() for coin, coin_data in data_dict.items() for symbol, data in coin_data.items()}
+        self.lock |= {symbol: CustomRLock() for symbol in self.running_symbols}
 
         self.risk_state = {sys.intern(coin):
                                {sys.intern('netDelta'):0}
@@ -767,7 +605,7 @@ class myFtx(ccxtpro.ftx):
         '''scales order placement params with time'''
         frequency = timedelta(minutes=1)
         end = datetime.now(timezone.utc)
-        start = end - timedelta(seconds=stdev_window)
+        start = end - timedelta(seconds=self.parameters['stdev_window'])
 
         # TODO: rather use cached history except for first run
         #if any(len(self.exec_parameters[self.markets[symbol]['base']][symbol]['history']) < 100 for symbol in self.running_symbols):
@@ -785,7 +623,7 @@ class myFtx(ccxtpro.ftx):
 
         # get times series of target baskets, compute quantile of increments and add to last price
         nowtime = datetime.now().timestamp() * 1000
-        time_limit = self.exec_parameters['timestamp'] + time_budget*1000
+        time_limit = self.exec_parameters['timestamp'] + self.parameters['time_budget']*1000
 
         if nowtime > time_limit:
             self.myLogger.info('time budget expired')
@@ -800,13 +638,18 @@ class myFtx(ccxtpro.ftx):
             self.exec_parameters[coin]['entry_level'] = basket_vwap_quantile(
                 [data['vwap'] for data in coin_data.values()],
                 [self.exec_parameters[coin][symbol]['diff'] for symbol in coin_data.keys()],
-                entry_tolerance)
+                self.parameters['entry_tolerance'])
+            self.exec_parameters[coin]['rush_level'] = basket_vwap_quantile(
+                [data['vwap'] for data in coin_data.values()],
+                [self.exec_parameters[coin][symbol]['diff'] for symbol in coin_data.keys()],
+                self.parameters['rush_tolerance'])
             for symbol, data in coin_data.items():
                 stdev = data['vwap'].std().squeeze()
                 if not (stdev>0): stdev = 1e-16
-                self.exec_parameters[coin][symbol]['edit_trigger_depth'] = stdev * edit_trigger_tolerance * scaler
-                self.exec_parameters[coin][symbol]['edit_price_depth'] = stdev * edit_price_tolerance * scaler
-                self.exec_parameters[coin][symbol]['stop_depth'] = stdev * stop_tolerance * scaler
+                self.exec_parameters[coin][symbol]['edit_trigger_depth'] = stdev * self.parameters['edit_trigger_tolerance'] * scaler
+                self.exec_parameters[coin][symbol]['edit_price_depth'] = stdev * self.parameters['edit_price_tolerance'] * scaler
+                self.exec_parameters[coin][symbol]['aggressive_edit_price_depth'] = self.parameters['aggressive_edit_price_tolerance'] * self.exec_parameters[coin][symbol]['priceIncrement']
+                self.exec_parameters[coin][symbol]['stop_depth'] = stdev * self.parameters['stop_tolerance'] * scaler
 
         self.latest_exec_parameters_reconcile_timestamp = nowtime
         self.myLogger.info(f'scaled params by {scaler} at {nowtime}')
@@ -823,11 +666,6 @@ class myFtx(ccxtpro.ftx):
 
         # or reconcile, and lock until done
         with self.lock['reconciling']:
-
-            await self.reconcile_fills()
-            await self.reconcile_orders()
-            await self.update_exec_parameters()
-
             risks = await safe_gather([self.fetch_positions(),self.fetch_balance()],semaphore=self.rest_semaphor)
             positions = risks[0]
             balances = risks[1]
@@ -877,6 +715,10 @@ class myFtx(ccxtpro.ftx):
             account_info = (await self.privateGetAccount())['result']
             self.margin_calculator.actual(account_info)
             self.margin_headroom = self.margin_calculator.actual_IM if float(account_info['totalPositionSize']) else self.pv
+
+            await self.reconcile_fills()
+            await self.reconcile_orders()
+            await self.update_exec_parameters()
 
         # critical job is done, release lock
 
@@ -943,7 +785,7 @@ class myFtx(ccxtpro.ftx):
 
                 # don't waste time on deep updates
                 if self.mid(symbol) != previous_mid:
-                    self.quoter(symbol)
+                    self.quoter(symbol, orderbook)
 
     # ---------------------------------- fills
 
@@ -1043,25 +885,27 @@ class myFtx(ccxtpro.ftx):
 
     # ---------------------------------- high level
 
-    def quoter(self, symbol, message = None):
+    def quoter(self, symbol, orderbook):
         coin = self.markets[symbol]['base']
         mid = self.tickers[symbol]['mid']
         params = self.exec_parameters[coin][symbol]
 
-        #risk
-        delta = self.risk_state[coin][symbol]['delta']/mid
-        delta_timestamp = self.risk_state[coin][symbol]['delta_timestamp']
-        netDelta = self.risk_state[coin]['netDelta']/mid
-
         # size to do: aim at target, slice, round to sizeIncrement
-        size = params['target'] - delta
+        size = params['target'] - self.risk_state[coin][symbol]['delta']/mid
         # size < slice_size and margin_headroom
         size = np.sign(size)*float(self.amount_to_precision(symbol, min([np.abs(size), params['slice_size']])))
         if (np.abs(size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
             self.running_symbols.remove(symbol)
+            self.myLogger.info(f'{symbol} done, {self.running_symbols} left to do')
             if self.running_symbols == []:
                 raise myFtx.DoneDeal('all done')
             else: return
+
+        #risk
+        delta_timestamp = self.risk_state[coin][symbol]['delta_timestamp']
+        globalDelta = sum(self.risk_state[coin]['netDelta']  * (1 if _coin == coin else self.parameters['global_beta'])
+                          for _coin in self.risk_state.keys()) / mid
+        marginal_risk = np.abs(globalDelta + size)-np.abs(globalDelta)
 
         # if not enough margin, hold it# TODO: this may be slow, and depends on orders anyway
         #if self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance) > self.margin_headroom:
@@ -1070,29 +914,30 @@ class myFtx(ccxtpro.ftx):
         #    return None
 
         # if increases risk, go passive
-        if np.abs(netDelta+size)-np.abs(netDelta)>0:
-
-            current_basket_price = sum(self.mid(symbol)*self.exec_parameters[coin][symbol]['diff']
+        if marginal_risk>0:
+            stop_depth = None
+            current_basket_price = sum(self.mid(symbol)*params['diff']
                                        for symbol in self.exec_parameters[coin].keys() if symbol in self.markets)
-            # mkt order if target reached, mkt.
-            edit_price_depth = params['edit_price_depth']
-            if current_basket_price + np.abs(params['diff']) * params['takerVsMakerFee']< self.exec_parameters[coin]['entry_level']:
+            # mkt order if target reached.
+            if current_basket_price + np.abs(params['diff']) * params['takerVsMakerFee']< self.exec_parameters[coin]['rush_level']:
                 # (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
                 edit_price_depth = 0
                 for _symbol in self.exec_parameters[coin]:
                     if _symbol in self.markets:
                         self.exec_parameters[coin][_symbol]['edit_price_depth'] = 0
-
-            edit_trigger_depth = params['edit_trigger_depth']
-            self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=None)
+            # limit order if level is acceptable
+            elif current_basket_price < self.exec_parameters[coin]['entry_level']:
+                edit_price_depth = params['edit_price_depth']
+            # hold off if level is bad
+            else:
+                return
         # if decrease risk, go aggressive
         else:
-            edit_trigger_depth = 10 * self.exec_parameters[coin][symbol]['priceIncrement'] # priceIncrement not edit_trigger_depth !
-            edit_price_depth = 2 * self.exec_parameters[coin][symbol]['priceIncrement']
+            edit_price_depth = params['aggressive_edit_price_depth']
             stop_depth = params['stop_depth']
-            self.peg_or_stopout(symbol,size,orderbook_depth=0,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
+        self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
-    def peg_or_stopout(self,symbol,size,orderbook_depth,edit_trigger_depth,edit_price_depth,stop_depth=None):
+    def peg_or_stopout(self,symbol,size,orderbook,edit_trigger_depth,edit_price_depth,stop_depth=None):
         '''creates of edit orders, pegging to orderbook
         goes taker when depth<increment
         size in coin, already filtered
@@ -1102,21 +947,16 @@ class myFtx(ccxtpro.ftx):
         coin = self.markets[symbol]['base']
 
         #TODO: https://help.ftx.com/hc/en-us/articles/360052595091-Ratelimits-on-FTX
-
-        price = self.tickers[symbol]['ask' if size<0 else 'bid']
         opposite_side = self.tickers[symbol]['ask' if size>0 else 'bid']
         mid = self.tickers[symbol]['mid']
 
         priceIncrement = self.exec_parameters[coin][symbol]['priceIncrement']
         sizeIncrement = self.exec_parameters[coin][symbol]['sizeIncrement']
 
-        try:
-            if stop_depth is not None:
-                stop_trigger = float(self.price_to_precision(symbol,stop_depth))
-            edit_trigger = float(self.price_to_precision(symbol,edit_trigger_depth))
-            edit_price = float(self.price_to_precision(symbol,opposite_side - (1 if size>0 else -1)*edit_price_depth))
-        except Exception as e:
-            print(e)
+        if stop_depth is not None:
+            stop_trigger = float(self.price_to_precision(symbol,stop_depth))
+        edit_trigger = float(self.price_to_precision(symbol,edit_trigger_depth))
+        edit_price = float(self.price_to_precision(symbol,opposite_side - (1 if size>0 else -1)*edit_price_depth))
 
         try:
             # remove open order dupes is any (shouldn't happen)
@@ -1131,11 +971,11 @@ class myFtx(ccxtpro.ftx):
 
 
             # if no open order, create genesis
-            (postOnly,order_type) = (True,'limit') if edit_price_depth > priceIncrement else (False,'market')
             order_side = 'buy' if size>0 else 'sell'
             if len(event_histories)==0:
-                asyncio.create_task(self.create_order(symbol, order_type, order_side, np.abs(size), price=edit_price,
-                                                      params={'postOnly': postOnly,'comment':'new'}))
+                (postOnly, ioc) = (True, False) if edit_price_depth > priceIncrement else (False, True)
+                asyncio.create_task(self.create_order(symbol, 'limit', order_side, np.abs(size), price=edit_price,
+                                                      params={'postOnly': postOnly,'ioc': ioc, 'comment':'new'}))
             # if only one and it's editable, stopout or peg or wait
             elif (self.latest_value(event_histories[0][-1]['clientOrderId'],'remaining') >= sizeIncrement) \
                     and event_histories[0][-1]['lifecycle_state'] in self.acknowledgedStates:
@@ -1144,11 +984,13 @@ class myFtx(ccxtpro.ftx):
 
                 # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
                 if stop_depth and order_distance > stop_trigger:
-                    asyncio.create_task( self.edit_order(symbol, 'market', order_side,self.latest_value(order['clientOrderId'],'remaining'),
-                                                         params={'comment':'stop'},previous_clientOrderId = order['clientOrderId']))
+                    size = self.latest_value(order['clientOrderId'],'remaining')
+                    price = mkt_at_size(orderbook, order_side, size)['side']
+                    asyncio.create_task( self.edit_order(symbol, 'limit', order_side, size=size, price = price,
+                                                         params={'ioc':True,'comment':'stop'},previous_clientOrderId = order['clientOrderId']))
                 # peg limit order
                 elif order_distance > edit_trigger and (np.abs(edit_price-order['price']) >= priceIncrement):
-                    asyncio.create_task(self.edit_order(symbol, order_type, order_side, np.abs(size),price=edit_price,
+                    asyncio.create_task(self.edit_order(symbol, 'limit', order_side, np.abs(size),price=edit_price,
                                                         params={'postOnly': True,'comment':'chase'},previous_clientOrderId = order['clientOrderId']))
 
         ### see error_hierarchy in DerivativeArbitrage/venv/Lib/site-packages/ccxt/base/errors.py
@@ -1256,29 +1098,37 @@ class myFtx(ccxtpro.ftx):
         futures_dust = [position for position in positions
                         if float(position['info']['size'])!=0
                         and np.abs(float(position['info']['size']))<2*float(self.markets[position['symbol']]['info']['minProvideSize'])]
-        for coro in [super(ccxtpro.ftx,self).create_order(symbol=position['symbol'],
-                                                    type='market',
-                                                    side='buy' if position['side']=='short' else 'sell',
-                                                    amount=float(position['info']['size']),
-                                                    params={'clientOrderId':'dust_'+position['symbol']+'/USD'+str(int(self.exec_parameters['timestamp']))})
-                     for position in futures_dust]:
-            await coro
-            await asyncio.sleep(.2)
+        for position in futures_dust:
+            details = {'symbol': position['symbol'],
+                       'type': 'market',
+                       'side': 'buy' if position['side'] == 'short' else 'sell',
+                       'amount': float(position['info']['size'])}
+            clientOrderId = self.lifecycle_pending_new(details|{'remaining': details['amount'],
+                                                'comment': 'dust'})
+            await super(ccxtpro.ftx,self).create_order(**details,params={'clientOrderId':clientOrderId})
+        await asyncio.sleep(5)
 
         shorts_dust = {coin:float(self.markets[coin+'/USD']['info']['sizeIncrement']) for coin, balance in balances.items()
                        if coin in set(self.currencies) - set(['USD'])
-                       and balance['total']<0
+                       and float(balance['total'])<0
                        and float(balance['total'])+float(self.markets[coin+'/USD']['info']['sizeIncrement'])>0}
-        for coro in [super(ccxtpro.ftx,self).create_order(coin+'/USD','market','buy',size,params={'clientOrderId':'dust_'+coin+'/USD_'+str(int(self.exec_parameters['timestamp']))})
-                     for coin,size in shorts_dust.items()]:
-            await coro
-            await asyncio.sleep(.2)
+        for coin,size in shorts_dust.items():
+            details = {'symbol': coin+'/USD',
+                       'type': 'market',
+                       'side': 'buy',
+                       'amount': size}
+            clientOrderId = self.lifecycle_pending_new(details|{'remaining': details['amount'],
+                                                'comment': 'dust'})
+            await super(ccxtpro.ftx,self).create_order(**details,params={'clientOrderId':clientOrderId})
 
 async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     allDone = False
     while not allDone:
         try:
-            exchange = myFtx({  ## David personnal
+            with open('Runtime/configs/tradeexecutor_params.json', 'r') as file:
+                parameters = json.load(file)
+
+            exchange = myFtx(parameters, config={  ## David personnal
                 'enableRateLimit': True,
                 'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
                 'secret': api_params.loc['ftx', 'value'],
@@ -1292,16 +1142,6 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
                 future_weights = pd.read_excel('Runtime/ApprovedRuns/current_weights.xlsx')
                 target_portfolio = await diff_portoflio(exchange, future_weights)
                 if target_portfolio.empty: return
-                #selected_coins = ['REN']#target_portfolios.sort_values(by='USDdiff', key=np.abs, ascending=False).iloc[2]['underlying']
-                #target_portfolio=diff[diff['coin'].isin(selected_coins)]
-                await exchange.build_state(target_portfolio,
-                                           entry_tolerance=entry_tolerance,
-                                           edit_trigger_tolerance = edit_trigger_tolerance,
-                                           edit_price_tolerance = edit_price_tolerance,
-                                           stop_tolerance = stop_tolerance,
-                                           time_budget = time_budget,
-                                           delta_limit = delta_limit,
-                                           slice_factor = slice_factor)
 
             elif argv[0]=='spread':
                 coin=argv[3]
@@ -1314,15 +1154,6 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
                     [coin,future_name,-float(argv[4])/future_price,0,future_price]])
                 if target_portfolio.empty: return
 
-                await exchange.build_state(target_portfolio,
-                                           entry_tolerance=0.99,
-                                           edit_trigger_tolerance = np.sqrt(5),
-                                           edit_price_tolerance = 0,
-                                           stop_tolerance = np.sqrt(30),
-                                           time_budget = time_budget,
-                                           delta_limit = delta_limit,
-                                           slice_factor = 0.5)
-
             elif argv[0]=='flatten': # only works for basket with 2 symbols
                 future_weights = pd.DataFrame(columns=['name','optimalWeight'])
                 diff = await diff_portoflio(exchange, future_weights)
@@ -1331,37 +1162,17 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
                 target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
                 if target_portfolio.empty: return
 
-                await exchange.build_state(target_portfolio,
-                                           entry_tolerance=entry_tolerance,
-                                           edit_trigger_tolerance = edit_trigger_tolerance,
-                                           edit_price_tolerance = edit_price_tolerance,
-                                           stop_tolerance = stop_tolerance,
-                                           time_budget = time_budget,
-                                           delta_limit = delta_limit,
-                                           slice_factor = slice_factor)
-
             elif argv[0]=='unwind':
                 future_weights = pd.DataFrame(columns=['name','optimalWeight'])
                 target_portfolio = await diff_portoflio(exchange, future_weights)
                 if target_portfolio.empty: return
 
-                await exchange.build_state(target_portfolio,
-                                           entry_tolerance=entry_tolerance,
-                                           edit_trigger_tolerance=edit_trigger_tolerance,
-                                           edit_price_tolerance=edit_price_tolerance,
-                                           stop_tolerance=stop_tolerance,
-                                           time_budget=time_budget,
-                                           delta_limit=delta_limit,
-                                           slice_factor=slice_factor)
-
             else:
                 exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
                 raise Exception(f'unknown command {argv[0]}',exc_info=True)
 
-            exchange.running_symbols = [symbol
-                                        for coin_data in exchange.risk_state.values()
-                                        for symbol in coin_data.keys() if symbol in exchange.markets]
-            await safe_gather([exchange.monitor_risk(),exchange.monitor_orders(),exchange.monitor_fills()]+ # ,exchange.monitor_fills()
+            await exchange.build_state(target_portfolio, parameters)
+            await safe_gather([exchange.monitor_risk(),exchange.monitor_orders(),exchange.monitor_fills()]+
                                    [exchange.monitor_order_book(symbol)
                                     for symbol in exchange.running_symbols],semaphore=exchange.rest_semaphor)
 
@@ -1387,7 +1198,7 @@ def ftx_ws_spread_main(*argv):
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     logging.info(f'running {argv}')
-    if argv[0] in ['sysperp', 'flatten','unwind','spread']:
+    if argv[0] in ['sysperp', 'flatten', 'unwind', 'spread']:
         return asyncio.run(ftx_ws_spread_main_wrapper(*argv))
         log_reader()
     else:
