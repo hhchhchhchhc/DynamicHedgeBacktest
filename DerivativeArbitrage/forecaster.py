@@ -6,39 +6,34 @@ from ftx_history import *
 from scipy.interpolate import CubicSpline
 from scipy.fft import fft, fftfreq
 from sklearn.preprocessing import StandardScaler,FunctionTransformer
-from sklearn.compose import ColumnTransformer
+from sklearn.compose import ColumnTransformer,TransformedTargetRegressor
 from sklearn.decomposition import PCA
-from sklearn.pipeline import FeatureUnion
+from sklearn.pipeline import FeatureUnion,Pipeline
 from sklearn.model_selection import TimeSeriesSplit,cross_val_score,cross_val_predict,train_test_split
-from sklearn.linear_model import ElasticNet,LinearRegression,LassoLars
+from sklearn.linear_model import ElasticNet,LinearRegression,LassoCV
 
 class LaplaceTransformer(FunctionTransformer):
     '''horizon_window in hours'''
-    def __init__(self,horizon_window):
+    def __init__(self,horizon_window: int):
         super().__init__(lambda x: x.ewm(times = x.index,halflife=timedelta(hours=horizon_window)).mean())
-        self._horizon_windows = horizon_window
+        self._horizon_window = horizon_window
     def get_feature_names_out(self):
-        return [f'ewma{i}' for i in self._horizon_windows]
+        return f'ewma{self._horizon_window}'
 class ShiftTransformer(FunctionTransformer):
-    def __init__(self,horizon_windows):
+    def __init__(self,horizon_window):
         super().__init__(func=
-                         lambda x: pd.DataFrame({i: x.shift(periods=i)
-                                                 for i in horizon_windows}),
+                         lambda x: x.shift(periods=horizon_window),
                          inverse_func=
-                         lambda x: pd.DataFrame({i: x.shift(periods=-i)
-                                                 for i in horizon_windows}))
-        self._horizon_windows = horizon_windows
-
+                         lambda x: x.shift(periods=-horizon_window))
+        self._horizon_window = horizon_window
     def get_feature_names_out(self):
-        return [f'shift{i}' for i in self._horizon_windows]
+        return f'shift{self._horizon_window}'
 class FwdMeanTransformer(TransformedTargetRegressor):
-    def __init__(self,horizon_windows):
-        super().__init__(lambda x: pd.DataFrame({i: x.shift(periods=-i-1).rolling(i).mean()
-                                                 for i in horizon_windows}))
-        self._horizon_windows = horizon_windows
-
+    def __init__(self,horizon_window):
+        super().__init__(lambda x: x.shift(periods=-horizon_window-1).rolling(i).mean())
+        self._horizon_window = horizon_window
     def get_feature_names_out(self):
-        return [f'fwdmean{i}' for i in self._horizon_windows]
+        return f'fwdmean{self._horizon_window}'
 
 class ColumnNames:
     @staticmethod
@@ -63,11 +58,10 @@ def ftx_forecaster_main(*args):
     models = [LinearRegression]
     n_split = 7
     pca_n = None
-    smoother = PCA(pca_n)
 
     # grab data
     data = ftx_history_main('get', coins, 'ftx', 1000)
-    data = data[[getattr(ColumnNames,feature)(coin) for feature in features for coin in coins]]
+    data = data[[getattr(ColumnNames,feature)(coin) for coin in coins for feature in features]]
     data.columns = pd.MultiIndex.from_product([coins,features],
                                              names=['coin','feature'])
 
@@ -75,7 +69,16 @@ def ftx_forecaster_main(*args):
         data.loc[:,(slice(None),'price')] = data.loc[:,(slice(None),'price')].diff() / data.loc[:,(slice(None),'price')]
 
 
-    FeatureUnion([(f'ewma{horizon}',LaplaceTransformer)])
+    laplace_expansion = FeatureUnion([(f'ewma{horizon}',LaplaceTransformer(horizon)) for horizon in horizon_windows])
+    dimensionality_reduction = PCA(pca_n) if pca_n else 'passthrough'
+    model = LassoCV(cv=TimeSeriesSplit(n_split))
+    pipe = Pipeline([('laplace_expansion', laplace_expansion),
+                     ('dimensionality_reduction', dimensionality_reduction),
+                     ('model',model)])
+
+    res = pipe.fit(data).predict()
+
+
     # laplace transform
     laplace_transformer = LaplaceTransformer(horizon_windows)
     list_df =[]
