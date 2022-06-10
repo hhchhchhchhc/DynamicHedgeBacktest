@@ -4,6 +4,23 @@ from ftx_history import fetch_trades_history
 from ftx_portfolio import diff_portoflio, MarginCalculator
 import ccxtpro
 
+# parameters guide
+# 'max_nb_coins': 'sharding'
+# 'time_budget': scaling aggressiveness to 0 at time_budget (in seconds)
+# 'slice_factor': slice in % of request
+# 'global_beta': other coin weight in the global risk
+# 'max_cache_size': mkt data cache
+# 'message_cache_size': missed messages cache
+# 'entry_tolerance': green light if basket better than quantile(entry_tolerance)
+# 'rush_tolerance': mkt on both legs if basket better than quantile(rush_tolerance)
+# 'stdev_window': stdev horizon for scaling parameters. in sec.
+# 'edit_price_tolerance': place on edit_price_tolerance (in minutes) *  stdev
+# 'aggressive_edit_price_tolerance': in priceIncrement
+# 'edit_trigger_tolerance': chase at edit_trigger_tolerance (in minutes) *  stdev
+# 'stop_tolerance': stop at stop_tolerance (in minutes) *  stdev
+# 'check_frequency': risk recon frequency. in seconds
+# 'delta_limit': in % of pv
+
 class CustomRLock(threading._PyRLock):
     @property
     def count(self):
