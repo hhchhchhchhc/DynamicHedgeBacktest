@@ -663,10 +663,10 @@ class myFtx(ccxtpro.ftx):
             for symbol, data in coin_data.items():
                 stdev = data['vwap'].std().squeeze()
                 if not (stdev>0): stdev = 1e-16
-                self.exec_parameters[coin][symbol]['edit_trigger_depth'] = stdev * self.parameters['edit_trigger_tolerance'] * scaler
-                self.exec_parameters[coin][symbol]['edit_price_depth'] = stdev * self.parameters['edit_price_tolerance'] * scaler
+                self.exec_parameters[coin][symbol]['edit_trigger_depth'] = stdev * np.sqrt(self.parameters['edit_trigger_tolerance']) * scaler
+                self.exec_parameters[coin][symbol]['edit_price_depth'] = stdev * np.sqrt(self.parameters['edit_price_tolerance']) * scaler
                 self.exec_parameters[coin][symbol]['aggressive_edit_price_depth'] = self.parameters['aggressive_edit_price_tolerance'] * self.exec_parameters[coin][symbol]['priceIncrement']
-                self.exec_parameters[coin][symbol]['stop_depth'] = stdev * self.parameters['stop_tolerance'] * scaler
+                self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
 
         self.latest_exec_parameters_reconcile_timestamp = nowtime
         self.myLogger.info(f'scaled params by {scaler} at {nowtime}')

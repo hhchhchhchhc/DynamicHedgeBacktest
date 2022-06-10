@@ -61,20 +61,26 @@ def ftx_forecaster_main(*args):
 
     # grab data
     data = ftx_history_main('get', coins, 'ftx', 1000)
-    data = data[[getattr(ColumnNames,feature)(coin) for coin in coins for feature in features]]
-    data.columns = pd.MultiIndex.from_product([coins,features],
-                                             names=['coin','feature'])
+    data_list = []
+    label_list = []
+    for coin in coins:
+        for feature in features:
+            feature_data = data[getattr(ColumnNames,feature)(coin)]
 
-    if 'price' in features:
-        data.loc[:,(slice(None),'price')] = data.loc[:,(slice(None),'price')].diff() / data.loc[:,(slice(None),'price')]
+            if feature == 'price':
+                feature_data = feature_data.diff() / feature_data
+
+            laplace_expansion = FeatureUnion([(f'ewma{horizon}',LaplaceTransformer(horizon)) for horizon in horizon_windows])
+            dimensionality_reduction = PCA(pca_n) if pca_n else 'passthrough'
+            data_list += [Pipeline([('laplace_expansion', laplace_expansion),
+                     ('dimensionality_reduction', dimensionality_reduction)]).fit_transform(feature_data)]
+
+        feature_data = pd.concat(data_list,axis=1,how='inner')
+        label_list += [data[getattr(ColumnNames,'funding')(coin)]-data[getattr(ColumnNames,'borrow')(coin)]]
 
 
-    laplace_expansion = FeatureUnion([(f'ewma{horizon}',LaplaceTransformer(horizon)) for horizon in horizon_windows])
-    dimensionality_reduction = PCA(pca_n) if pca_n else 'passthrough'
     model = LassoCV(cv=TimeSeriesSplit(n_split))
-    pipe = Pipeline([('laplace_expansion', laplace_expansion),
-                     ('dimensionality_reduction', dimensionality_reduction),
-                     ('model',model)])
+    pipe = Pipeline([('model',model)])
 
     res = pipe.fit(data).predict()
 
