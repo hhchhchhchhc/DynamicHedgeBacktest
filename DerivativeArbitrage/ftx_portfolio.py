@@ -1,5 +1,7 @@
+from io_utils import *
 from ftx_utils import *
 from portfolio_optimizer_utils import *
+from ftx_history import fetch_trades_history
 
 class MarginCalculator:
     '''low level class to compute margins
@@ -902,15 +904,104 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
 
     return summary
 
+def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
+    path = f'{dirname}/{prefix}'
+    with open(f'{path}_events.json', 'r') as file:
+        d = json.load(file)
+        events = {clientId: pd.DataFrame(data) for clientId, data in d.items()}
+    with open(f'{path}_risk_reconciliations.json', 'r') as file:
+        d = json.load(file)
+        risk = pd.DataFrame(d)
+    with open(f'{path}_request.json', 'r') as file:
+        d = json.load(file)
+        start_time = d.pop('inception_time')
+        request = pd.DataFrame(d).T
+    with open('Runtime/configs/tradeexecutor_params.json', 'r') as file:
+        d = json.load(file)
+        parameters = pd.Series(d)
+
+    data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
+    if data[data['filled']>0].empty:
+        raise Exception('no fill to parse')
+
+    # pick biggest 'filled' for each clientOrderId
+    temp_events = {clientOrderId:
+                       {'inception_event':clientOrderId_data[clientOrderId_data['lifecycle_state']=='pending_new'].iloc[0],
+                        'last_fill_event':clientOrderId_data[clientOrderId_data['filled']>0].iloc[-1]}
+                   for clientOrderId, clientOrderId_data in data.groupby(by='clientOrderId') if clientOrderId_data['filled'].max()>0}
+    by_clientOrderId = pd.DataFrame({
+        clientOrderId:
+            {'symbol':clientOrderId_data['inception_event']['symbol'],
+             'slice_started' : clientOrderId_data['inception_event']['timestamp'],
+             'mid_at_inception' : 0.5*(clientOrderId_data['inception_event']['bid']+clientOrderId_data['inception_event']['ask']),
+             'amount' : clientOrderId_data['inception_event']['amount']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
+
+             'filled' : clientOrderId_data['last_fill_event']['filled']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
+             'average' : clientOrderId_data['last_fill_event']['average'],
+             'fee': sum(data.loc[data['clientOrderId']==clientOrderId,'fee'].dropna().apply(lambda x:x['cost'])),
+             'slice_ended' : clientOrderId_data['last_fill_event']['timestamp']}
+        for clientOrderId,clientOrderId_data in temp_events.items()}).T
+
+    by_symbol = pd.DataFrame({
+        symbol:
+            {'time_to_execute':symbol_data['slice_started'].max()-symbol_data['slice_started'].min(),
+             'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['average']).sum()/symbol_data['filled'].sum()/request.loc[symbol,'spot']-1),
+             'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['average']).sum()),
+             'filledUSD': (symbol_data['filled']*symbol_data['average']).sum()
+             }
+        for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T
+
+    fill_history = []
+    for symbol, symbol_data in by_clientOrderId.groupby(by='symbol'):
+        df = symbol_data[['slice_ended','filled','average']]
+        df['slice_ended'] = df['slice_ended'].apply(lambda t:datetime.utcfromtimestamp(t/1000).replace(tzinfo=timezone.utc))
+        df.set_index('slice_ended',inplace=True)
+        df = df.rename(columns={
+            'average':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/average',
+            'filled':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/filled'})
+        fill_history += [df]
+
+    async def build_vwap(start, end):
+        date_start = datetime.utcfromtimestamp(start / 1000).replace(tzinfo=timezone.utc)
+        date_end = datetime.utcfromtimestamp(end / 1000).replace(tzinfo=timezone.utc)
+        exchange = await open_exchange('ftx','SysPerp')
+        await exchange.load_markets()
+        trades_history_list = await safe_gather([fetch_trades_history(
+            exchange.market(symbol)['id'], exchange, date_start,date_end, frequency=timedelta(seconds=1))
+            for symbol in by_symbol.index])
+        await exchange.close()
+
+        return pd.concat([x['vwap'] for x in trades_history_list], axis=1,join='outer')
+
+    history = pd.concat([asyncio.run(build_vwap(start_time,by_clientOrderId['slice_ended'].max()))]+fill_history).sort_index()
+
+    with pd.ExcelWriter(f'{path}_exec.xlsx', engine='xlsxwriter', mode="w") as writer: #https://github.com/energyquantified/eq-python-client/issues/17
+        by_symbol.loc['average', 'fee'] = (by_symbol['filledUSD'].apply(
+            np.abs) * by_symbol['fee']).sum() / by_symbol['filledUSD'].apply(
+            np.abs).sum()
+        by_symbol.loc['average', 'slippage_bps'] = (by_symbol['filledUSD'].apply(
+            np.abs) * by_symbol['slippage_bps']).sum() / by_symbol['filledUSD'].apply(
+            np.abs).sum()
+        by_symbol.to_excel(writer,sheet_name='by_symbol')
+        request.to_excel(writer, sheet_name='request')
+        parameters.to_excel(writer, sheet_name='parameters')
+        by_clientOrderId.to_excel(writer, sheet_name='by_clientOrderId')
+        data.to_excel(writer, sheet_name='data')
+        history.index = [t.replace(tzinfo=None) for t in history.index]
+        history.to_excel(writer, sheet_name='history')
+        if not risk.empty: risk.sort_values(by='delta_timestamp', ascending=True).to_excel(writer, sheet_name='risk_recon')
+
 def ftx_portoflio_main(*argv):
     #pd.set_option('display.float_format',lambda x: '{:,.3f}'.format(x))
     #f'{float(f"{i:.1g}"):g}'
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['plex'])
+        argv.extend(['log_reader'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
+    if argv[0] == 'log_reader' and len(argv) < 4:
+        argv.extend(['latest']) # yuk..
     print(f'running {argv}')
     if argv[0] == 'fromoptimal':
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
@@ -925,8 +1016,11 @@ def ftx_portoflio_main(*argv):
         plex= asyncio.run(run_plex_wrapper(*argv[1:]))
         print(plex.astype(int))
         return plex
+    elif argv[0] == 'log_reader':
+        log = log_reader(prefix=argv[3])
+        return log
     else:
-        print(f'commands fromOptimal,risk,plex')
+        print(f'commands fromOptimal,risk,plex,log_reader')
 
 if __name__ == "__main__":
     ftx_portoflio_main(*sys.argv[1:])
