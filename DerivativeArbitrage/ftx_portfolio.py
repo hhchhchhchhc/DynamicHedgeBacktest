@@ -907,13 +907,12 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
     return summary
 
 def batch_log_reader(dirname='Runtime/logs/ftx_ws_execute'):
-    all_files = filter(os.listdir(dirname))
-    all_dates = set([datetime.strptime(f[:16], "%Y-%m-%d-%H-%M") for f in all_files if f[:2] == '20'])
-    compiled_logs = []
-    for date in all_dates:
-        compiled_logs += [log_reader(date,dirname)]
-    all_logs = {key:pd.concat([]) }pd.concat(compiled_logs)
-    log_writer()
+    all_files = os.listdir(dirname)
+    all_dates = set([datetime.strptime(f[:16], format="%Y-%m-%d-%H-%M") for f in all_files if f[:2] == '20'])
+    compiled_logs = {key: pd.concat([log_reader(date, dirname)[key]
+                           for date in all_dates])
+                     for key in ['by_symbol','request','by_clientOrderId','data','history','risk']}
+    log_writer('all',**compiled_logs)
 
 def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
     path = f'{dirname}/{prefix}'
@@ -1013,7 +1012,7 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['log_reader'])
+        argv.extend(['batch_log_reader'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     if argv[0] == 'log_reader' and len(argv) < 4:
@@ -1034,6 +1033,9 @@ def ftx_portoflio_main(*argv):
         return plex
     elif argv[0] == 'log_reader':
         log = log_reader(prefix=argv[3])
+        return log
+    elif argv[0] == 'batch_log_reader':
+        log = batch_log_reader()
         return log
     else:
         print(f'commands fromOptimal,risk,plex,log_reader')
