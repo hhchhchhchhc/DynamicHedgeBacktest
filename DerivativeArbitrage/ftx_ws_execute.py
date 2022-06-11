@@ -490,7 +490,7 @@ class myFtx(ccxtpro.ftx):
         internal_order_internal_status = {clientOrderId:data[-1] for clientOrderId,data in self.orders_lifecycle.items()
                          if data[-1]['lifecycle_state'] in myFtx.openStates}
         internal_order_external_status = await safe_gather([self.fetch_order(id=None, params={'clientOrderId':clientOrderId})
-                                                   for clientOrderId in internal_order_internal_status.keys()])
+                                                   for clientOrderId in internal_order_internal_status.keys()],semaphore=self.rest_semaphor)
         external_orders = await self.fetch_open_orders()
 
         # missing orders
@@ -611,10 +611,13 @@ class myFtx(ccxtpro.ftx):
         await self.reconcile()
 
         with open('Runtime/logs/ftx_ws_execute/latest_request.json', 'w') as file:
-            json.dump({'inception_time':self.exec_parameters['timestamp']}|
-                      {symbol:data
+            json.dump({'inception_time':self.exec_parameters['timestamp']}
+                      | {symbol:data
                        for coin,coin_data in self.exec_parameters.items() if coin in self.currencies
-                       for symbol,data in coin_data.items() if symbol in self.markets}, file, cls=NpEncoder)
+                       for symbol,data in coin_data.items() if symbol in self.markets}
+                      | self.parameters,
+                      file,
+                      cls=NpEncoder)
         shutil.copy2('Runtime/logs/ftx_ws_execute/latest_request.json','Runtime/logs/ftx_ws_execute/' + datetime.utcfromtimestamp(self.exec_parameters['timestamp'] / 1000).replace(tzinfo=timezone.utc).strftime(
             "%Y-%m-%d-%H-%M") + '_request.json')
 
@@ -973,6 +976,7 @@ class myFtx(ccxtpro.ftx):
         if stop_depth is not None:
             stop_trigger = float(self.price_to_precision(symbol,stop_depth))
         edit_trigger = float(self.price_to_precision(symbol,edit_trigger_depth))
+        #TODO: use orderbook to place before cliff; volume matters too.
         edit_price = float(self.price_to_precision(symbol,opposite_side - (1 if size>0 else -1)*edit_price_depth))
 
         try:
@@ -1189,9 +1193,10 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
                 raise Exception(f'unknown command {argv[0]}',exc_info=True)
 
             await exchange.build_state(target_portfolio, parameters)
-            await safe_gather([exchange.monitor_risk(),exchange.monitor_orders(),exchange.monitor_fills()]+
-                                   [exchange.monitor_order_book(symbol)
-                                    for symbol in exchange.running_symbols],semaphore=exchange.rest_semaphor)
+            coros = [exchange.monitor_risk(),exchange.monitor_orders(),exchange.monitor_fills()]+ \
+                    [exchange.monitor_order_book(symbol)
+                     for symbol in exchange.running_symbols]
+            await asyncio.gather(*coros)
 
         except myFtx.DoneDeal as e:
             allDone = True
