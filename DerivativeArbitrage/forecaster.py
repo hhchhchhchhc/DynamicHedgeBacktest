@@ -51,15 +51,14 @@ def ftx_forecaster_main(*args):
     coins = ['ETH','AAVE']
     features = ['funding','price']
     horizon_windows = [1, 2, 3, 4, 6, 8, 12, 18, 24, 36, 48, 60, 72, 84, 168]
+    holding_windows = [12] # [1,4,8,12,24,36,48]
 
-    labels = lambda df: df['funding']-df['borrow'] # to apply to a single coin df
-    holding_windows = [1,4,8,12,24,36,48]
-
-    models = [LinearRegression]
     n_split = 7
+    models = [LassoCV(cv=TimeSeriesSplit(n_split))]
     pca_n = None
 
     # grab data
+    ftx_history_main('build', coins, 'ftx', 1000)
     data = ftx_history_main('get', coins, 'ftx', 1000)
     data_list = []
     label_list = []
@@ -71,15 +70,17 @@ def ftx_forecaster_main(*args):
                 feature_data = feature_data.diff() / feature_data
 
             laplace_expansion = FeatureUnion([(f'ewma{horizon}',LaplaceTransformer(horizon)) for horizon in horizon_windows])
-            dimensionality_reduction = PCA(pca_n) if pca_n else 'passthrough'
+            dimensionality_reduction = PCA(n_components=pca_n,svd_solver='full') if pca_n else 'passthrough'
             data_list += [Pipeline([('laplace_expansion', laplace_expansion),
                      ('dimensionality_reduction', dimensionality_reduction)]).fit_transform(feature_data)]
 
         feature_data = pd.concat(data_list,axis=1,how='inner')
-        label_list += [data[getattr(ColumnNames,'funding')(coin)]-data[getattr(ColumnNames,'borrow')(coin)]]
+        label_data = FwdMeanTransformer(holding_windows[0]).fit_transform(data[getattr(ColumnNames,'funding')(coin)]-data[getattr(ColumnNames,'borrow')(coin)])
+
+        models[0].fit_predict(feature_data,label_data)
+        label_list += [label_data]
 
 
-    model = LassoCV(cv=TimeSeriesSplit(n_split))
     pipe = Pipeline([('model',model)])
 
     res = pipe.fit(data).predict()

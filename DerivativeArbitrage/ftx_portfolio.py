@@ -1,3 +1,5 @@
+import pandas as pd
+
 from io_utils import *
 from ftx_utils import *
 from portfolio_optimizer_utils import *
@@ -904,6 +906,15 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
 
     return summary
 
+def batch_log_reader(dirname='Runtime/logs/ftx_ws_execute'):
+    all_files = filter(os.listdir(dirname))
+    all_dates = set([datetime.strptime(f[:16], "%Y-%m-%d-%H-%M") for f in all_files if f[:2] == '20'])
+    compiled_logs = []
+    for date in all_dates:
+        compiled_logs += [log_reader(date,dirname)]
+    all_logs = {key:pd.concat([]) }pd.concat(compiled_logs)
+    log_writer()
+
 def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
     path = f'{dirname}/{prefix}'
     with open(f'{path}_events.json', 'r') as file:
@@ -916,9 +927,6 @@ def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
         d = json.load(file)
         start_time = d.pop('inception_time')
         request = pd.DataFrame(d).T
-    with open('Runtime/configs/tradeexecutor_params.json', 'r') as file:
-        d = json.load(file)
-        parameters = pd.Series(d)
 
     data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
     if data[data['filled']>0].empty:
@@ -975,16 +983,24 @@ def log_reader(prefix='latest',dirname='Runtime/logs/ftx_ws_execute'):
 
     history = pd.concat([asyncio.run(build_vwap(start_time,by_clientOrderId['slice_ended'].max()))]+fill_history).sort_index()
 
-    with pd.ExcelWriter(f'{path}_exec.xlsx', engine='xlsxwriter', mode="w") as writer: #https://github.com/energyquantified/eq-python-client/issues/17
-        by_symbol.loc['average', 'fee'] = (by_symbol['filledUSD'].apply(
-            np.abs) * by_symbol['fee']).sum() / by_symbol['filledUSD'].apply(
-            np.abs).sum()
-        by_symbol.loc['average', 'slippage_bps'] = (by_symbol['filledUSD'].apply(
-            np.abs) * by_symbol['slippage_bps']).sum() / by_symbol['filledUSD'].apply(
-            np.abs).sum()
-        by_symbol.to_excel(writer,sheet_name='by_symbol')
+    by_symbol.loc['average', 'fee'] = (by_symbol['filledUSD'].apply(
+        np.abs) * by_symbol['fee']).sum() / by_symbol['filledUSD'].apply(
+        np.abs).sum()
+    by_symbol.loc['average', 'slippage_bps'] = (by_symbol['filledUSD'].apply(
+        np.abs) * by_symbol['slippage_bps']).sum() / by_symbol['filledUSD'].apply(
+        np.abs).sum()
+
+    return {'by_symbol':by_symbol,
+            'request':request,
+            'by_clientOrderId':by_clientOrderId,
+            'data':data,
+            'history':history,
+            'risk':risk}
+
+def log_writer(path,by_symbol,request,by_clientOrderId,data,history,risk):
+    with pd.ExcelWriter(f'{path}_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
+        by_symbol.to_excel(writer, sheet_name='by_symbol')
         request.to_excel(writer, sheet_name='request')
-        parameters.to_excel(writer, sheet_name='parameters')
         by_clientOrderId.to_excel(writer, sheet_name='by_clientOrderId')
         data.to_excel(writer, sheet_name='data')
         history.index = [t.replace(tzinfo=None) for t in history.index]
