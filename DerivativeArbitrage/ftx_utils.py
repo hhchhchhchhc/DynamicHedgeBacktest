@@ -32,7 +32,7 @@ def mkt_at_size(order_book, side, target_depth=10000.):
     side='bids' or 'asks'
     '''
     mktdepth = pd.DataFrame(order_book[side])
-    other_side = 'bids' if side=='asks' else 'asks'
+    other_side = 'bids' if side == 'sell' else 'asks'
     mid = 0.5 * (order_book[side][0][0] + order_book[other_side][0][0])
 
     if target_depth==0:
