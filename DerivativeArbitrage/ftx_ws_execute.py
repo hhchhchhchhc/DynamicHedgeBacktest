@@ -1089,12 +1089,14 @@ class myFtx(ccxtpro.ftx):
                          'lifecycle_state':'rejected',
                          'comment':'create/'+str(e)}
                 self.lifecycle_cancel_or_reject(order)
+                raise e
             except Exception as e:
                 order = {'clientOrderId':clientOrderId,
                          'timestamp':datetime.now().timestamp() * 1000,
                          'lifecycle_state':'rejected',
                          'comment':'create/'+str(e)}
                 self.lifecycle_cancel_or_reject(order)
+                raise e
             else:
                 self.lifecycle_sent(order)
 
@@ -1119,13 +1121,15 @@ class myFtx(ccxtpro.ftx):
                                         'symbol': symbol,
                                         'status': str(e),
                                         'comment': trigger})
-            return True
+            self.myLogger.warning('send {} fails with {}'.format(clientOrderId, str(e)))
+            raise e
         except ccxt.InvalidOrder as e: # could be in flight, or unknown
             self.lifecycle_cancel_or_reject({'clientOrderId':clientOrderId,
                                              'status':str(e),
                                              'lifecycle_state':'canceled',
                                              'comment':trigger})
-            return False
+            self.myLogger.warning('send {} fails with {}'.format(clientOrderId, str(e)))
+            raise e
         except Exception as e:
             self.myLogger.warning('cancel for {} fails with {}'.format(clientOrderId,str(e)))
             await asyncio.sleep(.1)

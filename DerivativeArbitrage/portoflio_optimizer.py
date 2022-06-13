@@ -16,7 +16,7 @@ async def refresh_universe(exchange,universe_size):
     markets = await exchange.fetch_markets()
 
     universe_start = datetime(2022, 1, 1)
-    universe_end = datetime(2022, 5, 1)
+    universe_end = datetime(2022, 6, 1)
     borrow_decile = 0.5
     #type_allowed=['perpetual']
     screening_params=pd.DataFrame(
@@ -53,7 +53,7 @@ async def refresh_universe(exchange,universe_size):
         screening_params.to_excel(writer, sheet_name='screening_params')
 
     print('refreshed universe')
-    return futures
+    return pd.read_excel(filename,sheet_name=universe_size,index_col=0)
 
 # runs optimization * [time, params]
 async def perp_vs_cash(
@@ -166,6 +166,11 @@ async def perp_vs_cash(
                                              optional_params=(['verbose'] if __debug__ else []) + (['cost_blind']
                                              if (point_in_time == backtest_start)&(backtest_start != backtest_end)
                                              else [])) # ignore costs on first time of a backtest
+            optimized = optimized[
+                np.abs(optimized['optimalWeight']) >
+                optimized.apply(lambda f: float(exchange.market(f.name)['info']['minProvideSize'])
+                if f.name in exchange.markets_by_id else 0,axis=1)
+            ]
             # need to assign RealizedCarry to previous_time
             if not trajectory.empty:
                 trajectory.loc[trajectory['time'] == previous_time,'RealizedCarry'] = \

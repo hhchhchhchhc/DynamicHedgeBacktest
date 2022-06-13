@@ -74,7 +74,7 @@ def ftx_forecaster_main(*args):
             data_list += [Pipeline([('laplace_expansion', laplace_expansion),
                      ('dimensionality_reduction', dimensionality_reduction)]).fit_transform(feature_data)]
 
-        feature_data = pd.concat(data_list,axis=1,how='inner')
+        feature_data = pd.concat(data_list,axis=1,join='inner')
         label_data = FwdMeanTransformer(holding_windows[0]).fit_transform(data[getattr(ColumnNames,'funding')(coin)]-data[getattr(ColumnNames,'borrow')(coin)])
 
         models[0].fit_predict(feature_data,label_data)

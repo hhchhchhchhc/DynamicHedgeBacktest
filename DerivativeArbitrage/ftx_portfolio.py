@@ -106,7 +106,7 @@ class MarginCalculator:
                              for symbol in mm_fut.keys()} \
                             | {'USD': usd_balance + 0.03 * min([0, usd_balance])}
 
-    def actual(self,account_information):
+    def update_actual(self, account_information):
         self.actual_futures_IM = {position['future']:float(position['collateralUsed'])
                                   for position in account_information['positions'] if float(position['netSize'])!=0}
         totalPositionSize = float(account_information['totalPositionSize']) if float(account_information['totalPositionSize'])>0 else 0.0
@@ -515,7 +515,7 @@ async def fetch_portfolio(exchange,time):
     var = sum([bal*bal for bal in balances_list])/len(balances_list) - balances*balances
     balances.reset_index(inplace=True)
 
-    positions_list = [pd.DataFrame([r['info'] for r in result],dtype=float).set_index('future')[['netSize','unrealizedPnl']] for result in results[2::3]]
+    positions_list = [pd.DataFrame([r['info'] for r in result]).set_index('future')[['netSize','unrealizedPnl']].astype(float) for result in results[2::3]]
     positions = sum(positions_list) / len(positions_list)
     var = sum([pos*pos for pos in positions_list]) / len(positions_list) - positions * positions
     positions.reset_index(inplace=True)
@@ -915,7 +915,7 @@ def batch_log_reader(dirname='Runtime/logs/ftx_ws_execute/archive'):
     all_dates = set([f[:16] for f in all_files])
 
     try:
-        compiled_logs = pd.read_excel(dirname.replace('/archive','/all_exec.xlsx'),sheet_name=tab_list)
+        compiled_logs = pd.read_excel(dirname.replace('/archive','/all_exec.xlsx'),sheet_name=tab_list,index_col='index')
         existing_dates = set(compiled_logs['request']['log_time'].apply(lambda d: d.strftime("%Y-%m-%d-%H-%M")))
     except Exception as e:
         compiled_logs = {tab:pd.DataFrame() for tab in tab_list}
@@ -936,14 +936,14 @@ def log_reader(dirname='Runtime/logs/ftx_ws_execute',date='latest'):
     try:
         with open(f'{path}_events.json', 'r') as file:
             d = json.load(file)
-            events = {clientId: pd.DataFrame(data) for clientId, data in d.items()}
+            events = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d.items()}
         with open(f'{path}_risk_reconciliations.json', 'r') as file:
             d = json.load(file)
-            risk = pd.DataFrame(d)
+            risk = pd.DataFrame(d).reset_index()
         with open(f'{path}_request.json', 'r') as file:
             d = json.load(file)
             start_time = d.pop('inception_time')
-            request = pd.DataFrame(d).T
+            request = pd.DataFrame(d).T.reset_index()
 
         data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
         if data[data['filled']>0].empty:
@@ -965,22 +965,22 @@ def log_reader(dirname='Runtime/logs/ftx_ws_execute',date='latest'):
                  'average' : clientOrderId_data['last_fill_event']['average'],
                  'fee': sum(data.loc[data['clientOrderId']==clientOrderId,'fee'].dropna().apply(lambda x:x['cost'])),
                  'slice_ended' : clientOrderId_data['last_fill_event']['timestamp']}
-            for clientOrderId,clientOrderId_data in temp_events.items()}).T
+            for clientOrderId,clientOrderId_data in temp_events.items()}).T.reset_index()
 
         by_symbol = pd.DataFrame({
             symbol:
                 {'time_to_execute':symbol_data['slice_started'].max()-symbol_data['slice_started'].min(),
-                 'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['average']).sum()/symbol_data['filled'].sum()/request.loc[symbol,'spot']-1),
+                 'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['average']).sum()/symbol_data['filled'].sum()/request.loc[request['index']==symbol,'spot'].squeeze()-1),
                  'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['average']).sum()),
                  'filledUSD': (symbol_data['filled']*symbol_data['average']).sum()
                  }
-            for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T
+            for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T.reset_index()
 
         fill_history = []
         for symbol, symbol_data in by_clientOrderId.groupby(by='symbol'):
             df = symbol_data[['slice_ended','filled','average']]
             df['slice_ended'] = df['slice_ended'].apply(lambda t:datetime.utcfromtimestamp(t/1000).replace(tzinfo=timezone.utc))
-            df.set_index('slice_ended',inplace=True)
+            df.set_index('slice_ended', inplace=True)
             df = df.rename(columns={
                 'average':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/average',
                 'filled':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/filled'})
@@ -993,19 +993,19 @@ def log_reader(dirname='Runtime/logs/ftx_ws_execute',date='latest'):
             await exchange.load_markets()
             trades_history_list = await safe_gather([fetch_trades_history(
                 exchange.market(symbol)['id'], exchange, date_start,date_end, frequency=timedelta(seconds=1))
-                for symbol in by_symbol.index])
+                for symbol in by_symbol['index'].values])
             await exchange.close()
 
             return pd.concat([x['vwap'] for x in trades_history_list], axis=1,join='outer')
 
         history = pd.concat([asyncio.run(build_vwap(start_time,by_clientOrderId['slice_ended'].max()))]+fill_history).sort_index()
 
-        by_symbol.loc['average', 'fee'] = (by_symbol['filledUSD'].apply(
+        by_symbol = by_symbol.append(pd.Series({'index': 'average', 'fee': (by_symbol['filledUSD'].apply(
             np.abs) * by_symbol['fee']).sum() / by_symbol['filledUSD'].apply(
-            np.abs).sum()
-        by_symbol.loc['average', 'slippage_bps'] = (by_symbol['filledUSD'].apply(
+            np.abs).sum()}), ignore_index=True)
+        by_symbol = by_symbol.append(pd.Series({'index': 'average', 'slippage_bps': (by_symbol['filledUSD'].apply(
             np.abs) * by_symbol['slippage_bps']).sum() / by_symbol['filledUSD'].apply(
-            np.abs).sum()
+            np.abs).sum()}), ignore_index=True)
 
         result = {'by_symbol':by_symbol,
                 'request':request,
