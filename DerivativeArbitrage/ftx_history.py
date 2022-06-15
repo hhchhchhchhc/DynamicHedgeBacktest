@@ -181,7 +181,7 @@ async def fetch_trades_history(symbol: str,exchange: ccxt.Exchange,
                                dirname: str = '',
                                semaphore = None) -> dict[str, pd.DataFrame]:
     max_trades_data = int(5000)  # in trades. limit is 5000 :(
-    print('trades_history: ' + symbol)
+    #print('trades_history: ' + symbol)
 
     ### grab data per batch of 5000, try hourly
     trades=[]

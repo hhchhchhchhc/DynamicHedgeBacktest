@@ -950,7 +950,10 @@ def batch_log_reader(dirname='Runtime/logs/ftx_ws_execute/archive'):
         existing_dates = set()
 
     for date in all_dates - existing_dates:
-        new_logs = log_reader(dirname, date)
+        try:
+            new_logs = log_reader(dirname, date)
+        except Exception as e:
+            print(f'{date} failed. moving to unreadable folder')
         if new_logs is not None:
             for key in tab_list:
                 compiled_logs[key] = pd.concat([compiled_logs[key],new_logs[key]],axis=0)
@@ -1072,7 +1075,7 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['plex'])
+        argv.extend(['batch_log_reader'])
     print(f'running {argv}')
     if argv[0] == 'fromoptimal':
         if len(argv) < 3:
