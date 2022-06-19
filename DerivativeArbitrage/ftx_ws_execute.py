@@ -301,7 +301,8 @@ class myFtx(ccxtpro.ftx):
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID,
                                  'lifecycle_state':'sent',
-                                 'remote_timestamp':order_event['timestamp']}
+                                 'remote_timestamp':order_event['timestamp'],
+                                 'comment':'rest'}
         current['timestamp'] = nowtime
 
         self.orders_lifecycle[clientOrderId] += [current]
@@ -310,7 +311,7 @@ class myFtx(ccxtpro.ftx):
                 current['order'] = order_event['id']
                 current['id'] = None
                 assert 'amount' in current,"'amount' in current"
-                self.lifecycle_fill(current)
+                #self.lifecycle_fill(current)
             else:
                 current['lifecycle_state'] = 'rejected'
                 self.lifecycle_cancel_or_reject(current)
