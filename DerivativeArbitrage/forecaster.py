@@ -57,7 +57,7 @@ def ftx_forecaster_main(*args):
     holding_windows = [1,4,8,12,24,36,48]
 
     n_split = 7
-    models = [LassoCV(), M]
+    models = [LassoCV()]
     pca_n = None
 
     # grab data
