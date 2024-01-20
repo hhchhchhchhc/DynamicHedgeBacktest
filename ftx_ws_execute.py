@@ -1,9 +1,7 @@
-import asyncio
-
 import ccxt
 
-from io_utils import *
-from ftx_utils import *
+from utils.io_utils import *
+from utils.ftx_utils import *
 from ftx_history import fetch_trades_history
 from ftx_portfolio import diff_portoflio, MarginCalculator
 import ccxtpro

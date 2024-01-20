@@ -1,9 +1,5 @@
-import asyncio
-
-import pandas as pd
-
-from io_utils import *
-from ftx_utils import *
+from utils.io_utils import *
+from utils.ftx_utils import *
 from portfolio_optimizer_utils import *
 from ftx_history import fetch_trades_history
 
@@ -961,7 +957,7 @@ def batch_log_reader(dirname='Runtime/logs/ftx_ws_execute/archive'):
             for suffix in ['events', 'request', 'risk_reconciliations']:
                 if os.path.isfile(f'{dirname}/{date}_{suffix}.json'):
                     shutil.move(f'{dirname}/{date}_{suffix}.json', f'{dirname}/unreadable/{date}_{suffix}.json')
-    log_writer('Runtime/logs/ftx_ws_execute/all',compiled_logs)
+    log_writer('Runtime/logs/ftx_ws_execute/all', compiled_logs)
 
 def log_reader(dirname='Runtime/logs/ftx_ws_execute',date='latest'):
     '''compile json logs, or move to 'unreadable' directory if it fails'''

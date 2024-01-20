@@ -1,37 +1,33 @@
 #!/usr/bin/env python3
-from async_utils import *
-import sys,os,shutil,platform
+import logging
+
+from utils.async_utils import *
+import os
 import json
 import pandas as pd
 import numpy as np
 import pyarrow,pyarrow.parquet,s3fs
 from datetime import timezone
-import requests
+import retry
 
 # this is for jupyter
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
 
-if not 'Runtime' in os.listdir('.'):
-    # notebooks run one level down...
-    os.chdir('../')
-    if not 'Runtime' in os.listdir('.'):
-        raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
-
 '''
 I/O helpers
 '''
 
-async def async_read_csv(*args,**kwargs):
-    coro = async_wrap(pd.read_csv)
-    return await coro(*args,**kwargs)
 
 def to_csv(*args,**kwargs):
     return args[0].to_csv(*args[1:],**kwargs)
+
+
 async def async_to_csv(*args,**kwargs):
     coro = async_wrap(to_csv)
     return await coro(*args,**kwargs)
+
 
 def to_parquet(df,filename,mode="w"):
     if mode == 'a' and os.path.isfile(filename):
@@ -41,26 +37,31 @@ def to_parquet(df,filename,mode="w"):
     pq_df = pyarrow.Table.from_pandas(df)
     pyarrow.parquet.write_table(pq_df, filename)
     return None
-async def async_to_parquet(df,filename,mode="w"):
-    coro = async_wrap(to_parquet)
-    return await coro(df,filename,mode)
+
 
 def from_parquets_s3(filenames,columns=None):
     '''columns = list of columns. All if None
     filename = list'''
     kwargs = {'columns':columns} if columns else dict()
     return pyarrow.parquet.ParquetDataset(filenames,filesystem=s3fs.S3FileSystem()).read_pandas(**kwargs).to_pandas()
-async def async_from_parquet_s3(filename,columns=None):
-    coro = async_wrap(from_parquets_s3)
-    return await coro(filename,columns)
+
 
 def from_parquet(filename):
     result = pyarrow.parquet.read_table(filename).to_pandas()
     result.index = [t.replace(tzinfo=timezone.utc) for t in result.index]
     return result
-async def async_from_parquet(filename):
-    coro = async_wrap(from_parquet)
-    return await coro(filename)
+
+
+@retry.retry(exceptions=Exception, tries=3, delay=1,backoff=2)
+def ignore_error(func):
+    @functools.wraps(func)
+    async def wrapper_ignore_error(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            logger = logging.getLogger(func.__module__.split('.')[0])
+            logger.warning(f'{str(func)}({args}{kwargs})\n-> {e}', exc_info=False)
+    return wrapper_ignore_error
 
 '''
 misc helpers

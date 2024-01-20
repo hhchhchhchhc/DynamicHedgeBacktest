@@ -1,11 +1,7 @@
-import asyncio
-
-import ccxt
 import dateutil.tz
-import pandas as pd
 
-from ftx_utils import *
-from io_utils import *
+from utils.ftx_utils import *
+from utils.io_utils import *
 
 history_start = datetime(2019, 11, 26,tzinfo=timezone.utc)
 

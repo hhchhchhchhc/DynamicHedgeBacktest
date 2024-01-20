@@ -1,6 +1,5 @@
-from ccxt_utilities import *
-import requests
-from string import Template
+from utils.ccxt_utilities import *
+
 
 #index_list=['DEFI_PERP','SHIT_PERP','ALT_PERP','MID_PERP','DRGN_PERP','PRIV_PERP']
 #publicGetIndexesIndexNameWeights()GET /indexes/{index_name}/weights

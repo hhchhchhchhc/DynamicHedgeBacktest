@@ -98,11 +98,11 @@ class VolSurface:
 
 def deribit_smile_tardis(currency,whatever):
     '''not implemented. genesis volatility for now'''
-    ## perp, volindex...
+    ## perp, volIndex...
     rest_history = deribit_history_main('just use',[currency],'deribit','cache')[0]
 
     ## tardis
-    history = pd.read_csv(f"Runtime/Deribit_Mktdata_database/deribit_options_chain_2019-07-01_{currency}.csv",nrows=1e5)
+    history = pd.read_csv(f"Runtime/Deribit_Mktdata_database/deribit_options_chain_2019-07-01_{currency}.csv", nrows=1e5)
     history.dropna(subset=['underlying_price','strike_price','local_timestamp','mark_iv','expiration'],inplace=True)
     #history['expiry'] = history['expiration'].apply(lambda t: pd.to_datetime(int(t), unit='us'))
     history['timestamp'] = history['timestamp'].apply(lambda t: pd.to_datetime(int(t), unit='us'))
