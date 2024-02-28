@@ -1,5 +1,6 @@
 import copy
 import typing
+from abc import abstractmethod, ABC
 
 from deribit_history import *
 from utils.blackscholes import black_scholes
@@ -11,7 +12,7 @@ slippage = {'delta': 0,  # 1 means 1%
             'rho': 0}
 
 
-class Instrument:
+class Instrument(ABC):
     """everything is coin margined so beware confusions:
     self.notional is in USD, except cash.
     all greeks are in coin and have signature: (self,market,optionnal **kwargs)
@@ -20,6 +21,7 @@ class Instrument:
     def __init__(self, market):
         self.symbol = None
 
+    @abstractmethod
     def pv(self, market):
         raise NotImplementedError
 
@@ -233,7 +235,7 @@ class Position:
                 ['drop_from_pv', 'accrues']}
 
 
-class Portfolio:
+class Strategy(ABC):
     """
     a list of position mixin
     hedging buisness logic is here
@@ -275,34 +277,12 @@ class Portfolio:
                        market=market,
                        label=hedge_params['replace_label'])
 
-    def vol_flattener(self, market, underlying, vega_target, vol_maturity_timestamp, gamma_maturity_timestamp):
+    @abstractmethod
+    def set_rebalancing_rules(self, market, underlying, vega_target, vol_maturity_timestamp, gamma_maturity_timestamp):
         """
         This is where the hedging steps are detailed
         """
-
-        # 1: target vega, replacing back legs
-        hedge_instrument = Option(market, underlying, market['fwd'].interpolate(vol_maturity_timestamp),
-                                  vol_maturity_timestamp, 'S')
-        self.target_greek(market,
-                          greek='vega', greek_params={'maturity_timestamp': vol_maturity_timestamp},
-                          hedge_instrument=hedge_instrument,
-                          hedge_params={'replace_label': 'vega_leg'}, target=vega_target)
-
-        # 2: hedge gamma, replacing front legs
-        hedge_instrument = Option(market, underlying, market['fwd'].interpolate(gamma_maturity_timestamp),
-                                  gamma_maturity_timestamp, 'S')
-        self.target_greek(market,
-                          greek='gamma', greek_params={},
-                          hedge_instrument=hedge_instrument,
-                          hedge_params={'replace_label': 'gamma_hedge'}, target=0)
-
-        # 3: hedge delta, replacing InverseForward
-        hedge_instrument = InverseFuture(market, underlying, market['fwd'].interpolate(vol_maturity_timestamp),
-                                         vol_maturity_timestamp)
-        self.target_greek(market,
-                          greek='delta', greek_params={},
-                          hedge_instrument=hedge_instrument,
-                          hedge_params={'replace_label': 'delta_hedge'}, target=0)
+        raise NotImplementedError
 
     def process_settlements(self, market, prev_market):
         """apply to prev_portfolio !"""
@@ -357,6 +337,36 @@ class Portfolio:
         position.new_deal_pnl = new_deal_pnl
         self.positions[0].notional -= notional_USD * new_deal_pnl
 
+
+class VolSteepener(Strategy):
+    def set_rebalancing_rules(self, market, underlying, vega_target, vol_maturity_timestamp, gamma_maturity_timestamp):
+        """
+        This is where the hedging steps are detailed
+        """
+
+        # 1: target vega, replacing back legs
+        hedge_instrument = Option(market, underlying, market['fwd'].interpolate(vol_maturity_timestamp),
+                                  vol_maturity_timestamp, 'S')
+        self.target_greek(market,
+                          greek='vega', greek_params={'maturity_timestamp': vol_maturity_timestamp},
+                          hedge_instrument=hedge_instrument,
+                          hedge_params={'replace_label': 'vega_leg'}, target=vega_target)
+
+        # 2: hedge gamma, replacing front legs
+        hedge_instrument = Option(market, underlying, market['fwd'].interpolate(gamma_maturity_timestamp),
+                                  gamma_maturity_timestamp, 'S')
+        self.target_greek(market,
+                          greek='gamma', greek_params={},
+                          hedge_instrument=hedge_instrument,
+                          hedge_params={'replace_label': 'gamma_hedge'}, target=0)
+
+        # 3: hedge delta, replacing InverseForward
+        hedge_instrument = InverseFuture(market, underlying, market['fwd'].interpolate(vol_maturity_timestamp),
+                                         vol_maturity_timestamp)
+        self.target_greek(market,
+                          greek='delta', greek_params={},
+                          hedge_instrument=hedge_instrument,
+                          hedge_params={'replace_label': 'delta_hedge'}, target=0)
 
 def display_current(portfolio, prev_portfolio, market, prev_market):
     predictors = {'delta': lambda x: x.apply(greek='delta', market=prev_market) * (
@@ -471,7 +481,7 @@ def strategies_main(*argv):
 
     ## new portfolio
     prev_mkt = history.iloc[0]
-    portfolio = Portfolio(currency, notional_coin=1, market=prev_mkt)
+    portfolio = VolSteepener(currency, notional_coin=1, market=prev_mkt)
     prev_portfolio = copy.deepcopy(portfolio)
     vega_target = -0.1  # silly start value
 
@@ -482,7 +492,7 @@ def strategies_main(*argv):
         portfolio.positions = prev_portfolio.process_settlements(market, prev_mkt)
 
         # all the hedging steps
-        portfolio.vol_flattener(market, currency, vega_target, market['t'] + vol_tenor, market['t'] + gamma_tenor)
+        portfolio.set_rebalancing_rules(market, currency, vega_target, market['t'] + vol_tenor, market['t'] + gamma_tenor)
         vega_target *= portfolio.apply(greek='vega', market=market, maturity_timestamp=market['t'] + vol_tenor)
 
         # all the info
