@@ -69,9 +69,9 @@ class black_scholes:
         while True:
             # Calculate the option price and delta using the current volatility
             f = black_scholes.pv(F, K, sigma, T, cp) - price
-            df = black_scholes.delta(F, K, sigma, T, cp)
+            df = black_scholes.vega(F, K, sigma, T, cp)
                 # Update the volatility using the Newton-Raphson formula
-            sigma = sigma - f / (df if abs(df) > 1e-6 else (1e-6 if df>0 else -1e-6))
+            sigma = sigma - f / (df if abs(df) > 1e-18 else (1e-18 if df>0 else -1e-18))
                 # Check if the absolute error is below the tolerance level
             if abs(f) < tol:
                 # Return the volatility

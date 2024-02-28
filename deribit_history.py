@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import numpy as np
+import pandas as pd
 
 from utils.io_utils import *
 from utils.ccxt_utilities import *
@@ -51,11 +52,11 @@ async def get_history(derivative, start = 'cache', end = datetime.now(tz=timezon
         else:
             raise Exception('invalid start mode')
 
-    parquet_coros = [from_parquet(dirname+'/'+f+'_funding.parquet')
+    parquet_coros = [async_wrap(from_parquet)(dirname+'/'+f+'_funding.parquet')
              for f in derivative.loc[derivative['type'] == 'swap','instrument_name']] + \
-                    [from_parquet(dirname+'/'+f+'_derivative.parquet')
+                    [async_wrap(from_parquet)(dirname+'/'+f+'_derivative.parquet')
              for f in derivative['instrument_name']] + \
-            [from_parquet(dirname+'/'+f+'_volIndex.parquet')
+            [async_wrap(from_parquet)(dirname+'/'+f+'_volIndex.parquet')
              for f in derivative['base_currency'].unique()]
     data = pd.concat(await safe_gather(parquet_coros), join='outer', axis=1) if len(parquet_coros)>0 else pd.DataFrame()
 
@@ -68,60 +69,104 @@ async def get_history(derivative, start = 'cache', end = datetime.now(tz=timezon
 async def build_history(derivative, exchange,
                         end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                         dirname='Runtime/Deribit_Mktdata_database',
-                        max_moneyness=2):
-    '''for now, increments local files and then uploads to s3'''
+                        max_moneyness: float=2):
+    ccy = derivative['base_currency'].unique()[0]
 
-    coroutines = []
-    for _, f in derivative[derivative['swap']].iterrows():
-        parquet_name = dirname + '/' + f['instrument_name'] + '_funding.parquet'
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index)+timedelta(seconds=1) if parquet is not None else history_start
-        if start < end:
-            coroutines.append(funding_history(f, exchange, start, end, dirname))
+    funding_df, index_df = await build_perps(derivative, dirname, end, exchange)
+    spot = index_df.tail(1).filter(like='indexes/c').squeeze()
 
-    spot_vol = dict()
-    for f in derivative['base_currency'].unique():
-        parquet_name = dirname + '/' + f + '_volIndex.parquet'
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index) + timedelta(seconds=1) if parquet is not None else history_start
-        if start < end:
-            coroutines.append(vol_index_history(f, exchange, end, start , '1h', dirname))
+    volIndex_df = await build_volIndex(ccy, dirname, end, exchange)
+    vol = volIndex_df.tail(1).filter(like='volIndex/c').squeeze()
 
-        volIndex_recent = (await exchange.publicGetGetVolatilityIndexData(
-            params={'currency': f, 'resolution': 1,
-                    'end_timestamp': int(end.timestamp()) * 1000,
-                    'start_timestamp': int(end.timestamp() - 1) * 1000}))
-        spot_vol[f] = {'spot': (await exchange.fetch_ticker(f + '/USD:' + f))['last'],
-                       'vol': float(volIndex_recent['result']['data'][-1][-1])/100}
+    futures_df = await build_futures(derivative, dirname, end, exchange)
 
-    await safe_gather(coroutines)
+    options_df = await build_options(derivative, dirname, end, exchange, max_moneyness, spot, vol)
 
-    coroutines2 = []
-    for _, f in derivative[derivative['future']].iterrows():
-        parquet_name = dirname + '/' + f['instrument_name'] + '_derivative.parquet'
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index) + timedelta(seconds=1) if parquet is not None else history_start
-        if start < end:
-            coroutines2.append(rate_history(f, exchange, end, start, '1h', dirname))
-    await safe_gather(coroutines2)
+    return options_df
 
-    coroutines3 = []
+async def build_options(derivative, dirname, end, exchange, max_moneyness: float, spot, vol) -> pd.DataFrame:
+    coroutines3 = dict()
     for _, f in derivative[derivative['option']].iterrows():
         parquet_name = dirname + '/' + f['instrument_name'] + '_derivative.parquet'
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index) + timedelta(seconds=1) if parquet is not None else history_start
-        moneyness = np.log(spot_vol[f['base']]['spot'] / float(f['strike'])) / spot_vol[f['base']]['vol'] / np.sqrt(
+        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        # restrict to reasonable (current!) moneyness
+        moneyness = np.log(spot / float(f['strike'])) / vol / np.sqrt(
             (f['expiryTime'] - end).total_seconds() / 3600 / 24 / 365.25)
-        if start < end and abs(moneyness) < max_moneyness:
-            coroutines3.append(rate_history(f, exchange, end, start, '1h', dirname))
-    await safe_gather(coroutines3)
+        # exclude if not future (bit heavyhanded...)
+        future_parquet_name = dirname + '/' + '-'.join(f['instrument_name'].split('-')[:2]) + '_derivative.parquet'
+        if abs(moneyness) < max_moneyness and os.path.isfile(future_parquet_name):
+            if start < end:
+                coroutines3[(f['strike'], f['expiryTime'])] = rate_history(f, exchange, end, start, '1h', dirname)
+            else:
+                coroutines3[(f['strike'], f['expiryTime'])] = async_wrap(lambda x: x)(parquet)
+    options_list = await safe_gather(coroutines3.values())
+    options_df = pd.concat({key: data.filter(like='vol/c') for key, data in zip(coroutines3.keys(), options_list)},
+                           join='outer', axis="columns")
 
-    #os.system("aws s3 sync Runtime/Deribit_Mktdata_database/ s3://hourlyftx/Deribit_Mktdata_database")
+    return options_df
 
+
+async def build_futures(derivative, dirname, end, exchange) -> pd.DataFrame:
+    coroutines2 = dict()
+    for _, f in derivative[derivative['future']].iterrows():
+        parquet_name = dirname + '/' + f['instrument_name'] + '_derivative.parquet'
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        if start < end:
+            coroutines2[f['expiryTime']] = rate_history(f, exchange, end, start, '1h', dirname)
+        else:
+            coroutines2[f['expiryTime']] = async_wrap(lambda x: x)(parquet)
+    futures_list = await safe_gather(coroutines2.values())
+    futures_df = pd.concat(
+        {expiration: data.filter(like='mark/c') for expiration, data in zip(coroutines2.keys(), futures_list)},
+        join='outer', axis="columns")
+
+    return futures_df
+
+
+async def build_volIndex(ccy, dirname, end, exchange) -> pd.DataFrame:
+    spot_vol = dict()
+    # TODO: only on currency at a time
+    parquet_name = dirname + '/' + ccy + '_volIndex.parquet'
+    parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+    start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+    if start < end:
+        volIndex_df = await vol_index_history(ccy, exchange, end, start, '1h', dirname)
+    else:
+        volIndex_df = parquet
+    return volIndex_df
+
+
+async def build_perps(derivative, dirname, end, exchange) -> tuple[pd.DataFrame, pd.DataFrame]:
+    coroutines = dict()
+    for _, f in derivative[derivative['swap']].iterrows():
+        parquet_name = dirname + '/' + f['instrument_name'] + '_funding.parquet'
+        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
+        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        if start < end:
+            coroutines[f['instrument_name']] = funding_history(f, exchange, start, end, dirname)
+        else:
+            coroutines[f['instrument_name']] = async_wrap(lambda x: x)(parquet)
+    perp_list = await safe_gather(coroutines.values())
+    funding_df = pd.concat(
+        {perp: data.filter(like='/rate/funding') for perp, data in zip(coroutines.keys(), perp_list)}, join='outer',
+        axis="columns")
+    index_df = pd.concat(
+        {perp: data.filter(like='/indexes/c') for perp, data in zip(coroutines.keys(), perp_list)}, join='outer',
+        axis="columns")
+
+    return funding_df, index_df
+
+
+async def build_FwdCurve():
+    pass
+
+@ignore_error
 async def funding_history(future,exchange,
                  start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                     end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
-                    dirname=''):
+                    dirname='') -> pd.DataFrame:
     '''annualized funding for perps'''
     future_id = future['instrument_name']
     max_funding_data = 500  # in hour. limit is 500 :(
@@ -138,7 +183,7 @@ async def funding_history(future,exchange,
         'end_timestamp': (start_time+f)*1000,
         'instrument_name': future['instrument_name']})
              for start_time in start_times]
-    funding = await safe_gather(funding_coros)
+    funding = await safe_gather(funding_coros, n=1)
     funding = [y for x in funding for y in x['result']]
 
     if len(funding)==0:
@@ -159,13 +204,14 @@ async def funding_history(future,exchange,
     return data
 
 #### annualized rates for derivative and perp, volumes are daily
+@ignore_error
 async def rate_history(future, exchange,
                        end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                        start=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)) - timedelta(
                            days=30),
                        timeframe='1h',
                        dirname=''#
-                       ):
+                       ) -> pd.DataFrame:
     max_mark_data = 700
     resolution = int(exchange.describe()['timeframes'][timeframe])*60
 
@@ -181,7 +227,7 @@ async def rate_history(future, exchange,
                              params={'start_timestamp': start_time*1000,
                                      'end_timestamp': (start_time+f-int(resolution))*1000}) # volume is for max_mark_data*resolution
             for start_time in start_times]
-    mark = await safe_gather(mark_coros)
+    mark = await safe_gather(mark_coros, n=1)
     mark = [y for x in mark for y in x]
 
     if (len(mark) == 0):
@@ -241,13 +287,13 @@ async def rate_history(future, exchange,
                                                                  1/y['fwd/c'],
                                                                  1/float(future['strike']),
                                                                  (future['expiry'] - y.name) / 1000 / 3600 / 24 / 365.25,
-                                                                 'P' if future['optionType']=='call' else 'C'),
-                                   axis=1)
+                                                                 'P' if future['optionType']=='call' else 'C') if y['fwd/c']>0 else np.NaN
+                                   , axis=1)
     else:
-        return
+        return pd.DataFrame()
     data.columns = [exchange.market(future['symbol'])['id'] + '/' + c for c in data.columns]
     data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
-    data = data[~data.index.duplicated()].sort_index()
+    data = data[~data.index.duplicated()].sort_index().dropna()
 
     if dirname != '':
         await async_wrap(to_parquet)(data,dirname + '/' + future['instrument_name'] + '_derivative.parquet',mode='a')
@@ -255,11 +301,12 @@ async def rate_history(future, exchange,
     return data
 
 ## populates future_price or spot_price depending on type
+@ignore_error
 async def spot_history(symbol, exchange,
                        end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                        start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                        timeframe='1h',
-                       dirname=''):
+                       dirname='') -> pd.DataFrame:
     max_mark_data = int(1500)
     resolution = int(exchange.describe()['timeframes'][timeframe])*60
 
@@ -273,7 +320,7 @@ async def spot_history(symbol, exchange,
         exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=99999999,
                                          params={'start_timestamp':start_time*1000, 'end_timestamp':(start_time+f-int(resolution))*1000})
                                 for start_time in start_times]
-    spot_lists = await safe_gather(spot_lists_coros)
+    spot_lists = await safe_gather(spot_lists_coros, n=1)
     spot = [y for x in spot_lists for y in x]
 
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
@@ -292,11 +339,12 @@ async def spot_history(symbol, exchange,
     return data
 
 ## populates future_price or spot_price depending on type
+@ignore_error
 async def vol_index_history(currency, exchange,
                        end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                        start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                        timeframe='1h',
-                       dirname=''):
+                       dirname='') -> pd.DataFrame:
     max_mark_data = int(1000)
     resolution = int(exchange.describe()['timeframes'][timeframe])*60
 
@@ -310,15 +358,15 @@ async def vol_index_history(currency, exchange,
         exchange.publicGetGetVolatilityIndexData(params={'currency': currency, 'resolution': resolution,
                                                       'start_timestamp': start_time*1000, 'end_timestamp': (start_time+f-int(resolution))*1000})
                                 for start_time in start_times]
-    volIndex = await safe_gather(volIndex_coros)
+    volIndex = await safe_gather(volIndex_coros, n=1)
     volIndex = [y for x in volIndex for y in x['result']['data']]
 
     column_names = ['t', 'o', 'h', 'l', 'c']
-    if len(volIndex)==0:
+    if not volIndex:
         return pd.DataFrame(columns=[currency + '/volIndex/' + c for c in column_names])
 
     ###### spot
-    data = pd.DataFrame(columns=column_names, data=volIndex,dtype=float).astype(dtype={'t': 'int64'}).set_index('t')
+    data = pd.DataFrame(columns=column_names, data=volIndex,dtype=float).astype(dtype={'t': 'int64'}).set_index('t')/100
     data.columns = [currency + '/volIndex/' + column for column in data.columns]
     data.index = [datetime.utcfromtimestamp(x / 1000).replace(tzinfo=timezone.utc) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
@@ -343,7 +391,7 @@ async def deribit_history_main_wrapper(*argv):
 
     if argv[0] == 'build':
         try:
-            await build_history(markets, exchange)
+            return await build_history(markets, exchange)
         finally:
             await exchange.close()
     elif argv[0] == 'get':
