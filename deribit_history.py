@@ -8,11 +8,12 @@ from pandas import DatetimeIndex
 
 from utils.io_utils import *
 from utils.ccxt_utilities import *
-from deribit_smile import MktCurve, VolSurface
 from utils.blackscholes import black_scholes
 import ccxt.async_support as ccxt
 from datetime import datetime, timezone, timedelta
 import sys
+
+from utils.io_utils import ignore_error
 
 funding_start = datetime(2021, 3, 24, tzinfo=timezone.utc)
 perp_start = datetime(2021, 3, 24, tzinfo=timezone.utc)
@@ -24,13 +25,27 @@ history_start = datetime(2021, 3, 24, tzinfo=timezone.utc)
 ###### this file is syncronous ###############
 ###### this file is syncronous ###############
 ###### this file is syncronous ###############
+def decode_api_params(api_param):
+
+    api_keys_path = os.path.join(Path.home(), '.cache', 'setyvault', 'api_keys.json')
+    with open(api_keys_path) as json_file:
+        data = json.load(json_file)
+
+    clear_dict = {}
+    for exchange_name in data:
+        clear_dict[exchange_name] = {}
+        clear_dict[exchange_name]['key'] = Fernet(api_param).decrypt(data[exchange_name]['key'].encode()).decode()
+        clear_dict[exchange_name]['comment'] = data[exchange_name]['comment']
+        if 'key2' in data[exchange_name]:
+            clear_dict[exchange_name]['key2'] = Fernet(api_param).decrypt(data[exchange_name]['key2'].encode()).decode()
+
+    return clear_dict
+
+api_params = decode_api_params(load_vault())
 
 async def open_exchange(exchange_name, subaccount, config={}):
     if exchange_name == 'deribit':
         exchange = ccxt.deribit(config={
-                                           'enableRateLimit': True,
-                                           'apiKey': '4vc_41O4',
-                                           'secret': 'viEFbpRQpQLgUAujPrwWleL6Xutq9I8YVUVMkEfQG1E',
                                            "enableRateLimit": True,
                                            "rateLimit": 100,
                                            "timeout": 10000
@@ -410,13 +425,15 @@ async def deribit_history_main_wrapper(*argv):
     markets = {symbol: data | data['info']
                for symbol, data in exchange.markets.items()
                if data['base'] == currency
-               and (data['swap'] or data['future'] or data['option'])}
+               and (data['swap'] or data['future'])} # or data['option'])}
     markets = pd.DataFrame(markets).T
     markets['expiryTime'] = markets['symbol'].apply(
         lambda f: dateutil.parser.isoparse(exchange.market(f)['expiryDatetime']).replace(tzinfo=timezone.utc))
+    # markets = markets[(markets['quote'] == 'USD') &
+    #                   (markets['settlement_period'].isin(['month', 'week', 'perpetual'])) &
+    #                   (~markets['kind'].isin(['future_combo', 'option_combo']))]
     markets = markets[(markets['quote'] == 'USD') &
-                      (markets['settlement_period'].isin(['month', 'perpetual'])) &
-                      (~markets['kind'].isin(['future_combo', 'option_combo']))]
+                      (markets['kind'].isin(['future_combo']))]
 
     if argv[0] == 'build':
         try:
@@ -436,7 +453,7 @@ async def deribit_history_main_wrapper(*argv):
     return hy_history
 
 
-def deribit_history_main(*argv):
+def deribit_history_main(*argv, **config):
     argv = list(argv)
     if len(argv) < 1:
         argv.extend(['build'])
@@ -447,7 +464,27 @@ def deribit_history_main(*argv):
     if len(argv) < 4:
         argv.extend([5000])  # nb days
 
-    return asyncio.run(deribit_history_main_wrapper(*argv))
+    history = asyncio.run(deribit_history_main_wrapper(*argv))
+    ## format history
+    history.reset_index(inplace=True)
+    history.rename(
+        columns={
+            'index': 't',
+            f'{config["strategy"]["currency"]}-PERPETUAL/indexes/o': 'spot',
+            f'{config["strategy"]["currency"]}/fwd': 'fwd',
+            f'{config["strategy"]["currency"]}/vol': 'vol',
+            f'{config["strategy"]["currency"]}-PERPETUAL/rate/funding': 'fundingRate',
+        },
+        inplace=True,
+    )
+    history['t'] = history['t'].apply(lambda t: t.timestamp())
+    history['vol'] = history['vol'].apply(lambda v: v.scale(config["backtest"]["volfactor"]))
+    history['borrow'] = 0
+    history['r'] = history['borrow']
+    history.ffill(limit=2, inplace=True)
+    history.bfill(inplace=True)
+
+    return history
 
 
 if __name__ == "__main__":
