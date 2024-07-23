@@ -1,4 +1,5 @@
 import copy
+import os
 import typing
 from abc import abstractmethod, ABC
 import argparse
@@ -7,12 +8,6 @@ import yaml
 from deribit_history import *
 from deribit_marketdata import kaiko_history, Market
 from utils.blackscholes import black_scholes
-
-slippage = {'delta': 0,  # 1 means 1%
-            'gamma': 0,  # 1 means 1%
-            'vega': 0,  # 1 means 10% relative
-            'theta': 0,  # 1 means 1d
-            'rho': 0}
 
 
 class Instrument(ABC):
@@ -52,7 +47,7 @@ class InverseFuture(Instrument):
 
     def __init__(self, underlying: str, strike_coinUSD: float, maturity: datetime):
         super().__init__()
-        self.strike: float = 1 / strike_coinUSD
+        self.strike: float = strike_coinUSD
         self.maturity: datetime = maturity  # timestamp. TODO: in fact only fri 8utc for 1w,2w,1m,and 4 IMM
         self.symbol: str = f'{underlying}-FUTURE:' + str(pd.to_datetime(maturity, unit='s'))
 
@@ -60,19 +55,19 @@ class InverseFuture(Instrument):
         T = (self.maturity - market.t).total_seconds() / 3600 / 24 / 365.25
         df = np.exp(-market.r * T)
         fwd = market.fwdcurve.interpolate(self.maturity)
-        return df * (self.strike - 1 / fwd)
+        return df * (1 / self.strike - 1 / fwd)
 
     def delta(self, market, **kwargs):
-        """for a 1% move"""
+        """for a 100% move"""
         if ('maturity_timestamp' in kwargs) and abs(kwargs['maturity_timestamp'] - self.maturity) > timedelta(minutes=1):
             return 0.0
 
         T = (self.maturity - market.t).total_seconds() / 3600 / 24 / 365.25
         fwd = market.fwdcurve.interpolate(self.maturity)
-        return np.exp(-market.r * T) * 0.01 / fwd
+        return np.exp(-market.r * T) / fwd
 
-    def theta(self, market, **kwargs):
-        """for 1 day"""
+    def theta(self, market, **kwargs) -> np.float64:
+        """for 1d"""
         T = (self.maturity - market.t).total_seconds() / 3600 / 24 / 365.25
         df = np.exp(-market.r * T)
         return - market.r * df / 24 / 365.25
@@ -80,7 +75,7 @@ class InverseFuture(Instrument):
     def cash_flow(self, market, prev_market):
         """cash settled in coin"""
         if prev_market.t < self.maturity <= market.t:
-            cash_flow = (1 / market.spot - self.strike)
+            cash_flow = (1 / market.spot - 1 / self.strike)
         else:
             cash_flow = 0
         return {'drop_from_pv': cash_flow, 'accrues': 0}
@@ -96,17 +91,17 @@ class InversePerpetual(Instrument):
 
     def __init__(self, underlying, strike_coinUSD):
         super().__init__()
-        self.strike = 1 / strike_coinUSD
+        self.strike = strike_coinUSD
         self.symbol = f'{underlying}-PERPETUAL:'
 
     def pv(self, market):
         fwd = market.fwdcurve.interpolate(0)  ## conventionally 0d
-        return self.strike - 1 / fwd
+        return 1 / self.strike - 1 / fwd
 
     def delta(self, market, **kwargs):
-        """for a -1% move of 1/f"""
+        """for a -100% move of 1/f"""
         fwd = market.fwdcurve.interpolate(0)  ## conventionally 0d
-        return 0.01 / fwd
+        return 1 / fwd
 
     def cash_flow(self, market, prev_market):
         """accrues every millisecond.
@@ -148,11 +143,12 @@ class Option(Instrument):
         df = np.exp(-market.r * T)
         fwd = market.fwdcurve.interpolate(self.maturity)
         vol = market.vol.interpolate(self.strike, self.maturity)
-        return df * black_scholes.pv(1 / fwd, 1 / self.strike, vol,
-                                     T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market.t else 0
+        return df * black_scholes.pv(1 / fwd, 1 / self.strike, vol, T, self.call_put) \
+            if self.maturity > market.t else 0
 
     def delta(self, market, **kwargs):
-        '''parallel delta by default.
+        '''for 100%
+        parallel delta by default.
         delta by tenor is maturity_timestamp (within 1min)'''
         if ('maturity_timestamp' in kwargs) and abs(kwargs['maturity_timestamp'] - self.maturity) > timedelta(minutes=1):
             return 0.0
@@ -160,18 +156,19 @@ class Option(Instrument):
         df = np.exp(-market.r * T)
         fwd = market.fwdcurve.interpolate(self.maturity)
         vol = market.vol.interpolate(self.strike, self.maturity)
-        return df * black_scholes.delta(1 / fwd, 1 / self.strike, vol,
-                                        T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market.t else 0
+        return df * black_scholes.delta(1 / fwd, 1 / self.strike, vol, T, self.call_put) \
+            if self.maturity > market.t else 0
 
     def gamma(self, market, **kwargs):
+        '''delta move for 1%'''
         if ('maturity_timestamp' in kwargs) and abs(kwargs['maturity_timestamp'] - self.maturity) > timedelta(minutes=1):
             return 0.0
         T = (self.maturity - market.t).total_seconds() / 3600 / 24 / 365.25
         df = np.exp(-market.r * T)
         fwd = market.fwdcurve.interpolate(self.maturity)
         vol = market.vol.interpolate(self.strike, self.maturity)
-        return df * black_scholes.gamma(1 / fwd, 1 / self.strike, vol,
-                                        T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market.t else 0
+        return df * black_scholes.gamma(1 / fwd, 1 / self.strike, vol, T, self.call_put) * 100 \
+            if self.maturity > market.t else 0
 
     def vega(self, market, **kwargs):
         '''vega by tenor maturity_timestamp(within 1s)'''
@@ -181,17 +178,18 @@ class Option(Instrument):
         df = np.exp(-market.r * T)
         fwd = market.fwdcurve.interpolate(self.maturity)
         vol = market.vol.interpolate(self.strike, self.maturity)
-        return df * black_scholes.vega(1 / fwd, 1 / self.strike, vol,
-                                       T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market.t else 0
+        return df * black_scholes.vega(1 / fwd, 1 / self.strike, vol, T, self.call_put) \
+            if self.maturity > market.t else 0
 
-    def theta(self, market, **kwargs):
+    def theta(self, market, **kwargs) -> float:
+        '''for 1d'''
         T = (self.maturity - market.t).total_seconds() / 3600 / 24 / 365.25
         df = np.exp(-market.r * T)
         fwd = market.fwdcurve.interpolate(self.maturity)
         vol = market.vol.interpolate(self.strike, self.maturity)
-        theta_fwd = df * black_scholes.theta(1 / fwd, 1 / self.strike, vol,
-                                             T / 3600 / 24 / 365.25, self.call_put) if self.maturity > market.t else 0
-        return theta_fwd - market.r * df / 24 / 365.25
+        theta_fwd = df * black_scholes.theta(1 / fwd, 1 / self.strike, vol, T, self.call_put) \
+            if self.maturity > market.t else 0
+        return (theta_fwd - market.r * df) / 24 / 365.25
 
     def cash_flow(self, market, prev_market):
         '''cash settled in coin'''
@@ -216,10 +214,10 @@ class Option(Instrument):
 
 class Position:
     def __init__(self, instrument, notional_USD, label=None):
-        self.instrument = instrument
-        self.notional = notional_USD
-        self.new_deal_pnl = 0
-        self.label = label  # this str is handy to describe why position is here, eg gamma_hedge, delta_hedge...
+        self.instrument: Instrument = instrument
+        self.notional: float = notional_USD
+        self.new_deal_pnl: float = 0
+        self.label: str = label  # this str is handy to describe why position is here, eg gamma_hedge, delta_hedge...
 
     def apply(self, greek, market, **kwargs):
         return self.notional * getattr(self.instrument, greek)(market, **kwargs) if hasattr(self.instrument,
@@ -261,6 +259,7 @@ class Strategy(ABC):
     """
 
     def __init__(self, currency, notional_coin):
+        # TODO: book object when we implement portfolio margining
         self.positions = [Position(Cash(currency), notional_coin, label='initial_cash')]
         self.greeks_cache = {}
 
@@ -274,7 +273,8 @@ class Strategy(ABC):
                      greek_params,
                      hedge_instrument,
                      hedge_params,
-                     target):
+                     target) -> None:
+        #TODO: make it multidimentional
         """
         targets a value of a greek
         first unwinds all instruments of type hedge_mode['replace'], or just adds if hedge_mode['replace']={}
@@ -376,10 +376,12 @@ class ShortGamma(Strategy):
 
         # 1: target theta
         # find shortest options that is longer than gamma_tenor
+        # TODO: need 2 expiries + 2 strikes
         option_maturity = market.t + timedelta(seconds=next((T for T in market.vol.dataframe.columns if T > self.gamma_tenor),
                         max(market.vol.dataframe.columns)))
         hedge_instrument = Option(currency, market.fwdcurve.interpolate(option_maturity),
                                   option_maturity, 'S')
+        # TODO: need to invert a matrix of hedge_instruments
         self.target_greek(market,
                           greek='theta', greek_params={},
                           hedge_instrument=hedge_instrument,
@@ -430,15 +432,15 @@ class VolSteepener(Strategy):
 
 def display_current(portfolio, prev_portfolio, market, prev_market):
     predictors = {'delta': lambda x: x.apply(greek='delta', market=prev_market) * (
-            1 - prev_market.spot / market.spot) * 100,
+            1 - prev_market.spot / market.spot),
                   'gamma': lambda x: 0.5 * x.apply(greek='gamma', market=prev_market) * (
-                          1 - prev_market.spot / market.spot) ** 2 * 100 * 100,
+                          1 - prev_market.spot / market.spot) ** 2 * 100,
                   'vega': lambda x: x.apply(greek='vega', market=prev_market) * (
-                          market.vol.interpolate(x.instrument.strike, x.instrument.maturity) / prev_market[
-                      'vol'].interpolate(x.instrument.strike, x.instrument.maturity) - 1) * 10 if type(
+                          market.vol.interpolate(x.instrument.strike, x.instrument.maturity) /
+                          prev_market.vol.interpolate(x.instrument.strike, x.instrument.maturity) - 1) * 10 if type(
                       x.instrument) == Option else 0,
                   'theta': lambda x: x.apply(greek='theta', market=prev_market) * (
-                          market.t - prev_market.t) / 3600,
+                          market.t - prev_market.t).total_seconds() / 3600 / 24,
                   'IR01': lambda x: x.apply(greek='delta', market=prev_market) * (
                           1 - market.spot / prev_market.spot * prev_market.fwdcurve.interpolate(
                       x.instrument.maturity) / market.fwdcurve.interpolate(x.instrument.maturity)) * 100 if type(
@@ -464,8 +466,7 @@ def display_current(portfolio, prev_portfolio, market, prev_market):
 
     # 3: predict = mkt move for prev_portfolio
     predict = pd.Series(
-        {('predict', greek, position.instrument.symbol.split(':')[0]):
-             predictor(position)
+        {('predict', greek, position.instrument.symbol.split(':')[0]): predictor(position)
          for greek, predictor in predictors.items()
          for position in prev_portfolio.positions[1:]})
 
@@ -477,8 +478,7 @@ def display_current(portfolio, prev_portfolio, market, prev_market):
              - p0.cash_flow(market, prev_market)[
                  'drop_from_pv']  # we don't do it for cash so avoid double counting since PV above has cash_flows
              - predict[('predict', slice(None), p0.instrument.symbol.split(':')[0])].sum()  # - the predict
-         for p0 in
-         prev_portfolio.positions[1:]}  # ....only for old positions. New positions contribute to new_deal only.
+         for p0 in prev_portfolio.positions[1:]}  # ....only for old positions. New positions contribute to new_deal only.
         | {('actual', 'cash_flow', p0.instrument.symbol.split(':')[0]):
                p0.cash_flow(market, prev_market)['drop_from_pv'] + p0.cash_flow(market, prev_market)['accrues']
            for p0 in prev_portfolio.positions[1:]}
@@ -519,7 +519,7 @@ def strategies_main(*argv):
     elif config["mktdata"]["source"] == "kaiko":
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=config["backtest"]["backtest_window"])
-        history = kaiko_history(config["strategy"]["currency"], start, end)
+        history = kaiko_history(config["strategy"]["currency"], start, end, config["mktdata"])
 
     ## new portfolio
     prev_mkt = history[0]
@@ -549,9 +549,10 @@ def strategies_main(*argv):
     display.loc[(['predict', 'actual'], slice(None), slice(None))] = display.loc[
         (['predict', 'actual'], slice(None), slice(None))].cumsum(axis=1)
 
-    filename = f'Runtime/logs/deribit_portfolio/run_{argv[1]}_{datetime.now(timezone.utc).strftime("%Y-%m-%d-%Hh")}'  # should be linear 1 to 1
+    filename = os.path.join(os.sep, os.getcwd(),'logs', f'run_{datetime.now(timezone.utc).strftime("%Y-%m-%d-%Hh")}')  # should be linear 1 to 1
     with pd.ExcelWriter(f'{filename}.xlsx', engine='xlsxwriter', mode='w') as writer:
         display.columns = [t.replace(tzinfo=None) for t in display.columns]
+        display = display.map(lambda x: x.replace(tzinfo=None) if isinstance(x, datetime) else x)
         display.T.to_excel(writer, sheet_name=f"{config['strategy']['currency']}_{config['strategy']['gamma_tenor']}")
         pd.DataFrame(
             index=['params'],

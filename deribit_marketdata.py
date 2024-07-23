@@ -15,7 +15,11 @@ class Market:
         self.funding_rate: float = 0
         self.fwdcurve: MktCurve = None
         self.vol: VolSurface = None
-
+        self.slippage = {'delta': 0,  # 1 means 1%
+                         'gamma': 0,  # 1 means 1%
+                         'vega': 0,  # 1 means 10% relative
+                         'theta': 0,  # 1 means 1d
+                         'rho': 0}
 
 class MktCurve:
     '''pd.Series mixin'''
@@ -205,7 +209,7 @@ def deribit_smile_genesisvolatility(currency, start=datetime.now(tz=timezone.utc
         tz=timezone.utc).strftime("%Y-%m-%d-%Hh") + '.csv')
 
 
-def kaiko_history(currency: str, start: datetime, end: datetime):
+def kaiko_history(currency: str, start: datetime, end: datetime, config: dict):
     dirname = os.path.join(os.sep, os.getcwd(), 'data', 'kaiko')
     date_format = "%Y%m%d"
 
@@ -227,10 +231,15 @@ def kaiko_history(currency: str, start: datetime, end: datetime):
                                             index='strike',
                                             values='implied_volatility')
                 market.vol = VolSurface(timestamp, vol_df, market.fwdcurve)
+                market.slippage = {'delta': config['slippage']['delta'],  # 1 means 1%
+                                   'gamma': 0,  # 1 means 1%
+                                   'vega': config['slippage']['vega'],  # 1 means 10% relative
+                                   'theta': 0,  # 1 means 1d
+                                   'rho': config['slippage']['vega']}
 
                 result.append(market)
 
-    return result
+    return sorted(result, key=lambda market: market.t)
 
 
 def deribit_smile_main(*argv):

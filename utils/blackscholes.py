@@ -50,9 +50,9 @@ class black_scholes:
 
     @staticmethod
     def theta(S, K, V, T, cp):
-        '''for 1h'''
+        '''for 1y'''
         theta = -((S * V * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T))) / (2 * math.sqrt(T)))
-        return theta / 24/365.25 * (1 if cp != 'S' else 2)
+        return theta * (1 if cp != 'S' else 2)
 
     @staticmethod
     # Define the Black-Scholes implied volatility function
