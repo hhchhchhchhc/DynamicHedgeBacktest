@@ -1,15 +1,15 @@
 mktdata:
   source: "kaiko"
   slippage:
-    delta: 0.1  # 1 means 1%
-    vega: 0  # 1 means 10% relative
-    rho: 0
+    delta: 0.001  # relative
+    vega: 0.02  # absolute
+    rho: 0  # absolute
 strategy:
   type: "ShortGamma"
   currency: "BTC"
-  notional_coin: 1.0
-  gamma_tenor: 7  # in days
-  theta_target: 0.003
+  equity: 1000000
+  gamma_tenor: 30  # in days
+  yield_target: 0.5  # will determine theta
   delta_hedging:
     target: 0
     threshold: 0.01
