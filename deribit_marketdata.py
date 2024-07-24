@@ -11,7 +11,6 @@ class Market:
     def __init__(self, timestamp):
         self.t: datetime = timestamp
         self.spot: float = None
-        self.r: float = 0
         self.funding_rate: float = 0
         self.fwdcurve: MktCurve = None
         self.vol: VolSurface = None
@@ -21,6 +20,8 @@ class Market:
                          'theta': 0,  # 1 means 1d
                          'rho': 0}
 
+    def nearest_strike(self, expiry: datetime):
+        return min(self.vol.dataframe.index, key=lambda x: abs(x - self.fwdcurve.interpolate(expiry)))
 class MktCurve:
     '''pd.Series mixin'''
 
@@ -38,7 +39,10 @@ class MktCurve:
 
     def interpolate(self, T: datetime):
         '''T in sec'''
-        return self.interpolator([(T - self.timestamp).total_seconds()])[0]
+        dt = (T - self.timestamp).total_seconds()
+        if dt in self.series.index:
+            return self.series[dt]
+        return self.interpolator([dt])[0]
 
 
 class VolSurface:
@@ -224,6 +228,7 @@ def kaiko_history(currency: str, start: datetime, end: datetime, config: dict):
             for timestamp, _data in data.groupby('timestamp'):
                 market = Market(timestamp)
                 market.spot = _data['current_spot'].mean()  # wtf is this not exactly unique !!
+                market.funding_rate = 0.1
                 fwdcurve_series = _data[['expiry_date', 'F']].set_index('expiry_date')['F']
                 market.fwdcurve = MktCurve(timestamp,
                                            fwdcurve_series[~fwdcurve_series.index.duplicated()])
@@ -231,11 +236,11 @@ def kaiko_history(currency: str, start: datetime, end: datetime, config: dict):
                                             index='strike',
                                             values='implied_volatility')
                 market.vol = VolSurface(timestamp, vol_df, market.fwdcurve)
-                market.slippage = {'delta': config['slippage']['delta'],  # 1 means 1%
-                                   'gamma': 0,  # 1 means 1%
-                                   'vega': config['slippage']['vega'],  # 1 means 10% relative
-                                   'theta': 0,  # 1 means 1d
-                                   'rho': config['slippage']['vega']}
+                market.slippage = {'delta': config['slippage']['delta'] * market.spot,
+                                   'gamma': 0,
+                                   'vega': config['slippage']['vega'],
+                                   'theta': 0,
+                                   'rho': config['slippage']['rho']}
 
                 result.append(market)
 
