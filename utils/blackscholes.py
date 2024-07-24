@@ -25,7 +25,7 @@ class black_scholes:
 
     @staticmethod
     def delta(S, K, V, T, cp):
-        '''for a 1% move'''
+        '''for a unit move'''
         delta = scipy.stats.norm.cdf(black_scholes.d1(S, K, V, T))
         if cp == 'C':
             delta = delta
@@ -34,25 +34,25 @@ class black_scholes:
         elif cp =='S':
             delta = (2 * delta - 1)
 
-        return delta * S * 0.01
+        return delta
 
     @staticmethod
     def gamma(S, K, V, T, cp):
-        '''for a 1% move'''
+        '''for a unit move'''
         gamma = scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T)) / (S * V * math.sqrt(T))
-        return gamma * S * 0.01 * S * 0.01 * (1 if cp != 'S' else 2)
+        return gamma * (1 if cp != 'S' else 2)
 
     @staticmethod
     def vega(S, K, V, T, cp):
-        '''for a 10% move'''
+        '''for a unit move'''
         vega = (S * math.sqrt(T) * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T)))
-        return vega * V * 0.1 * (1 if cp != 'S' else 2)
+        return vega * (1 if cp != 'S' else 2)
 
     @staticmethod
     def theta(S, K, V, T, cp):
-        '''for 1y'''
+        '''for 1d'''
         theta = -((S * V * scipy.stats.norm.pdf(black_scholes.d1(S, K, V, T))) / (2 * math.sqrt(T)))
-        return theta * (1 if cp != 'S' else 2)
+        return theta * (1 if cp != 'S' else 2) / 365.25
 
     @staticmethod
     # Define the Black-Scholes implied volatility function
@@ -82,3 +82,4 @@ class black_scholes:
             if i >= max_iter:
                 # Return None
                 return None
+
