@@ -1,18 +1,23 @@
 mktdata:
   source: "kaiko"
+  # path: "/run/user/1000/gvfs/sftp:host=89.36.67.26,port=2806/Sety/mktdata/vol_surfaces/drbt"
+  path: "/home/user/DynamicHedgeBacktest/data/kaiko"
+  # path: "/home/user/DynamicHedgeBacktest/data/kaiko_test"
+  funding_rate: 0
   slippage:
     delta: 0.001  # relative
     vega: 0.02  # absolute
     rho: 0  # absolute
 strategy:
   type: "ShortGamma"
-  currency: "BTC"
+  currency: "btc" # lowercase
   equity: 1000000
-  gamma_tenor: 30  # in days
+  gamma_tenor: 7  # in days
   yield_target: 0.5  # will determine theta
   delta_hedging:
     target: 0
     threshold: 0.01
 backtest:
-  backtest_window: 90  # in days
+  backtest_window: 30  # in days
   volfactor: 1.0
+  test: false
