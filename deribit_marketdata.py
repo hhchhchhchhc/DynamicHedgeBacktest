@@ -7,9 +7,14 @@ from datetime import *
 from utils.blackscholes import black_scholes
 
 
+class Currency(str):
+    pass
+
+
 class Market:
-    def __init__(self, timestamp):
+    def __init__(self, timestamp, currency):
         self.t: datetime = timestamp
+        self.currency = currency
         self.spot: float = None
         self.funding_rate: float = 0
         self.fwdcurve: MktCurve = None
@@ -21,7 +26,13 @@ class Market:
                          'rho': 0}
 
     def nearest_strike(self, expiry: datetime):
-        return min(self.vol.dataframe.index, key=lambda x: abs(x - self.fwdcurve.interpolate(expiry)))
+        '''find the nearest strike such as delta = premium, so we don't have to hedge the premium
+        this is F * exp(-sig^2 t)'''
+        fwd = self.fwdcurve.interpolate(expiry)
+        approx_vol = self.vol.interpolate(fwd, expiry)
+        dt = (expiry - self.t).total_seconds() / 3600 / 24 / 365.25
+        target_strike = fwd * np.exp(- 0.5 * dt * approx_vol**2)
+        return min(self.vol.dataframe.index, key=lambda x: abs(x - target_strike))
 class MktCurve:
     '''pd.Series mixin'''
 
@@ -214,21 +225,22 @@ def deribit_smile_genesisvolatility(currency, start=datetime.now(tz=timezone.utc
 
 
 def kaiko_history(currency: str, start: datetime, end: datetime, config: dict):
-    dirname = os.path.join(os.sep, os.getcwd(), 'data', 'kaiko')
+    dirname = os.path.join(os.sep, os.getcwd(), config['path']) # , currency.lower())
     date_format = "%Y%m%d"
+    currency = currency.lower()
 
     result = []
     for file in os.listdir(dirname):
         _currency = file.split('_')[0]
         _date = datetime.strptime(file.split('_')[1], date_format).replace(
             tzinfo=timezone.utc)
-        if currency.lower() in _currency.lower() and start <= _date < end:
+        if currency in _currency.lower() and start <= _date < end:
             data = pd.read_csv(os.path.join(dirname, file), parse_dates=['timestamp', 'expiry_date'],
                                date_parser=datetime.fromisoformat)
             for timestamp, _data in data.groupby('timestamp'):
-                market = Market(timestamp)
+                market = Market(timestamp, currency)
                 market.spot = _data['current_spot'].mean()  # wtf is this not exactly unique !!
-                market.funding_rate = 0.1
+                market.funding_rate = config['funding_rate']
                 fwdcurve_series = _data[['expiry_date', 'F']].set_index('expiry_date')['F']
                 market.fwdcurve = MktCurve(timestamp,
                                            fwdcurve_series[~fwdcurve_series.index.duplicated()])
